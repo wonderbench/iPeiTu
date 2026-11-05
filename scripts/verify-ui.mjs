@@ -129,6 +129,46 @@ try {
   await page.unroute('**/api/assets/*');
   await visibleText('#selectedName', filename);
 
+  await page.locator('#favoriteButton').click();
+  await page.waitForFunction(() => document.querySelector('#favoriteButton').getAttribute('aria-pressed') === 'true');
+  await page.reload();
+  await page.locator('#viewFavorites').click();
+  await visibleText('#resultCount', '1 张');
+  await visibleText('.asset-name', filename);
+  await page.locator('.asset-card').click();
+  assert.equal(await page.locator('#favoriteButton').getAttribute('aria-pressed'), 'true');
+  await page.locator('#searchInput').fill('不存在的收藏');
+  await visibleText('#resultCount', '0 / 1 张');
+  await page.locator('#clearSearch').click();
+  await visibleText('#resultCount', '1 张');
+  await page.locator('.asset-card').click();
+  await page.route('**/api/assets/*/favorite', route => route.fulfill({ status: 500, contentType: 'application/json', body: JSON.stringify({ error: '验收用收藏失败' }) }));
+  await page.locator('#favoriteButton').click();
+  await visibleText('#actionStatus', '验收用收藏失败');
+  assert.equal(await page.locator('#favoriteButton').getAttribute('aria-pressed'), 'true', '收藏写入失败保留原状态');
+  assert.equal(await page.locator('.asset-card').count(), 1);
+  await page.unroute('**/api/assets/*/favorite');
+  await page.locator('#favoriteButton').click();
+  await visibleText('#resultCount', '0 张');
+  await visibleText('#selectedName', '尚未选择图片');
+  await page.locator('#viewRecent').click();
+  await visibleText('#resultCount', '0 张');
+  assert.equal(await page.locator('.asset-card').count(), 0, '预览和选择不记录最近');
+  await page.locator('#viewAll').click();
+  await visibleText('#resultCount', '2 张');
+  await page.locator('.asset-card').first().focus();
+  await page.keyboard.press('ArrowRight');
+  await visibleText('#selectedName', '桥架施工.png');
+  assert.equal(await page.locator('.asset-card[tabindex="0"]').count(), 1);
+  await page.keyboard.press('Home');
+  await visibleText('#selectedName', filename);
+  await page.keyboard.press('End');
+  await visibleText('#selectedName', '桥架施工.png');
+  await page.keyboard.press('ArrowLeft');
+  await visibleText('#selectedName', filename);
+  await page.keyboard.press('Enter');
+  await visibleText('#selectedName', filename);
+
   for (const width of [320, 420, 1080]) {
     await page.setViewportSize({ width, height: 800 });
     assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true, `${width}px 无横向溢出`);
@@ -151,6 +191,7 @@ try {
   await page.addInitScript(() => {
     window.insertions = [];
     window.mockReadOnly = false;
+    window.mockInsertFailure = false;
     window.Application = {
       Documents: { Count: 1 },
       CentimetersToPoints: value => value * 72 / 2.54,
@@ -162,6 +203,7 @@ try {
           Information: () => false,
           Collapse: direction => { assertCollapse(direction); range.Start = range.End; },
           InlineShapes: { AddPicture: (filename, link, save, target) => {
+            if (window.mockInsertFailure) throw new Error('验收用 WPS 插图失败');
             const record = { filename, link, save, start: target.Start, end: target.End, width: 1000, height: 600 };
             window.insertions.push(record);
             return {
@@ -178,6 +220,12 @@ try {
     function assertCollapse(direction) { if (direction !== 0) throw new Error('必须折叠到末尾'); }
   });
   await page.reload();
+  await page.locator('.asset-card').first().focus();
+  await page.keyboard.press('Enter');
+  assert.equal(await page.evaluate(() => window.insertions.length), 0, '图库 Enter 只选择，不插入');
+  await page.locator('#searchInput').focus();
+  await page.keyboard.press('Enter');
+  assert.equal(await page.evaluate(() => window.insertions.length), 0, '检索框 Enter 不插入');
   await page.locator('.asset-card').first().click();
   await page.locator('#insertButton').click();
   await visibleText('#actionStatus', '已插入');
@@ -191,6 +239,40 @@ try {
   assert.ok(inserted[0].height <= 5 * 72 / 2.54, '最大高度限制保持有效');
   await page.locator('#insertButton').click();
   await page.waitForFunction(() => window.insertions.length === 2);
+  await page.waitForFunction(() => !document.querySelector('#insertButton').disabled);
+  let recent = await (await fetch(`${base}/api/library?view=recent`)).json();
+  assert.equal(recent.assets.length, 1, '同图连续插入只留一条最近记录');
+  assert.equal(recent.assets[0].name, filename);
+  assert.ok(recent.assets[0].lastInsertedAt);
+  await page.locator('#viewRecent').click();
+  await visibleText('#resultCount', '1 张');
+  await page.locator('#viewAll').click();
+  await visibleText('#resultCount', '2 张');
+  await page.locator('.asset-card').nth(1).click();
+  await page.route('**/api/assets/*/recent', route => route.fulfill({ status: 500, contentType: 'application/json', body: JSON.stringify({ error: '验收用记录失败' }) }));
+  await page.locator('#insertButton').click();
+  await visibleText('#actionStatus', '图片已插入，但最近记录未保存');
+  assert.equal(await page.evaluate(() => window.insertions.length), 3, '记录失败不会重复插图');
+  recent = await (await fetch(`${base}/api/library?view=recent`)).json();
+  assert.equal(recent.assets.length, 1);
+  await page.unroute('**/api/assets/*/recent');
+  await page.evaluate(() => { window.mockInsertFailure = true; });
+  await page.locator('#insertButton').click();
+  await visibleText('#actionStatus', '插入失败');
+  recent = await (await fetch(`${base}/api/library?view=recent`)).json();
+  assert.equal(recent.assets.length, 1, 'WPS插图失败不记最近');
+  await page.evaluate(() => { window.mockInsertFailure = false; });
+  await page.locator('#insertButton').click();
+  await visibleText('#actionStatus', '已插入');
+  await page.waitForFunction(() => !document.querySelector('#insertButton').disabled);
+  recent = await (await fetch(`${base}/api/library?view=recent`)).json();
+  assert.deepEqual(recent.assets.map(asset => asset.name), ['桥架施工.png', filename]);
+  await page.locator('#viewRecent').click();
+  await visibleText('#resultCount', '2 张');
+  await visibleText('.asset-name', '桥架施工.png');
+  await page.locator('#viewAll').click();
+  await visibleText('#resultCount', '2 张');
+  await page.locator('.asset-card').first().click();
   await page.evaluate(() => { window.mockReadOnly = true; window.dispatchEvent(new Event('focus')); });
   assert.equal(await page.locator('#insertButton').isDisabled(), true);
   await visibleText('#hostStatus', '只读');
@@ -217,7 +299,7 @@ try {
   await visibleText('#actionStatus', '未能保存在本机');
   await visibleText('#layoutSettingsButton', '宽 9 厘米');
   assert.deepEqual(failures, []);
-  console.log('UI 验收通过：导入/检索/预览、素材信息编辑与失败保留、分类/未分类/多词标签筛选及重载、排版偏好恢复、图题切图隔离、320/420/1080 布局、模拟 WPS 固定宽度插入及保留选区、连续插图、只读提示、读取失败重试');
+  console.log('UI 验收通过：导入/检索/预览、素材信息与组合筛选、收藏重载与写失败恢复、最近成功记录及失败分离、键盘选图不误插入、排版偏好恢复、320/420/1080 布局、模拟 WPS 固定宽度及保留选区、连续插图、只读与读取失败恢复');
   console.log('WPS 行为使用模拟宿主；真实 WPS 验收另行记录。');
 } finally {
   await browser?.close();

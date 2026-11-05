@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
-import { mkdtemp, mkdir, writeFile, rm, symlink } from 'node:fs/promises';
+import { mkdtemp, mkdir, writeFile, readFile, rename, rm, symlink } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import sharp from 'sharp';
@@ -13,13 +13,30 @@ async function setup(t) {
   await mkdir(publicDirectory);
   await writeFile(path.join(publicDirectory, 'index.html'), '<h1>iPeiTu</h1>');
   await writeFile(path.join(root, 'secret.txt'), 'PRIVATE');
-  const { server, library } = await startServer({ port: 0, dataDirectory: path.join(root, 'data'), publicDirectory });
+  let server, library, base;
   t.after(async () => {
-    server.closeAllConnections();
-    await new Promise(resolve => server.close(resolve));
+    if (server) {
+      server.closeAllConnections();
+      await new Promise(resolve => server.close(resolve));
+    }
     await rm(root, { recursive: true, force: true });
   });
-  return { root, publicDirectory, server, library, base: `http://127.0.0.1:${server.address().port}` };
+  for (let attempt = 0; attempt < 10; attempt++) {
+    ({ server, library } = await startServer({ port: 0, dataDirectory: path.join(root, 'data'), publicDirectory }));
+    base = `http://127.0.0.1:${server.address().port}`;
+    try {
+      await (await fetch(base)).arrayBuffer();
+      break;
+    } catch (error) {
+      // A system-assigned port can fall on Fetch's prohibited-port list on Windows.
+      if (error.cause?.message !== 'bad port' || attempt === 9) throw error;
+      console.warn(`临时 HTTP 测试端口 ${server.address().port} 被 Fetch 拒绝：${error.cause.message}；重新分配端口`);
+      server.closeAllConnections();
+      await new Promise(resolve => server.close(resolve));
+      server = undefined;
+    }
+  }
+  return { root, publicDirectory, server, library, base };
 }
 
 function request(base, pathname, headers = {}) {
@@ -158,4 +175,117 @@ test('HTTP metadata and query validation rejects unknown, duplicate and invalid 
   assert.equal(library.getAsset(id).name, '原图.png');
   assert.deepEqual(library.getAsset(id).categories, []);
   assert.equal(library.list().total, 1);
+});
+
+test('HTTP favorites and recent views expose personal flags, scoped totals and unchanged full-library facets', async t => {
+  const { base, library } = await setup(t);
+  for (const [name, color] of [['甲图.png', 'red'], ['乙图.png', 'blue']]) {
+    await library.importFile(name, await sharp({ create: { width: 3, height: 3, channels: 3, background: color } }).png().toBuffer());
+  }
+  const id = library.assets[0].id;
+  await library.updateAsset(id, { categories: ['土建'], tags: ['现场'] });
+  const send = (suffix, method, input) => fetch(`${base}/api/assets/${id}${suffix}`, {
+    method, headers: { 'content-type': 'application/json' }, body: JSON.stringify(input),
+  });
+  const initial = await (await fetch(`${base}/api/library`)).json();
+  assert.equal(initial.total, 2);
+  assert.equal(initial.viewTotal, 2);
+  assert.equal(initial.assets[0].favorite, false);
+  assert.equal(initial.assets[0].lastInsertedAt, null);
+  const favorites = await (await fetch(`${base}/api/library?view=favorites`)).json();
+  assert.equal(favorites.viewTotal, 0);
+  assert.equal(favorites.total, 2);
+  const saved = await send('/favorite', 'PATCH', { favorite: true });
+  assert.equal(saved.status, 200);
+  assert.equal((await saved.json()).asset.favorite, true);
+  assert.equal((await send('/favorite', 'PATCH', { favorite: true })).status, 200);
+  await fetch(`${base}/api/assets/${id}/insertion`);
+  assert.equal((await (await fetch(`${base}/api/library?view=recent`)).json()).viewTotal, 0);
+  const recorded = await send('/recent', 'POST', {});
+  assert.equal(recorded.status, 200);
+  const { asset } = await recorded.json();
+  assert.equal(asset.favorite, true);
+  assert.equal(new Date(asset.lastInsertedAt).toISOString(), asset.lastInsertedAt);
+  assert.equal(asset.thumbnailUrl, `/api/assets/${id}/thumbnail`);
+  const query = new URLSearchParams({ view: 'favorites', q: '甲图', category: '土建', tag: '现场' });
+  const filtered = await (await fetch(`${base}/api/library?${query}`)).json();
+  assert.deepEqual(filtered.assets.map(item => item.id), [id]);
+  assert.equal(filtered.total, 2);
+  assert.equal(filtered.viewTotal, 1);
+  assert.deepEqual(filtered.facets, initial.facets);
+  const updated = await (await send('', 'PATCH', { name: '人工修改名' })).json();
+  assert.equal(updated.asset.favorite, true);
+  assert.equal(updated.asset.lastInsertedAt, asset.lastInsertedAt);
+  await send('/favorite', 'PATCH', { favorite: false });
+  const recent = await (await fetch(`${base}/api/library?view=recent`)).json();
+  assert.equal(recent.viewTotal, 1);
+  assert.equal(recent.assets[0].favorite, false);
+  assert.equal((await (await fetch(`${base}/api/library?view=favorites`)).json()).viewTotal, 0);
+});
+
+test('HTTP personal-state writes reject invalid bodies, caller timestamps, foreign origins and unknown images', async t => {
+  const { base, library } = await setup(t);
+  await library.importFile('原图.png', await sharp({ create: { width: 3, height: 3, channels: 3, background: 'red' } }).png().toBuffer());
+  const id = library.assets[0].id;
+  const send = (suffix, method, input, headers = {}, assetId = id) => fetch(`${base}/api/assets/${assetId}/${suffix}`, {
+    method, headers: { 'content-type': 'application/json', ...headers }, body: JSON.stringify(input),
+  });
+  for (const input of [null, [], {}, { favorite: 1 }, { favorite: 'true' }, { favorite: true, other: true }]) {
+    const response = await send('favorite', 'PATCH', input);
+    assert.equal(response.status, 400);
+    assert.equal(typeof (await response.json()).error, 'string');
+  }
+  for (const input of [null, [], '', { insertedAt: '2026-11-05T02:00:00.000Z' }, { id }]) {
+    assert.equal((await send('recent', 'POST', input)).status, 400);
+  }
+  for (const [suffix, method, input] of [['favorite', 'PATCH', { favorite: true }], ['recent', 'POST', {}]]) {
+    assert.equal((await send(suffix, method, input, {}, 'f'.repeat(64))).status, 404);
+    assert.equal((await send(suffix, method, input, { origin: 'https://attacker.example' })).status, 403);
+    assert.equal((await send(suffix, method, input, { 'sec-fetch-site': 'cross-site' })).status, 403);
+    assert.equal((await send(suffix, method, input, { 'content-type': 'text/plain' })).status, 415);
+    assert.equal((await send(`${suffix}?extra=1`, method, input)).status, 400);
+    assert.equal((await fetch(`${base}/api/assets/${id}/${suffix}`, {
+      method, headers: { 'content-type': 'application/json' }, body: '{broken',
+    })).status, 400);
+  }
+  assert.equal((await send('favorite', 'PATCH', { favorite: true, extra: 'x'.repeat(17000) })).status, 413);
+  assert.equal((await send('favorite', 'POST', { favorite: true })).status, 404);
+  assert.equal((await send('recent', 'PATCH', {})).status, 404);
+  assert.equal((await fetch(`${base}/api/assets/${id}/recent`)).status, 404);
+  for (const query of ['view=', 'view=favorite', 'view=ALL', 'view=all&view=recent']) {
+    assert.equal((await fetch(`${base}/api/library?${query}`)).status, 400, query);
+  }
+  assert.equal((await fetch(`${base}/api/library?view=favorites`, { headers: { origin: 'https://attacker.example' } })).status, 403);
+  assert.equal(library.list('', { view: 'favorites' }).viewTotal, 0);
+  assert.equal(library.list('', { view: 'recent' }).viewTotal, 0);
+});
+
+test('HTTP state write failures report 500 and keep the last committed GET state', async t => {
+  const { base, library } = await setup(t);
+  await library.importFile('原图.png', await sharp({ create: { width: 3, height: 3, channels: 3, background: 'red' } }).png().toBuffer());
+  const id = library.assets[0].id;
+  await library.setFavorite(id, { favorite: true });
+  const original = await (await fetch(`${base}/api/library`)).json();
+  const statePath = path.join(library.directory, 'usage.json');
+  const savedPath = path.join(library.directory, 'saved-usage.json');
+  const originalBytes = await readFile(statePath);
+  await rename(statePath, savedPath);
+  await mkdir(statePath);
+  const errors = t.mock.method(console, 'error', () => {});
+  try {
+    for (const [suffix, method, input] of [['favorite', 'PATCH', { favorite: false }], ['recent', 'POST', {}]]) {
+      const response = await fetch(`${base}/api/assets/${id}/${suffix}`, {
+        method, headers: { 'content-type': 'application/json' }, body: JSON.stringify(input),
+      });
+      assert.equal(response.status, 500);
+      assert.match((await response.json()).error, /读写失败/);
+      assert.deepEqual(await (await fetch(`${base}/api/library`)).json(), original);
+    }
+    assert.equal(errors.mock.calls.length, 2, '文件错误被服务端明确记录');
+    assert.deepEqual(await readFile(savedPath), originalBytes);
+  } finally {
+    assert.equal(path.dirname(statePath), library.directory);
+    await rm(statePath, { recursive: true });
+    await rename(savedPath, statePath);
+  }
 });

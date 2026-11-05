@@ -73,8 +73,34 @@ function validV2Record(asset) {
   }
 }
 
-function displayAsset(asset) {
+function hasExactFields(value, fields) {
+  return value !== null && typeof value === 'object' && !Array.isArray(value)
+    && Object.keys(value).length === fields.length && fields.every(field => Object.hasOwn(value, field));
+}
+
+function validUsage(usage, assets) {
+  if (!hasExactFields(usage, ['version', 'favorites', 'recent']) || usage.version !== 1
+    || !Array.isArray(usage.favorites) || !Array.isArray(usage.recent) || usage.recent.length > 100) return false;
+  const ids = new Set(assets.map(asset => asset.id));
+  if (usage.favorites.some(id => typeof id !== 'string' || !ids.has(id))
+    || new Set(usage.favorites).size !== usage.favorites.length) return false;
+  const seen = new Set();
+  let previousTime = Infinity;
+  for (const entry of usage.recent) {
+    if (!hasExactFields(entry, ['id', 'insertedAt']) || !ids.has(entry.id) || seen.has(entry.id)
+      || typeof entry.insertedAt !== 'string') return false;
+    const time = Date.parse(entry.insertedAt);
+    if (!Number.isFinite(time) || new Date(time).toISOString() !== entry.insertedAt || time > previousTime) return false;
+    previousTime = time;
+    seen.add(entry.id);
+  }
+  return true;
+}
+
+function displayAsset(asset, usage) {
   return { ...asset, aliases: [...asset.aliases], categories: [...asset.categories], tags: [...asset.tags],
+    favorite: usage.favorites.includes(asset.id),
+    lastInsertedAt: usage.recent.find(entry => entry.id === asset.id)?.insertedAt ?? null,
     thumbnailUrl: `/api/assets/${asset.id}/thumbnail`, imageUrl: `/api/assets/${asset.id}/image` };
 }
 
@@ -112,6 +138,7 @@ export class Library {
   constructor(directory) {
     this.directory = path.resolve(directory);
     this.assets = [];
+    this.usage = { version: 1, favorites: [], recent: [] };
     this.pending = Promise.resolve();
   }
 
@@ -125,6 +152,7 @@ export class Library {
       original = await readFile(path.join(library.directory, 'index.json'));
     } catch (error) {
       if (error.code !== 'ENOENT') throw error;
+      await library.loadUsage();
       return library;
     }
     let index;
@@ -138,6 +166,8 @@ export class Library {
       || new Set(index.assets.map(asset => asset.id)).size !== index.assets.length) {
       throw new LibraryError('图库索引结构损坏，无法安全读取', 500);
     }
+    // Refuse damaged personal state before attempting any historical index migration.
+    await library.loadUsage(index.assets);
     if (index.version === 1) {
       const backup = path.join(library.directory, `index-v1-backup-${Date.now()}-${randomUUID()}.json`);
       await writeFile(backup, original, { flag: 'wx' });
@@ -146,6 +176,22 @@ export class Library {
       library.assets = index.assets;
     }
     return library;
+  }
+
+  async loadUsage(assets = this.assets) {
+    let original;
+    try { original = await readFile(path.join(this.directory, 'usage.json'), 'utf8'); } catch (error) {
+      if (error.code === 'ENOENT') return;
+      throw error;
+    }
+    let usage;
+    try { usage = JSON.parse(original); } catch {
+      throw new LibraryError('收藏与最近记录 usage.json 不是有效 JSON，请保留原文件并恢复备份', 500);
+    }
+    if (!validUsage(usage, assets)) {
+      throw new LibraryError('收藏与最近记录 usage.json 版本或结构无效，请保留原文件并恢复备份', 500);
+    }
+    this.usage = usage;
   }
 
   serialize(operation) {
@@ -161,23 +207,35 @@ export class Library {
     this.assets = assets;
   }
 
-  list(query = '', { category = '', tags = [], uncategorized = false } = {}) {
+  async persistUsage(usage) {
+    await replaceFile(path.join(this.directory, 'usage.json'), `${JSON.stringify(usage, null, 2)}\n`);
+    this.usage = usage;
+  }
+
+  list(query = '', { category = '', tags = [], uncategorized = false, view = 'all' } = {}) {
     if (typeof query !== 'string' || query.length > 512 || /[\x00-\x08\x0e-\x1f\x7f]/.test(query)) {
       throw new LibraryError('检索词须为不超过 512 个字符的文字');
     }
     if (typeof category !== 'string') throw new LibraryError('分类筛选须为文字');
     if (typeof uncategorized !== 'boolean') throw new LibraryError('未分类筛选值无效');
+    if (!['all', 'favorites', 'recent'].includes(view)) throw new LibraryError('view 仅接受 all、favorites 或 recent');
     const categoryKey = category ? matchKey(metadataText(category, 'categories', 255)) : '';
     if (categoryKey && uncategorized) throw new LibraryError('分类与未分类条件不能同时使用');
     const tagKeys = metadataList(tags, 'tags').map(matchKey);
     const terms = matchKey(query).trim().split(/\s+/).filter(Boolean);
-    const assets = this.assets.filter(asset => {
+    let viewAssets = this.assets;
+    if (view === 'favorites') viewAssets = this.assets.filter(asset => this.usage.favorites.includes(asset.id));
+    else if (view === 'recent') {
+      const byId = new Map(this.assets.map(asset => [asset.id, asset]));
+      viewAssets = this.usage.recent.map(entry => byId.get(entry.id));
+    }
+    const assets = viewAssets.filter(asset => {
       const names = [asset.name, ...asset.aliases, ...asset.tags].map(matchKey);
       return terms.every(term => names.some(name => name.includes(term)))
         && (!categoryKey || asset.categories.some(item => matchKey(item) === categoryKey))
         && (!uncategorized || asset.categories.length === 0)
         && tagKeys.every(tag => asset.tags.some(item => matchKey(item) === tag));
-    }).map(displayAsset);
+    }).map(asset => displayAsset(asset, this.usage));
     const facets = { categories: [], tags: [], uncategorized: this.assets.filter(asset => asset.categories.length === 0).length };
     for (const field of ['categories', 'tags']) {
       const counts = new Map();
@@ -190,7 +248,7 @@ export class Library {
       }
       facets[field] = [...counts.values()].sort((a, b) => a.name.localeCompare(b.name, 'zh-CN'));
     }
-    return { assets, total: this.assets.length, facets };
+    return { assets, total: this.assets.length, viewTotal: viewAssets.length, facets };
   }
 
   updateAsset(id, input) {
@@ -206,7 +264,34 @@ export class Library {
         ? metadataText(input[field], field, 255) : metadataList(input[field], field);
       const updated = { ...asset, ...changes };
       await this.persist(this.assets.map(item => item.id === id ? updated : item));
-      return displayAsset(updated);
+      return displayAsset(updated, this.usage);
+    });
+  }
+
+  setFavorite(id, input) {
+    return this.serialize(async () => {
+      const asset = this.getAsset(id);
+      if (!hasExactFields(input, ['favorite']) || typeof input.favorite !== 'boolean') {
+        throw new LibraryError('收藏设置仅接受 favorite 布尔值');
+      }
+      if (this.usage.favorites.includes(id) !== input.favorite) {
+        const favorites = input.favorite ? [...this.usage.favorites, id] : this.usage.favorites.filter(item => item !== id);
+        await this.persistUsage({ ...this.usage, favorites });
+      }
+      return displayAsset(asset, this.usage);
+    });
+  }
+
+  recordRecent(id, input) {
+    return this.serialize(async () => {
+      const asset = this.getAsset(id);
+      if (!hasExactFields(input, [])) throw new LibraryError('最近插入记录仅接受空 JSON 对象，时间由服务端生成');
+      // Prepending gives equal-millisecond events stable order, including after a restart.
+      // Clamp a backwards system clock so persisted timestamps remain in descending order.
+      const timestamp = Math.max(Date.now(), Date.parse(this.usage.recent[0]?.insertedAt) || 0);
+      const recent = [{ id, insertedAt: new Date(timestamp).toISOString() }, ...this.usage.recent.filter(entry => entry.id !== id)].slice(0, 100);
+      await this.persistUsage({ ...this.usage, recent });
+      return displayAsset(asset, this.usage);
     });
   }
 

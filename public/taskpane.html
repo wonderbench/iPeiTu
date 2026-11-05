@@ -42,6 +42,11 @@
         </section>
 
         <section class="library" aria-labelledby="libraryTitle">
+          <div id="libraryViews" class="view-switcher" role="group" aria-label="素材视图">
+            <button id="viewAll" type="button" data-view="all" aria-pressed="true">全部</button>
+            <button id="viewFavorites" type="button" data-view="favorites" aria-pressed="false">收藏</button>
+            <button id="viewRecent" type="button" data-view="recent" aria-pressed="false">最近</button>
+          </div>
           <div class="search-block">
             <label for="searchInput">检索名称、别名或工序</label>
             <div class="search-field">
@@ -74,7 +79,10 @@
             <span id="previewPlaceholder">配图</span>
           </button>
           <div class="selection-copy">
-            <p id="selectedName" class="selected-name">尚未选择图片</p>
+            <div class="selection-name-row">
+              <p id="selectedName" class="selected-name">尚未选择图片</p>
+              <button id="favoriteButton" class="text-button favorite-button" type="button" aria-pressed="false" disabled>收藏</button>
+            </div>
             <p id="selectedMeta" class="meta">点击素材查看并选择</p>
           </div>
         </div>

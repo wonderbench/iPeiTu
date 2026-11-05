@@ -393,3 +393,213 @@ test('a real index replacement failure does not apply edited metadata in memory'
   await library.updateAsset(id, { name: '恢复后名称' });
   assert.equal((await Library.open(directory)).getAsset(id).name, '恢复后名称');
 });
+
+test('favorites and successful insert records persist separately without changing image metadata', async t => {
+  const { directory, library } = await setup(t);
+  await library.importFile('原图.png', await image());
+  const id = library.assets[0].id;
+  const originalIndex = await readFile(path.join(directory, 'index.json'));
+  const untouched = library.list().assets[0];
+  assert.equal(untouched.favorite, false);
+  assert.equal(untouched.lastInsertedAt, null);
+  await library.setFavorite(id, { favorite: false });
+  assert.equal((await readdir(directory)).includes('usage.json'), false, '幂等取消不创建状态文件');
+  const favorite = await library.setFavorite(id, { favorite: true });
+  assert.equal(favorite.favorite, true);
+  assert.equal(favorite.lastInsertedAt, null);
+  const usageBytes = await readFile(path.join(directory, 'usage.json'));
+  await library.setFavorite(id, { favorite: true });
+  assert.deepEqual(await readFile(path.join(directory, 'usage.json')), usageBytes);
+  await library.insertion(id);
+  assert.equal(library.list('', { view: 'recent' }).viewTotal, 0, '读取插入路径不能冒充成功插入');
+  const inserted = await library.recordRecent(id, {});
+  assert.equal(inserted.favorite, true);
+  assert.equal(new Date(inserted.lastInsertedAt).toISOString(), inserted.lastInsertedAt);
+  assert.deepEqual(await readFile(path.join(directory, 'index.json')), originalIndex);
+  const reopened = await Library.open(directory);
+  assert.deepEqual(reopened.list().assets[0], inserted);
+  const edited = await reopened.updateAsset(id, { name: '新的显示名' });
+  assert.equal(edited.favorite, true);
+  assert.equal(edited.lastInsertedAt, inserted.lastInsertedAt);
+  const record = JSON.parse(await readFile(path.join(directory, 'index.json'), 'utf8')).assets[0];
+  assert.equal(Object.hasOwn(record, 'favorite'), false);
+  assert.equal(Object.hasOwn(record, 'lastInsertedAt'), false);
+  await reopened.setFavorite(id, { favorite: false });
+  const final = (await Library.open(directory)).list().assets[0];
+  assert.equal(final.favorite, false);
+  assert.equal(final.lastInsertedAt, inserted.lastInsertedAt);
+});
+
+test('views intersect text and metadata filters while totals and facets retain their defined scope', async t => {
+  const { library } = await setup(t);
+  for (const [name, color] of [['沟槽开挖.png', 'red'], ['沟槽支护.png', 'green'], ['其他图.png', 'blue']]) {
+    await library.importFile(name, await image(color));
+  }
+  const [first, second, third] = library.assets;
+  await library.updateAsset(first.id, { categories: ['土建'], tags: ['夜间', '现场'] });
+  await library.updateAsset(second.id, { categories: ['土建'], tags: ['现场'] });
+  await library.setFavorite(second.id, { favorite: true });
+  await library.setFavorite(first.id, { favorite: true });
+  await library.recordRecent(first.id, {});
+  await library.recordRecent(third.id, {});
+  const facets = library.list().facets;
+  const filtered = library.list('沟槽', { view: 'favorites', category: '土建', tags: ['夜间', '现场'] });
+  assert.deepEqual(filtered.assets.map(asset => asset.id), [first.id]);
+  assert.equal(filtered.total, 3);
+  assert.equal(filtered.viewTotal, 2);
+  assert.deepEqual(filtered.facets, facets);
+  assert.deepEqual(library.list('', { view: 'favorites' }).assets.map(asset => asset.id), [first.id, second.id], '收藏沿用图库顺序');
+  assert.deepEqual(library.list('', { view: 'recent' }).assets.map(asset => asset.id), [third.id, first.id]);
+  const uncategorized = library.list('', { view: 'recent', uncategorized: true });
+  assert.deepEqual(uncategorized.assets.map(asset => asset.id), [third.id]);
+  assert.equal(uncategorized.viewTotal, 2);
+  assert.deepEqual(uncategorized.facets, facets);
+  assert.equal(library.list('不匹配', { view: 'favorites' }).viewTotal, 2);
+  assert.equal(library.list().viewTotal, 3);
+  for (const view of ['', 'favorite', null, true, []]) assert.throws(() => library.list('', { view }), error => error.status === 400);
+});
+
+test('recent records stay unique and stable in one millisecond and survive a backwards clock', async t => {
+  const { directory, library } = await setup(t);
+  await library.importFile('甲图.png', await image('red'));
+  await library.importFile('乙图.png', await image('blue'));
+  const [first, second] = library.assets;
+  const timestamp = Date.parse('2026-11-05T02:00:00.123Z');
+  const clock = t.mock.method(Date, 'now', () => timestamp);
+  await library.recordRecent(first.id, {});
+  await library.recordRecent(second.id, {});
+  await library.recordRecent(first.id, {});
+  const reopened = await Library.open(directory);
+  assert.deepEqual(reopened.list('', { view: 'recent' }).assets.map(asset => asset.id), [first.id, second.id]);
+  assert.ok(reopened.list('', { view: 'recent' }).assets.every(asset => asset.lastInsertedAt === new Date(timestamp).toISOString()));
+  clock.mock.mockImplementation(() => timestamp - 1000);
+  await reopened.recordRecent(second.id, {});
+  const again = await Library.open(directory);
+  assert.deepEqual(again.list('', { view: 'recent' }).assets.map(asset => asset.id), [second.id, first.id]);
+  assert.equal(again.list('', { view: 'recent' }).assets[0].lastInsertedAt, new Date(timestamp).toISOString());
+});
+
+test('recent records retain only the latest 100 distinct images without removing their favorites', async t => {
+  const { directory, library } = await setup(t);
+  for (let index = 0; index < 102; index++) {
+    const bytes = await sharp({ create: { width: 2, height: 2, channels: 3, background: { r: index, g: 100, b: 200 } } }).png().toBuffer();
+    await library.importFile(`图片${index}.png`, bytes);
+  }
+  const ids = library.assets.map(asset => asset.id);
+  await library.setFavorite(ids[0], { favorite: true });
+  for (const id of ids) await library.recordRecent(id, {});
+  const reopened = await Library.open(directory);
+  assert.equal(reopened.list('', { view: 'recent' }).viewTotal, 100);
+  assert.deepEqual(reopened.list('', { view: 'recent' }).assets.map(asset => asset.id), ids.slice(2).reverse());
+  assert.equal(reopened.list().assets[0].favorite, true);
+  assert.equal(reopened.list().assets[0].lastInsertedAt, null, '淘汰最近记录不清除收藏');
+  await reopened.recordRecent(ids[50], {});
+  assert.equal(reopened.list('', { view: 'recent' }).viewTotal, 100);
+  assert.equal(reopened.list('', { view: 'recent' }).assets[0].id, ids[50]);
+});
+
+test('invalid usage mutations and unknown images never create personal records', async t => {
+  const { directory, library } = await setup(t);
+  await library.importFile('合法图.png', await image());
+  const id = library.assets[0].id;
+  for (const input of [undefined, null, [], {}, { favorite: 1 }, { favorite: 'true' }, { favorite: true, extra: 1 }]) {
+    await assert.rejects(library.setFavorite(id, input), error => error.status === 400);
+  }
+  for (const input of [undefined, null, [], '', { insertedAt: '2026-11-05T00:00:00.000Z' }, { favorite: true }]) {
+    await assert.rejects(library.recordRecent(id, input), error => error.status === 400);
+  }
+  for (const unknown of ['../../outside', 'f'.repeat(64)]) {
+    await assert.rejects(library.setFavorite(unknown, { favorite: true }), error => error.status === 404);
+    await assert.rejects(library.recordRecent(unknown, {}), error => error.status === 404);
+  }
+  assert.equal((await readdir(directory)).includes('usage.json'), false);
+  assert.equal(library.list('', { view: 'favorites' }).viewTotal, 0);
+  assert.equal(library.list('', { view: 'recent' }).viewTotal, 0);
+});
+
+test('damaged or unknown usage state fails explicitly without resetting records or migrating v1', async t => {
+  const { directory, library } = await setup(t);
+  await library.importFile('合法图.png', await image());
+  await library.importFile('另一张图.png', await image('blue'));
+  const [first, second] = library.assets;
+  const normal = { version: 1, favorites: [], recent: [] };
+  const entry = { id: first.id, insertedAt: '2026-11-05T02:00:00.000Z' };
+  const { categories, tags, ...legacy } = first;
+  const originalIndex = Buffer.from(JSON.stringify({ version: 1, assets: [legacy, { ...second, categories: undefined, tags: undefined }] }));
+  await writeFile(path.join(directory, 'index.json'), originalIndex);
+  const invalid = ['{broken', null, [], { ...normal, version: 2 }, { ...normal, extra: true },
+    { ...normal, favorites: [first.id, first.id] }, { ...normal, favorites: ['f'.repeat(64)] },
+    { ...normal, favorites: {} }, { ...normal, recent: [entry, entry] },
+    { ...normal, recent: [{ ...entry, id: 'f'.repeat(64) }] }, { ...normal, recent: [{ ...entry, insertedAt: 'bad-time' }] },
+    { ...normal, recent: [{ ...entry, insertedAt: '2026-11-05' }] }, { ...normal, recent: [{ ...entry, other: true }] },
+    { ...normal, recent: [entry, { id: second.id, insertedAt: '2026-11-05T02:00:01.000Z' }] },
+    { ...normal, recent: Array(101).fill(entry) }];
+  for (const value of invalid) {
+    const bytes = Buffer.from(typeof value === 'string' ? value : JSON.stringify(value));
+    await writeFile(path.join(directory, 'usage.json'), bytes);
+    await assert.rejects(Library.open(directory), error => error.status === 500 && /usage.json/.test(error.message));
+    assert.deepEqual(await readFile(path.join(directory, 'usage.json')), bytes);
+    assert.deepEqual(await readFile(path.join(directory, 'index.json')), originalIndex);
+    assert.equal((await readdir(directory)).some(name => name.startsWith('index-v1-backup-')), false);
+  }
+  await writeFile(path.join(directory, 'usage.json'), JSON.stringify({ ...normal, favorites: [first.id], recent: [entry] }));
+  const migrated = await Library.open(directory);
+  assert.equal(migrated.list().assets[0].favorite, true);
+  assert.equal(migrated.list().assets[0].lastInsertedAt, entry.insertedAt);
+  const emptyDirectory = path.join(directory, 'empty-library');
+  await Library.open(emptyDirectory);
+  await writeFile(path.join(emptyDirectory, 'usage.json'), '{broken');
+  await assert.rejects(Library.open(emptyDirectory), /usage.json/);
+  assert.equal((await readdir(emptyDirectory)).includes('index.json'), false);
+});
+
+test('failed usage replacement leaves favorites and recency unchanged and later writes recover', async t => {
+  const { directory, library } = await setup(t);
+  await library.importFile('合法图.png', await image());
+  const id = library.assets[0].id;
+  await library.setFavorite(id, { favorite: true });
+  await library.recordRecent(id, {});
+  const before = library.list().assets[0];
+  const statePath = path.join(directory, 'usage.json');
+  const savedPath = path.join(directory, 'saved-usage.json');
+  const original = await readFile(statePath);
+  await rename(statePath, savedPath);
+  await mkdir(statePath);
+  try {
+    await assert.rejects(library.setFavorite(id, { favorite: false }));
+    await assert.rejects(library.recordRecent(id, {}));
+    assert.deepEqual(library.list().assets[0], before);
+    assert.deepEqual(await readFile(savedPath), original);
+  } finally {
+    assert.equal(path.dirname(statePath), directory);
+    await rm(statePath, { recursive: true });
+    await rename(savedPath, statePath);
+  }
+  await library.setFavorite(id, { favorite: false });
+  assert.equal((await Library.open(directory)).list().assets[0].favorite, false);
+});
+
+test('queued imports, metadata edits, favorites and recency updates retain each committed change', async t => {
+  const { directory, library } = await setup(t);
+  const bytes = await image();
+  await library.importFile('甲图.png', bytes);
+  await library.importFile('乙图.png', await image('blue'));
+  const [first, second] = library.assets;
+  await Promise.all([
+    library.setFavorite(first.id, { favorite: true }),
+    library.recordRecent(first.id, {}),
+    library.updateAsset(first.id, { name: '人工新名称', tags: ['新标签'] }),
+    library.importFile('导入别名.png', bytes, '新分类'),
+    library.setFavorite(second.id, { favorite: true }),
+    library.recordRecent(second.id, {}),
+    library.setFavorite(first.id, { favorite: false }),
+  ]);
+  const reopened = await Library.open(directory);
+  assert.deepEqual(reopened.list('', { view: 'favorites' }).assets.map(asset => asset.id), [second.id]);
+  assert.deepEqual(reopened.list('', { view: 'recent' }).assets.map(asset => asset.id), [second.id, first.id]);
+  const asset = reopened.getAsset(first.id);
+  assert.equal(asset.name, '人工新名称');
+  assert.deepEqual(asset.tags, ['新标签']);
+  assert.deepEqual(asset.categories, ['新分类']);
+  assert.deepEqual(asset.aliases, ['导入别名.png']);
+});
