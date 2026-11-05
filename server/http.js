@@ -75,15 +75,22 @@ export async function createServer({ dataDirectory, publicDirectory = defaultPub
       const origin = validateRequest(request, server.address().port);
       const url = new URL(request.url, origin);
       if (request.method === 'GET' && url.pathname === '/api/library') {
-        validateParameters(url.searchParams, ['q', 'category', 'tag', 'uncategorized'], ['tag']);
+        validateParameters(url.searchParams, ['q', 'category', 'tag', 'uncategorized', 'view'], ['tag']);
         const uncategorized = url.searchParams.get('uncategorized');
         if (uncategorized !== null && !['0', '1'].includes(uncategorized)) throw new LibraryError('uncategorized 仅接受 0 或 1');
         json(response, 200, library.list(url.searchParams.get('q') || '', {
           category: url.searchParams.get('category') || '', tags: url.searchParams.getAll('tag'), uncategorized: uncategorized === '1',
+          view: url.searchParams.get('view') ?? 'all',
         }));
       } else if (request.method === 'PATCH' && /^\/api\/assets\/[a-f0-9]{64}$/.test(url.pathname)) {
         validateParameters(url.searchParams, []);
         json(response, 200, { asset: await library.updateAsset(url.pathname.split('/')[3], await jsonBody(request, 128 * 1024)) });
+      } else if (request.method === 'PATCH' && /^\/api\/assets\/[a-f0-9]{64}\/favorite$/.test(url.pathname)) {
+        validateParameters(url.searchParams, []);
+        json(response, 200, { asset: await library.setFavorite(url.pathname.split('/')[3], await jsonBody(request)) });
+      } else if (request.method === 'POST' && /^\/api\/assets\/[a-f0-9]{64}\/recent$/.test(url.pathname)) {
+        validateParameters(url.searchParams, []);
+        json(response, 200, { asset: await library.recordRecent(url.pathname.split('/')[3], await jsonBody(request)) });
       } else if (request.method === 'POST' && url.pathname === '/api/import') {
         validateParameters(url.searchParams, []);
         const input = await jsonBody(request);

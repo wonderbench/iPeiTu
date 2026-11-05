@@ -18,6 +18,7 @@ const ui = Object.fromEntries([
   'categorySelect', 'filterTags', 'applyFilters', 'cancelFilters',
   'editMetadata', 'metadataDialog', 'metadataForm', 'assetName', 'assetAliases',
   'assetCategories', 'assetTags', 'metadataError', 'saveMetadata', 'cancelMetadata',
+  'libraryViews', 'viewAll', 'viewFavorites', 'viewRecent', 'favoriteButton',
 ].map((id) => [id, element(id)]));
 
 let selected = null;
@@ -34,6 +35,25 @@ let filters = { category: '', uncategorized: false, tags: [] };
 let libraryFacets = { categories: [], tags: [], uncategorized: 0 };
 let editingAsset = null;
 let savingMetadata = false;
+let libraryView = 'all';
+let visibleAssets = [];
+const favoriteRequests = new Set();
+
+function refreshFavoriteButton() {
+  const pending = selected && favoriteRequests.has(selected.id);
+  ui.favoriteButton.disabled = !selected || pending;
+  ui.favoriteButton.setAttribute('aria-pressed', String(Boolean(selected?.favorite)));
+  ui.favoriteButton.textContent = pending ? '保存中' : selected?.favorite ? '已收藏' : '收藏';
+}
+
+function setLibraryView(view) {
+  if (view === libraryView) return;
+  libraryView = view;
+  for (const button of ui.libraryViews.children) {
+    button.setAttribute('aria-pressed', String(button.dataset.view === view));
+  }
+  applyFilterChange();
+}
 
 function hasFilters() {
   return Boolean(filters.category || filters.uncategorized || filters.tags.length);
@@ -189,8 +209,10 @@ function selectAsset(asset) {
     captionDraft = defaultCaption(asset);
   }
   selected = asset;
+  const tabId = visibleAssets.some(item => item.id === asset?.id) ? asset.id : visibleAssets[0]?.id;
   for (const card of ui.assetGrid.children) {
     card.setAttribute('aria-pressed', String(card.dataset.id === asset?.id));
+    card.tabIndex = card.dataset.id === tabId ? 0 : -1;
   }
   ui.previewButton.disabled = !asset;
   ui.editMetadata.disabled = !asset;
@@ -202,6 +224,7 @@ function selectAsset(asset) {
   if (asset) ui.selectedThumbnail.src = asset.thumbnailUrl;
   else ui.selectedThumbnail.removeAttribute('src');
   showAction('');
+  refreshFavoriteButton();
   refreshHost();
 }
 
@@ -209,6 +232,7 @@ function showLibraryState(title, description, actionLabel = '', action = null) {
   ui.libraryState.hidden = false;
   ui.stateTitle.textContent = title;
   ui.stateDescription.textContent = description;
+  ui.stateDescription.hidden = !description;
   ui.stateAction.textContent = actionLabel;
   ui.stateAction.hidden = !action;
   stateAction = action;
@@ -221,12 +245,16 @@ function openImport() {
 }
 
 function renderAssets(assets) {
+  const focusedId = document.activeElement?.classList.contains('asset-card') ? document.activeElement.dataset.id : null;
+  visibleAssets = assets;
+  const tabId = assets.some(asset => asset.id === selected?.id) ? selected.id : assets[0]?.id;
   const fragment = document.createDocumentFragment();
   for (const asset of assets) {
     const card = document.createElement('button');
     card.type = 'button';
     card.className = 'asset-card';
     card.dataset.id = asset.id;
+    card.tabIndex = asset.id === tabId ? 0 : -1;
     card.setAttribute('aria-pressed', String(asset.id === selected?.id));
     card.setAttribute('aria-label', `选择 ${asset.name}`);
     const thumbnail = document.createElement('span');
@@ -260,10 +288,14 @@ function renderAssets(assets) {
     details.append(size, label);
     caption.append(name, details);
     card.append(thumbnail, caption);
-    card.addEventListener('click', () => selectAsset(asset));
+    card.addEventListener('click', () => selectAsset(visibleAssets.find(item => item.id === asset.id) || null));
     fragment.append(card);
   }
   ui.assetGrid.replaceChildren(fragment);
+  if (focusedId) {
+    const cards = Array.from(ui.assetGrid.children);
+    (cards.find(card => card.dataset.id === focusedId) || cards[0])?.focus({ preventScroll: true });
+  }
 }
 
 async function loadLibrary() {
@@ -271,7 +303,7 @@ async function loadLibrary() {
   libraryRequest?.abort();
   libraryRequest = new AbortController();
   const query = ui.searchInput.value.trim();
-  const parameters = new URLSearchParams({ q: query });
+  const parameters = new URLSearchParams({ q: query, view: libraryView });
   if (filters.category) parameters.set('category', filters.category);
   if (filters.uncategorized) parameters.set('uncategorized', '1');
   for (const tag of filters.tags) parameters.append('tag', tag);
@@ -283,10 +315,13 @@ async function loadLibrary() {
     libraryFacets = data.facets;
     ui.openFilters.disabled = false;
     renderAssets(data.assets);
-    ui.resultCount.textContent = query || hasFilters() ? `${data.assets.length} / ${data.total} 张` : `${data.total} 张`;
+    ui.resultCount.textContent = query || hasFilters() ? `${data.assets.length} / ${data.viewTotal} 张` : `${data.viewTotal} 张`;
     ui.libraryState.hidden = data.assets.length > 0;
     if (!data.assets.length) {
-      if (query || hasFilters()) showLibraryState('没有找到匹配图片', '关键词、分类和工序标签需要同时匹配，试着减少条件', '清除全部条件', clearAllConditions);
+      if (data.total === 0) showLibraryState('先添加一组标书配图', '', '导入素材', openImport);
+      else if (libraryView === 'favorites' && data.viewTotal === 0) showLibraryState('还没有收藏', '', '浏览全部', () => setLibraryView('all'));
+      else if (libraryView === 'recent' && data.viewTotal === 0) showLibraryState('还没有插入记录', '', '浏览全部', () => setLibraryView('all'));
+      else if (query || hasFilters()) showLibraryState('没有找到匹配图片', '', '清除全部条件', clearAllConditions);
       else showLibraryState('先添加一组标书配图', '导入本地图片后，就可以按名称查找并插入标书', '导入素材', openImport);
     }
     if (selected) selectAsset(data.assets.find((asset) => asset.id === selected.id) || null);
@@ -400,6 +435,58 @@ ui.directoryForm.addEventListener('submit', (event) => {
 });
 ui.searchInput.addEventListener('input', scheduleSearch);
 ui.clearSearch.addEventListener('click', clearSearch);
+for (const button of ui.libraryViews.children) {
+  button.addEventListener('click', () => setLibraryView(button.dataset.view));
+}
+ui.assetGrid.addEventListener('keydown', (event) => {
+  if (event.isComposing || event.altKey || event.ctrlKey || event.metaKey || event.shiftKey
+    || document.querySelector('dialog[open]')) return;
+  const card = event.target.closest('.asset-card');
+  if (!card || card.parentElement !== ui.assetGrid) return;
+  const cards = Array.from(ui.assetGrid.children);
+  const index = cards.indexOf(card);
+  const rowEnd = cards.findIndex(item => item.offsetTop !== cards[0].offsetTop);
+  const columns = rowEnd < 0 ? cards.length : rowEnd;
+  let next;
+  if (event.key === 'ArrowLeft') next = index - 1;
+  else if (event.key === 'ArrowRight') next = index + 1;
+  else if (event.key === 'ArrowUp') next = index - columns;
+  else if (event.key === 'ArrowDown') next = index + columns;
+  else if (event.key === 'Home') next = 0;
+  else if (event.key === 'End') next = cards.length - 1;
+  else return;
+  event.preventDefault();
+  next = Math.max(0, Math.min(cards.length - 1, next));
+  cards[next].focus();
+  selectAsset(visibleAssets[next]);
+});
+ui.favoriteButton.addEventListener('click', async () => {
+  if (!selected || favoriteRequests.has(selected.id)) return;
+  const asset = selected;
+  const favorite = !asset.favorite;
+  favoriteRequests.add(asset.id);
+  refreshFavoriteButton();
+  try {
+    const { asset: updated } = await request(`/api/assets/${encodeURIComponent(asset.id)}/favorite`, {
+      method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ favorite }),
+    });
+    visibleAssets = visibleAssets.map(item => item.id === asset.id ? { ...item, favorite: updated.favorite } : item);
+    if (selected?.id === asset.id) selected = { ...selected, favorite: updated.favorite };
+    if (libraryView === 'favorites' && !updated.favorite) {
+      if (selected?.id === asset.id) selectAsset(null);
+      renderAssets(visibleAssets.filter(item => item.id !== asset.id));
+    }
+    const refreshVersion = requestVersion + 1;
+    const data = await loadLibrary();
+    if (!data && requestVersion === refreshVersion) showAction('收藏已保存，但图库刷新失败', true);
+    else if (data && (!selected || selected.id === asset.id)) showAction(updated.favorite ? '已收藏' : '已取消收藏');
+  } catch (error) {
+    showAction(`「${asset.name}」收藏未保存：${readableError(error)}`, true);
+  } finally {
+    favoriteRequests.delete(asset.id);
+    refreshFavoriteButton();
+  }
+});
 ui.openFilters.addEventListener('click', () => {
   fillFilters();
   ui.filterDialog.showModal();
@@ -560,6 +647,18 @@ ui.insertButton.addEventListener('click', async () => {
     const target = captureInsertionTarget();
     const insertion = await request(`/api/assets/${encodeURIComponent(asset.id)}/insertion`);
     insertPicture(insertion, target, options);
+    showAction(`已插入「${asset.name}」`);
+    try {
+      const { asset: updated } = await request(`/api/assets/${encodeURIComponent(asset.id)}/recent`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}',
+      });
+      visibleAssets = visibleAssets.map(item => item.id === asset.id ? { ...item, lastInsertedAt: updated.lastInsertedAt } : item);
+      if (selected?.id === asset.id) selected = { ...selected, lastInsertedAt: updated.lastInsertedAt };
+    } catch {
+      showAction('图片已插入，但最近记录未保存', true);
+      return;
+    }
+    if (libraryView === 'recent') await loadLibrary();
     showAction(`已插入「${asset.name}」`);
   } catch (error) {
     showAction(error.inserted ? error.message : `插入失败：${readableError(error)}`, true);
