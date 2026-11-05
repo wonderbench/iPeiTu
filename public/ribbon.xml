@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<customUI xmlns="http://schemas.microsoft.com/office/2006/01/customui" onLoad="OnAddinLoad">
+  <ribbon startFromScratch="false">
+    <tabs>
+      <tab id="ipeituTab" label="iPeiTu 配图">
+        <group id="ipeituLibrary" label="标书素材">
+          <button id="ipeituOpenLibrary" label="打开素材库" size="large" onAction="OpenImageLibrary" screentip="检索并插入本地图片" supertip="打开素材库，选择图片后插入 WPS 当前光标位置" />
+        </group>
+      </tab>
+    </tabs>
+  </ribbon>
+</customUI>

@@ -1,0 +1,94 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>iPeiTu · 标书配图库</title>
+    <link rel="stylesheet" href="/styles.css">
+    <script type="module" src="/app.js"></script>
+  </head>
+  <body>
+    <div class="app">
+      <header class="topbar">
+        <div class="brand">
+          <span class="wordmark">iPeiTu</span>
+          <h1>标书配图库</h1>
+        </div>
+        <button id="toggleImport" class="button secondary" type="button" aria-expanded="false" aria-controls="importPanel">导入素材</button>
+      </header>
+
+      <main class="workspace">
+        <section id="importPanel" class="import-panel" aria-labelledby="importTitle" hidden>
+          <div class="section-heading">
+            <h2 id="importTitle">添加本地图片</h2>
+            <span class="meta">仅保存在本机</span>
+          </div>
+          <p class="supporting">选择图片，或填写文件夹路径以导入全部子文件夹</p>
+          <div class="file-import">
+            <button id="chooseFiles" class="button secondary" type="button">选择图片</button>
+            <input id="fileInput" class="visually-hidden" type="file" accept=".png,.jpg,.jpeg,.webp" multiple tabindex="-1" aria-label="选择要导入的图片">
+            <span class="meta">PNG、JPEG、WebP</span>
+          </div>
+          <form id="directoryForm" class="directory-form">
+            <label for="directoryInput">文件夹路径</label>
+            <input id="directoryInput" name="directory" type="text" autocomplete="off" spellcheck="false" placeholder="粘贴本机文件夹路径" required>
+            <button id="importDirectory" class="button secondary" type="submit">导入文件夹</button>
+          </form>
+          <p id="importProgress" class="supporting" role="status" aria-live="polite" hidden></p>
+          <details id="importFailures" class="failures" hidden>
+            <summary id="failureSummary">查看未导入的图片</summary>
+            <ul id="failureList"></ul>
+          </details>
+        </section>
+
+        <section class="library" aria-labelledby="libraryTitle">
+          <div class="search-block">
+            <label for="searchInput">按图片名称检索</label>
+            <div class="search-field">
+              <input id="searchInput" type="search" autocomplete="off" spellcheck="false" placeholder="输入工序或图片名称" aria-controls="assetGrid">
+              <button id="clearSearch" type="button" class="text-button" hidden>清空</button>
+            </div>
+          </div>
+          <div class="section-heading library-heading">
+            <h2 id="libraryTitle">本地素材</h2>
+            <span id="resultCount" class="meta" aria-live="polite">正在读取</span>
+          </div>
+          <div id="libraryState" class="empty-state" role="status">
+            <p id="stateTitle" class="state-title">正在读取图库</p>
+            <p id="stateDescription" class="supporting">请稍候</p>
+            <button id="stateAction" class="button secondary" type="button" hidden>重试</button>
+          </div>
+          <div id="assetGrid" class="asset-grid" aria-label="图片列表" aria-busy="true"></div>
+        </section>
+      </main>
+
+      <footer class="selection-bar" aria-label="当前选择与插入">
+        <div class="selected-asset">
+          <button id="previewButton" class="preview-button" type="button" aria-label="放大预览所选图片" disabled>
+            <img id="selectedThumbnail" alt="" hidden>
+            <span id="previewPlaceholder">配图</span>
+          </button>
+          <div class="selection-copy">
+            <p id="selectedName" class="selected-name">尚未选择图片</p>
+            <p id="selectedMeta" class="meta">点击素材查看并选择</p>
+          </div>
+        </div>
+        <button id="insertButton" class="button primary" type="button" disabled>插入光标处</button>
+        <p id="hostStatus" class="host-status">正在检查 WPS 状态</p>
+        <p id="actionStatus" class="action-status" role="status" aria-live="polite" hidden></p>
+      </footer>
+    </div>
+
+    <dialog id="previewDialog" aria-labelledby="previewTitle">
+      <div class="dialog-heading">
+        <h2 id="previewTitle">图片预览</h2>
+        <button id="closePreview" class="button secondary" type="button">关闭</button>
+      </div>
+      <div class="preview-stage">
+        <img id="previewImage" alt="">
+        <p id="previewError" class="supporting" hidden>图片无法读取，请关闭后重新选择</p>
+      </div>
+      <p id="previewMeta" class="meta"></p>
+    </dialog>
+  </body>
+</html>

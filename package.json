@@ -9,7 +9,9 @@
   "scripts": {
     "start": "node server/index.js",
     "test": "node --test test/*.test.js",
-    "check": "node --check server/index.js && node --check server/library.js && node --check server/http.js"
+    "check": "node --check server/index.js && node --check server/library.js && node --check server/http.js && node --check public/main.js && node --check public/app.js && node --check public/wps-bridge.js",
+    "wps:install": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/install-wps.ps1",
+    "wps:uninstall": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/uninstall-wps.ps1"
   },
   "dependencies": { "sharp": "0.35.5" }
 }
