@@ -74,6 +74,7 @@
           </div>
         </div>
         <button id="insertButton" class="button primary" type="button" disabled>插入光标处</button>
+        <button id="layoutSettingsButton" class="layout-summary" type="button" aria-haspopup="dialog" aria-controls="layoutDialog">排版设置 · 自适应 · 原段落</button>
         <p id="hostStatus" class="host-status">正在检查 WPS 状态</p>
         <p id="actionStatus" class="action-status" role="status" aria-live="polite" hidden></p>
       </footer>
@@ -89,6 +90,59 @@
         <p id="previewError" class="supporting" hidden>图片无法读取，请关闭后重新选择</p>
       </div>
       <p id="previewMeta" class="meta"></p>
+    </dialog>
+
+    <dialog id="layoutDialog" class="layout-dialog" aria-labelledby="layoutTitle">
+      <form id="layoutForm" novalidate>
+        <div class="dialog-heading">
+          <h2 id="layoutTitle">插图排版</h2>
+          <button id="resetLayout" class="text-button" type="button">恢复默认</button>
+        </div>
+        <p class="supporting">设置用于接下来插入的图片，不改变文档中已有图片</p>
+        <div class="layout-fields">
+          <div class="field-group">
+            <label for="widthMode">图片宽度</label>
+            <select id="widthMode" name="widthMode">
+              <option value="auto">自适应，只缩小不放大</option>
+              <option value="fixed">指定宽度</option>
+            </select>
+          </div>
+          <div class="size-fields">
+            <div class="field-group">
+              <label for="widthCm">指定宽度（厘米）</label>
+              <input id="widthCm" name="widthCm" type="number" min="0.5" max="50" step="0.1" value="12" inputmode="decimal" disabled>
+            </div>
+            <div class="field-group">
+              <label for="maxHeightCm">最大高度（厘米）</label>
+              <input id="maxHeightCm" name="maxHeightCm" type="number" min="0.5" max="50" step="0.1" inputmode="decimal" placeholder="不限制">
+            </div>
+          </div>
+          <p class="supporting">始终保持图片比例。指定宽度可放大小图；超出页面、单元格或最大高度时会缩小</p>
+          <div class="field-group">
+            <label for="layoutMode">图片段落</label>
+            <select id="layoutMode" name="layout">
+              <option value="inline">原段落，保留原有对齐</option>
+              <option value="centered">独立段落居中</option>
+            </select>
+          </div>
+          <div class="caption-settings">
+            <label class="checkbox-label" for="includeCaption">
+              <input id="includeCaption" name="includeCaption" type="checkbox">
+              <span>添加图题</span>
+            </label>
+            <div id="captionFields" class="field-group" hidden>
+              <label for="captionText">图题文字</label>
+              <input id="captionText" name="caption" type="text" maxlength="200" autocomplete="off" placeholder="选择图片后填入图片名" aria-describedby="captionNote" disabled>
+              <p id="captionNote" class="supporting">图片与图题各占一段，不自动编号。仅新增段落采用上述对齐方式；选择另一张图后重新填入图片名</p>
+            </div>
+          </div>
+        </div>
+        <p id="layoutError" class="form-error" role="alert" hidden></p>
+        <div class="dialog-actions">
+          <button id="cancelLayout" class="button secondary" type="button">取消</button>
+          <button id="saveLayout" class="button primary" type="submit">保存设置</button>
+        </div>
+      </form>
     </dialog>
   </body>
 </html>

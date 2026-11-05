@@ -1,4 +1,6 @@
 import { captureInsertionTarget, getHostStatus, insertPicture } from './wps-bridge.js';
+import { normalizeLayoutOptions } from './layout-options.js';
+import { loadLayoutPreferences, saveLayoutPreferences } from './layout-preferences.js';
 
 const element = (id) => document.getElementById(id);
 const ui = Object.fromEntries([
@@ -9,6 +11,9 @@ const ui = Object.fromEntries([
   'previewButton', 'selectedThumbnail', 'previewPlaceholder', 'selectedName',
   'selectedMeta', 'insertButton', 'hostStatus', 'actionStatus', 'previewDialog',
   'previewTitle', 'closePreview', 'previewImage', 'previewError', 'previewMeta',
+  'layoutSettingsButton', 'layoutDialog', 'layoutForm', 'widthMode', 'widthCm',
+  'maxHeightCm', 'layoutMode', 'includeCaption', 'captionFields', 'captionText',
+  'layoutError', 'saveLayout', 'cancelLayout', 'resetLayout',
 ].map((id) => [id, element(id)]));
 
 let selected = null;
@@ -19,6 +24,48 @@ let requestVersion = 0;
 let searchTimer;
 let libraryRequest;
 let stateAction = null;
+let layoutPreferences = { ...normalizeLayoutOptions(), includeCaption: false };
+let captionDraft = '';
+
+function defaultCaption(asset) {
+  return asset ? asset.name.replace(/\.(?:png|jpe?g|webp)$/i, '').slice(0, 200) : '';
+}
+
+function updateLayoutSummary() {
+  const summary = [layoutPreferences.widthMode === 'auto' ? '自适应' : `宽 ${layoutPreferences.widthCm} 厘米`];
+  if (layoutPreferences.maxHeightCm !== null) summary.push(`高不超 ${layoutPreferences.maxHeightCm} 厘米`);
+  summary.push(layoutPreferences.layout === 'centered' ? '独立居中'
+    : layoutPreferences.includeCaption ? '独立段落，沿用对齐' : '原段落');
+  if (layoutPreferences.includeCaption) summary.push('带图题');
+  ui.layoutSettingsButton.textContent = `排版设置 · ${summary.join(' · ')}`;
+}
+
+function syncLayoutFields() {
+  ui.widthCm.disabled = ui.widthMode.value !== 'fixed';
+  if (ui.widthCm.disabled && (!Number.isFinite(ui.widthCm.valueAsNumber)
+    || ui.widthCm.valueAsNumber < 0.5 || ui.widthCm.valueAsNumber > 50)) {
+    ui.widthCm.value = String(layoutPreferences.widthCm);
+  }
+  ui.captionFields.hidden = !ui.includeCaption.checked;
+  ui.captionText.disabled = !ui.includeCaption.checked || !selected;
+}
+
+function fillLayoutForm(preferences, caption) {
+  ui.widthMode.value = preferences.widthMode;
+  ui.widthCm.value = String(preferences.widthCm);
+  ui.maxHeightCm.value = preferences.maxHeightCm === null ? '' : String(preferences.maxHeightCm);
+  ui.layoutMode.value = preferences.layout;
+  ui.includeCaption.checked = preferences.includeCaption;
+  ui.captionText.value = caption;
+  ui.layoutError.hidden = true;
+  syncLayoutFields();
+}
+
+function insertionOptions() {
+  const caption = layoutPreferences.includeCaption ? captionDraft : '';
+  if (layoutPreferences.includeCaption && !caption.trim()) throw new Error('请填写图题，或在排版设置中关闭“添加图题”');
+  return normalizeLayoutOptions({ ...layoutPreferences, caption });
+}
 
 async function request(url, options = {}) {
   const response = await fetch(url, options);
@@ -59,6 +106,7 @@ function refreshHost() {
 }
 
 function selectAsset(asset) {
+  if (asset?.id !== selected?.id) captionDraft = defaultCaption(asset);
   selected = asset;
   for (const card of ui.assetGrid.children) {
     card.setAttribute('aria-pressed', String(card.dataset.id === asset?.id));
@@ -275,6 +323,51 @@ ui.previewImage.addEventListener('error', () => {
   ui.previewError.hidden = false;
 });
 ui.closePreview.addEventListener('click', () => ui.previewDialog.close());
+ui.layoutSettingsButton.addEventListener('click', () => {
+  fillLayoutForm(layoutPreferences, captionDraft);
+  ui.layoutDialog.showModal();
+  ui.widthMode.focus();
+});
+ui.widthMode.addEventListener('change', syncLayoutFields);
+ui.includeCaption.addEventListener('change', syncLayoutFields);
+ui.cancelLayout.addEventListener('click', () => ui.layoutDialog.close());
+ui.resetLayout.addEventListener('click', () => {
+  fillLayoutForm({ ...normalizeLayoutOptions(), includeCaption: false }, defaultCaption(selected));
+});
+ui.layoutForm.addEventListener('submit', (event) => {
+  event.preventDefault();
+  ui.layoutError.hidden = true;
+  let options;
+  const includeCaption = ui.includeCaption.checked;
+  const caption = includeCaption && selected ? ui.captionText.value.trim() : '';
+  try {
+    if (includeCaption && selected && !caption) throw new Error('请填写图题，或关闭“添加图题”');
+    if (ui.maxHeightCm.validity.badInput) throw new Error('最大高度须填写 0.5–50 之间的数字，或留空');
+    options = normalizeLayoutOptions({
+      widthMode: ui.widthMode.value,
+      widthCm: ui.widthCm.valueAsNumber,
+      maxHeightCm: ui.maxHeightCm.value.trim() === '' ? null : ui.maxHeightCm.valueAsNumber,
+      layout: ui.layoutMode.value,
+      caption,
+    });
+  } catch (error) {
+    ui.layoutError.textContent = error.message;
+    ui.layoutError.hidden = false;
+    return;
+  }
+  const { caption: appliedCaption, ...preferences } = options;
+  layoutPreferences = { ...preferences, includeCaption };
+  if (selected) captionDraft = appliedCaption || ui.captionText.value.trim() || defaultCaption(selected);
+  let saved = true;
+  try {
+    saveLayoutPreferences(layoutPreferences);
+  } catch {
+    saved = false;
+  }
+  updateLayoutSummary();
+  ui.layoutDialog.close();
+  showAction(saved ? '排版设置已保存，用于接下来插入的图片' : '排版设置已应用于本次使用，但未能保存在本机', !saved);
+});
 ui.insertButton.addEventListener('click', async () => {
   if (!selected || inserting) return;
   refreshHost();
@@ -285,9 +378,10 @@ ui.insertButton.addEventListener('click', async () => {
   ui.insertButton.textContent = '正在插入';
   showAction('');
   try {
+    const options = insertionOptions();
     const target = captureInsertionTarget();
     const insertion = await request(`/api/assets/${encodeURIComponent(asset.id)}/insertion`);
-    insertPicture(insertion, target);
+    insertPicture(insertion, target, options);
     showAction(`已插入「${asset.name}」`);
   } catch (error) {
     showAction(error.inserted ? error.message : `插入失败：${readableError(error)}`, true);
@@ -303,5 +397,11 @@ document.addEventListener('visibilitychange', () => {
   if (!document.hidden) refreshHost();
 });
 
+try {
+  layoutPreferences = loadLayoutPreferences();
+} catch {
+  showAction('无法读取上次的排版设置，本次使用默认设置', true);
+}
+updateLayoutSummary();
 refreshHost();
 loadLibrary();
