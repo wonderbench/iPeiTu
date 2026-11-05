@@ -1,2 +1,2 @@
 # iPeiTu
-windows标书配图工具
+wps标书配图工具
