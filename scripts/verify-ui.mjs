@@ -35,6 +35,7 @@ try {
   await visibleText('#resultCount', '1 / 1 张');
   await page.locator('.asset-card').click();
   assert.equal(await page.locator('#insertButton').isDisabled(), true, '浏览器模式禁止插入');
+  assert.equal(await page.locator('#replaceButton').isVisible(), false, '浏览器隐藏文档替换操作');
   await page.locator('#previewButton').click();
   assert.equal(await page.locator('#previewDialog').isVisible(), true);
   await page.waitForFunction(() => document.querySelector('#previewImage').naturalWidth === 1200);
@@ -199,7 +200,7 @@ try {
       get ActiveDocument() { return { Name: '验收文档.docx', FullName: 'C:\\test\\验收文档.docx', ReadOnly: window.mockReadOnly, ProtectionType: -1 }; },
       Selection: { get Range() {
         const range = {
-          Start: 5, End: 12, PageSetup: { PageWidth: 600, LeftMargin: 60, RightMargin: 60 },
+          Start: 5, End: 12, StoryType: 1, PageSetup: { PageWidth: 600, LeftMargin: 60, RightMargin: 60 },
           Information: () => false,
           Collapse: direction => { assertCollapse(direction); range.Start = range.End; },
           InlineShapes: { AddPicture: (filename, link, save, target) => {
@@ -214,7 +215,7 @@ try {
             };
           } },
         };
-        return { Start: range.Start, End: range.End, Duplicate: range };
+        return { Start: range.Start, End: range.End, StoryType: range.StoryType, Duplicate: range };
       } },
     };
     function assertCollapse(direction) { if (direction !== 0) throw new Error('必须折叠到末尾'); }
@@ -280,6 +281,100 @@ try {
   await page.mouse.move(-1, -1);
   await page.mouse.move(50, 100);
   await page.waitForFunction(() => !document.querySelector('#insertButton').disabled);
+
+  await page.evaluate(() => {
+    window.prepareReplacement = () => {
+      const fixture = window.replacementFixture = { added: 0, oldDeleted: false, moved: false, selected: true, width: null, font: null };
+      const font = { Name: '宋体', Position: 2 };
+      const original = {
+        Type: 3, Width: 180, Height: 90,
+        get Range() {
+          if (fixture.oldDeleted) throw new Error('原图片已删除');
+          return range(20 + fixture.added, 21 + fixture.added, true);
+        },
+        Delete() { fixture.oldDeleted = true; },
+      };
+      function range(start, end, old = false) {
+        const value = {
+          Start: start, End: end, StoryType: 1,
+          get Font() { return { Duplicate: { ...font } }; },
+          set Font(value) { fixture.font = value; },
+          get Duplicate() { return range(this.Start, this.End, old); },
+          Collapse(direction) {
+            if (direction === 1) this.End = this.Start;
+            else if (direction === 0) this.Start = this.End;
+            else throw new Error('未知折叠方向');
+          },
+          Select() { fixture.selected = false; },
+          InlineShapes: {
+            Count: 1, Item: () => original,
+            AddPicture(filename, link, save, target) {
+              if (target.Start !== target.End) throw new Error('替换必须先折叠范围');
+              fixture.added++;
+              fixture.filename = filename; fixture.link = link; fixture.save = save;
+              let width = 600, height = 400;
+              return {
+                get Width() { return width; },
+                set Width(value) { if (this.LockAspectRatio === -1) height *= value / width; width = value; fixture.width = width; fixture.height = height; },
+                get Height() { return height; },
+                get Range() { return range(20, 21); },
+                Delete() { fixture.added--; },
+              };
+            },
+          },
+        };
+        return value;
+      }
+      window.Application.Selection = {
+        Type: 7,
+        get Range() { return range(fixture.moved ? 21 : 20, fixture.selected ? fixture.moved ? 22 : 21 : 20); },
+      };
+      window.dispatchEvent(new Event('focus'));
+    };
+    window.prepareReplacement();
+  });
+  assert.equal(await page.locator('#replaceButton').isEnabled(), true);
+  await page.locator('#replaceButton').click();
+  await visibleText('#actionStatus', '已替换');
+  await page.waitForFunction(() => !document.querySelector('#insertButton').disabled);
+  let replacement = await page.evaluate(() => window.replacementFixture);
+  assert.equal(replacement.added, 1);
+  assert.equal(replacement.oldDeleted, true);
+  assert.equal(replacement.width, 180, '替换保留原宽度，不用当前8厘米插图偏好');
+  assert.equal(replacement.height, 120);
+  assert.deepEqual(replacement.font, { Name: '宋体', Position: 2 });
+  assert.equal(replacement.link, false);
+  assert.equal(replacement.save, true);
+
+  await page.evaluate(() => window.prepareReplacement());
+  await page.route('**/api/assets/*/recent', route => route.fulfill({ status: 500, contentType: 'application/json', body: '{"error":"验收用记录失败"}' }));
+  await page.locator('#replaceButton').click();
+  await visibleText('#actionStatus', '图片已替换，但最近记录未保存');
+  replacement = await page.evaluate(() => window.replacementFixture);
+  assert.equal(replacement.added, 1);
+  assert.equal(replacement.oldDeleted, true);
+  await page.unroute('**/api/assets/*/recent');
+
+  await page.evaluate(() => window.prepareReplacement());
+  let releaseReplacement;
+  const pendingReplacement = new Promise(resolve => { releaseReplacement = resolve; });
+  const delayedInsertion = async route => {
+    await pendingReplacement;
+    const response = await route.fetch();
+    const data = await response.json();
+    await route.fulfill({ response, json: { ...data, path: `C:\\test\\${data.name}` } });
+  };
+  await page.route('**/api/assets/*/insertion', delayedInsertion);
+  await page.locator('#replaceButton').click();
+  assert.equal(await page.locator('#insertButton').isDisabled(), true, '替换等待时不能同时插入');
+  assert.equal(await page.locator('#replaceButton').isDisabled(), true);
+  await page.evaluate(() => { window.replacementFixture.moved = true; });
+  releaseReplacement();
+  await visibleText('#actionStatus', '替换失败');
+  replacement = await page.evaluate(() => window.replacementFixture);
+  assert.equal(replacement.added, 0, '等待期间目标变化必须在写入前中止');
+  assert.equal(replacement.oldDeleted, false);
+  await page.unroute('**/api/assets/*/insertion', delayedInsertion);
   await page.route('**/api/library?*', route => route.fulfill({ status: 500, contentType: 'application/json', body: JSON.stringify({ error: '验收用读取失败' }) }));
   await page.locator('#searchInput').fill('失败');
   await visibleText('#stateTitle', '图库暂时无法读取');
@@ -299,7 +394,7 @@ try {
   await visibleText('#actionStatus', '未能保存在本机');
   await visibleText('#layoutSettingsButton', '宽 9 厘米');
   assert.deepEqual(failures, []);
-  console.log('UI 验收通过：导入/检索/预览、素材信息与组合筛选、收藏重载与写失败恢复、最近成功记录及失败分离、键盘选图不误插入、排版偏好恢复、320/420/1080 布局、模拟 WPS 固定宽度及保留选区、连续插图、只读与读取失败恢复');
+  console.log('UI 验收通过：导入/检索/预览、素材信息与组合筛选、收藏重载与写失败恢复、最近成功记录及失败分离、键盘选图不误插入、排版偏好恢复、320/420/1080 布局、模拟 WPS 插图与替换、目标变更拒绝写入、只读与读取失败恢复');
   console.log('WPS 行为使用模拟宿主；真实 WPS 验收另行记录。');
 } finally {
   await browser?.close();

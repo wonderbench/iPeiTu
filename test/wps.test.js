@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import vm from 'node:vm';
-import { captureInsertionTarget, getHostStatus, insertPicture } from '../public/wps-bridge.js';
+import { captureInsertionTarget, getHostStatus, insertPicture, captureReplacementTarget, getReplacementStatus, replacePicture } from '../public/wps-bridge.js';
 import { normalizeLayoutOptions } from '../public/layout-options.js';
 
 const asset = { path: 'C:\\素材库\\沟槽 开挖.png', name: '沟槽 开挖.png', width: 1600, height: 900 };
@@ -18,6 +18,38 @@ function createHost(options = {}) {
   state.paragraphs = state.text.split('\r').map(() => ({ style: options.style ?? '标书正文', format: { ...originalFormat }, numbered: Boolean(options.numbered) }));
   const page = { PageWidth: 600, LeftMargin: 60, RightMargin: 60, ...options.page };
   const cell = { Width: 220, LeftPadding: 10, RightPadding: 10, ...options.cell };
+  function makePicture(position, initialWidth, initialHeight, original = false, type = 3) {
+    let width = initialWidth;
+    let height = initialHeight;
+    return {
+      position, original, deleted: false, Type: type,
+      font: { Name: '仿宋', Size: 14, Bold: -1, Position: 3, ...options.font },
+      LockAspectRatio: 0,
+      get Width() { return width; },
+      set Width(value) {
+        if (options.resizeError) throw new Error('resize unavailable');
+        if (this.LockAspectRatio === -1 && !options.ignoreAspectRatio) height *= value / width;
+        width = value;
+      },
+      get Height() { return height; },
+      get Range() {
+        if (this.deleted) throw new Error('original object deleted');
+        const at = this.original && options.staleOriginalRange ? options.originalPictures[0].position : this.position;
+        return rangeAt(at, at + 1);
+      },
+      Delete() {
+        state.calls.push({ delete: this.original ? 'original' : 'new', position: this.position });
+        const failure = this.original ? options.oldDeleteError : options.newDeleteError;
+        if (failure === 'before') throw new Error('delete unavailable');
+        const at = this.position;
+        state.text = state.text.slice(0, at) + state.text.slice(at + 1);
+        state.pictures.splice(state.pictures.indexOf(this), 1);
+        for (const item of state.pictures) if (item.position > at) item.position--;
+        this.deleted = true;
+        if (failure === 'after') throw new Error('delete result unavailable');
+      },
+    };
+  }
   function insertText(at, text) {
     const paragraphIndex = state.text.slice(0, at).split('\r').length - 1;
     const inherited = state.paragraphs[paragraphIndex];
@@ -53,6 +85,17 @@ function createHost(options = {}) {
       get StoryType() { return state.story; },
       get Duplicate() { return rangeAt(this.start, this.end); },
       get Paragraphs() { return { Item: () => paragraphAt(this.start) }; },
+      get Font() {
+        const picture = state.pictures.find(item => item.position === this.start);
+        assert.ok(picture, '字符格式仅从图片字符读取');
+        return { Duplicate: { ...picture.font } };
+      },
+      set Font(value) {
+        if (options.fontError) throw new Error('font unavailable');
+        const picture = state.pictures.find(item => item.position === this.start);
+        assert.ok(picture, '字体只应用到新图片字符');
+        picture.font = { ...value };
+      },
       get ListFormat() {
         return { RemoveNumbers: () => { state.paragraphs[state.text.slice(0, this.start).split('\r').length - 1].numbered = false; } };
       },
@@ -78,36 +121,29 @@ function createHost(options = {}) {
         state.start = this.start;
         state.end = this.end;
       },
-      InlineShapes: {
-        AddPicture(path, link, save, insertion) {
-          state.calls.push({ path, link, save, start: insertion.start, end: insertion.end });
-          if (options.insertError) throw new Error('file missing');
-          assert.equal(insertion.start, insertion.end, '图片不得覆盖未折叠选区');
-          insertText(insertion.start, '\uFFFC');
-          let width = options.pictureWidth ?? 800;
-          let height = options.pictureHeight ?? 450;
-          const picture = {
-            position: insertion.start,
-            LockAspectRatio: 0,
-            get Width() { return width; },
-            set Width(value) {
-              if (options.resizeError) throw new Error('resize unavailable');
-              if (this.LockAspectRatio === -1) height *= value / width;
-              width = value;
-            },
-            get Height() { return height; },
-            get Range() { return rangeAt(this.position, this.position + 1); },
-          };
-          state.pictures.push(picture);
-          return picture;
-        },
+      get InlineShapes() {
+        const range = this;
+        return {
+          get Count() { return state.pictures.filter(item => item.position >= range.start && item.position < range.end).length; },
+          Item(index) { return state.pictures.filter(item => item.position >= range.start && item.position < range.end)[index - 1]; },
+          AddPicture(path, link, save, insertion) {
+            state.calls.push({ path, link, save, start: insertion.start, end: insertion.end });
+            if (options.insertError) throw new Error('file missing');
+            assert.equal(insertion.start, insertion.end, '图片不得覆盖未折叠选区');
+            insertText(insertion.start, '\uFFFC');
+            const picture = makePicture(insertion.start, options.pictureWidth ?? 800, options.pictureHeight ?? 450);
+            state.pictures.push(picture);
+            if (options.insertErrorAfterAdd) throw new Error('add result unavailable');
+            return picture;
+          },
+        };
       },
     };
   }
   const app = {
     Documents: { Count: options.noDocument ? 0 : 1 },
     ActiveDocument: { Name: '标书.docx', FullName: 'C:\\文档\\标书.docx', ReadOnly: false, ProtectionType: -1, ...options.document },
-    Selection: { get Range() { return rangeAt(state.start, state.end); } },
+    Selection: { Type: options.selectionType ?? 7, get Range() { return rangeAt(state.start, state.end); } },
     CentimetersToPoints(value) { return value * 72 / 2.54; },
     UndoRecord: {
       StartCustomRecord() { state.undoStarted++; },
@@ -117,6 +153,9 @@ function createHost(options = {}) {
       },
     },
   };
+  for (const original of options.originalPictures || []) {
+    state.pictures.push(makePicture(original.position, original.width ?? 240, original.height ?? 120, true, original.type ?? 3));
+  }
   globalThis.Application = app;
   return { app, state };
 }
@@ -219,9 +258,32 @@ test('同文档同坐标从正文切换到页眉时中止插入', () => {
   const { state } = createHost();
   const target = captureInsertionTarget();
   state.story = 7;
-  assert.throws(() => insertPicture(asset, target), /当前文档或光标位置已改变/);
+  assert.throws(() => insertPicture(asset, target), /仅支持在正文和正文表格中插入图片/);
   assert.equal(state.calls.length, 0);
   assert.equal(state.undoStarted, 0);
+});
+
+test('同类不同页眉、其他非正文及未知 story 均在插入状态、捕获和写入前拒绝', () => {
+  const hosts = [createHost(), createHost()];
+  for (const host of hosts) {
+    globalThis.Application = host.app;
+    host.state.story = 7;
+    assert.equal(getHostStatus().available, false);
+    assert.match(getHostStatus().message, /仅支持在正文和正文表格中插入图片/);
+    assert.throws(() => captureInsertionTarget(), /仅支持在正文/);
+    assert.throws(() => insertPicture(asset), /仅支持在正文/);
+    assert.equal(host.state.calls.length, 0);
+    assert.equal(host.state.undoStarted, 0);
+  }
+  for (const story of [undefined, null, 0, 5, 6, 8, 9, 10, 11]) {
+    const { state } = createHost();
+    state.story = story;
+    assert.equal(getHostStatus().available, false);
+    assert.throws(() => captureInsertionTarget(), /仅支持在正文/);
+    assert.throws(() => insertPicture(asset), /仅支持在正文/);
+    assert.equal(state.calls.length, 0);
+    assert.equal(state.undoStarted, 0);
+  }
 });
 
 test('目标未变时允许插入，下一次点击重新捕获图片后的光标', () => {
@@ -379,6 +441,234 @@ test('撤销记录收尾失败仍准确报告已插入状态', () => {
     return true;
   });
   assert.equal(state.pictures.length, 1);
+});
+
+function replacementHost(options = {}) {
+  return createHost({ text: '前文\uFFFC后文\r', start: 2, end: 3, originalPictures: [{ position: 2 }], ...options });
+}
+
+test('替换仅接受完整的一张内嵌图片，拒绝浏览器、浮动、多选、文字及 OLE', () => {
+  assert.equal(getReplacementStatus().available, false);
+  for (const options of [
+    { noDocument: true }, { document: { ReadOnly: true } }, { document: { ProtectionType: 3 } },
+    { selectionType: 8 }, { selectionType: 5 }, { start: 2, end: 2 }, { start: 1, end: 3 }, { start: 2, end: 4 },
+    { originalPictures: [{ position: 2, type: 1 }] },
+    { text: '前文\uFFFC\uFFFC后文\r', end: 4, originalPictures: [{ position: 2 }, { position: 3 }] },
+  ]) {
+    const { state } = replacementHost(options);
+    assert.equal(getReplacementStatus().available, false);
+    assert.throws(() => captureReplacementTarget(), /无法记录替换目标/);
+    assert.equal(state.calls.length, 0);
+    assert.equal(state.undoStarted, 0);
+  }
+  for (const type of [3, 4]) {
+    replacementHost({ originalPictures: [{ position: 2, type }] });
+    assert.equal(getReplacementStatus().available, true);
+  }
+});
+
+test('相同类型和坐标的不同页眉 story 均拒绝捕获，页脚和文本框也不得替换', () => {
+  // 两个宿主具有同一文档名和图片坐标，分别代表两节独立页眉；StoryType 本身不能区分它们。
+  const firstHeader = replacementHost();
+  firstHeader.state.story = 7;
+  assert.equal(getReplacementStatus().available, false);
+  assert.throws(() => captureReplacementTarget(), /仅支持替换正文.*页眉、页脚及文本框暂不支持/);
+  const secondHeader = replacementHost();
+  secondHeader.state.story = 7;
+  assert.equal(getReplacementStatus().available, false);
+  assert.throws(() => captureReplacementTarget(), /仅支持替换正文/);
+  assert.equal(firstHeader.state.calls.length, 0);
+  assert.equal(secondHeader.state.calls.length, 0);
+  for (const story of [undefined, null, 0, 5, 6, 8, 9, 10, 11]) {
+    const { state } = replacementHost();
+    const bodyTarget = captureReplacementTarget();
+    state.story = story;
+    assert.equal(getReplacementStatus().available, false);
+    assert.throws(() => replacePicture(asset, bodyTarget), error => !error.inserted && !error.replaced && /仅支持替换正文/.test(error.message));
+    assert.equal(state.calls.length, 0);
+    assert.equal(state.undoStarted, 0);
+  }
+});
+
+test('替换保留原实际宽度、字符和段落格式，新图按自身比例缩放并只删除移动后的原图', () => {
+  const { state } = replacementHost({ pictureWidth: 120, pictureHeight: 240 });
+  const original = state.pictures[0];
+  original.font = { Name: '楷体', Size: 18, Bold: -1, Position: 7 };
+  const paragraphs = structuredClone(state.paragraphs);
+  const target = captureReplacementTarget();
+  assert.deepEqual(target, { document: 'C:\\文档\\标书.docx', start: 2, end: 3, story: 1, type: 3, width: 240, height: 120 });
+  assert.deepEqual(replacePicture(asset, target), { name: asset.name, width: 240, height: 480, inserted: true, replaced: true });
+  assert.equal(state.text, '前文\uFFFC后文\r');
+  assert.deepEqual(state.paragraphs, paragraphs);
+  assert.deepEqual(state.pictures[0].font, original.font);
+  assert.equal(original.deleted, true);
+  assert.equal(state.pictures.length, 1);
+  assert.equal(state.pictures[0].original, false);
+  assert.equal(state.pictures[0].LockAspectRatio, -1);
+  assert.deepEqual(state.calls, [
+    { path: asset.path, link: false, save: true, start: 2, end: 2 },
+    { delete: 'original', position: 3 },
+  ]);
+  assert.equal(state.start, 3);
+  assert.equal(state.end, 3);
+  assert.equal(state.undoStarted, 1);
+  assert.equal(state.undoEnded, 1);
+});
+
+test('替换链接图为内嵌副本，表内保持原宽度而不套用插图的页面或单元格限制', () => {
+  const { state } = replacementHost({ text: '前文\uFFFC后文\r\u0007', inTable: true,
+    originalPictures: [{ position: 2, type: 4, width: 530, height: 300 }], pictureWidth: 1000, pictureHeight: 500 });
+  const result = replacePicture(asset, captureReplacementTarget());
+  assert.equal(result.width, 530);
+  assert.equal(result.height, 265);
+  assert.equal(state.pictures[0].Type, 3);
+  assert.equal(state.text, '前文\uFFFC后文\r\u0007');
+});
+
+test('替换目标必须来自本次捕获，失效目标或非法路径在任何写入前中止', () => {
+  const { state } = replacementHost();
+  const target = captureReplacementTarget();
+  for (const invalid of [undefined, null, {}, { ...target }]) {
+    assert.throws(() => replacePicture(asset, invalid), error => !error.inserted && !error.replaced && /目标已失效/.test(error.message));
+  }
+  assert.throws(() => replacePicture({ ...asset, path: 'https://example.com/a.png' }, target), /路径无效/);
+  assert.equal(state.calls.length, 0);
+  assert.equal(state.undoStarted, 0);
+});
+
+test('替换路径请求期间文档、story、选区、原图类型或尺寸改变均拒绝写入', () => {
+  for (const change of [
+    ({ app }) => { app.ActiveDocument.FullName = 'D:\\另一个项目\\标书.docx'; },
+    ({ state }) => { state.story = 7; },
+    ({ state }) => { state.start = state.end = 1; },
+    ({ state }) => { state.pictures[0].Width = 200; },
+    ({ state }) => { state.pictures[0].Type = 4; },
+    ({ app }) => { app.ActiveDocument.ReadOnly = true; },
+  ]) {
+    const host = replacementHost();
+    const target = captureReplacementTarget();
+    change(host);
+    assert.throws(() => replacePicture(asset, target), error => !error.inserted && !error.replaced && !error.resultUncertain);
+    assert.equal(host.state.calls.length, 0);
+    assert.equal(host.state.undoStarted, 0);
+  }
+});
+
+test('同位置同尺寸换成另一对象后不误用已删除的原图身份', () => {
+  const { state } = replacementHost();
+  const original = state.pictures[0];
+  const target = captureReplacementTarget();
+  const another = Object.create(original);
+  another.deleted = false;
+  state.pictures[0] = another;
+  original.deleted = true;
+  assert.throws(() => replacePicture(asset, target), /替换已中止/);
+  assert.equal(state.calls.length, 0);
+  assert.equal(state.undoStarted, 0);
+});
+
+test('连续替换重新捕获当前图片，旧目标不能重复消费', () => {
+  const { state } = replacementHost();
+  const target = captureReplacementTarget();
+  replacePicture(asset, target);
+  assert.throws(() => replacePicture(asset, target), /目标已失效/);
+  state.start = 2;
+  state.end = 3;
+  replacePicture({ ...asset, name: '第二张.png' }, captureReplacementTarget());
+  assert.equal(state.pictures.length, 1);
+  assert.equal(state.text, '前文\uFFFC后文\r');
+  assert.equal(state.undoStarted, 2);
+  assert.equal(state.undoEnded, 2);
+});
+
+test('新图缩放、字体或原对象偏移核对失败时只清理新图并保留原图', () => {
+  for (const options of [{ resizeError: true }, { fontError: true }, { ignoreAspectRatio: true },
+    { pictureWidth: NaN }, { staleOriginalRange: true }]) {
+    const { state } = replacementHost(options);
+    const original = state.pictures[0];
+    assert.throws(() => replacePicture(asset, captureReplacementTarget()), error => {
+      assert.equal(error.inserted, false);
+      assert.equal(error.replaced, false);
+      assert.equal(error.resultUncertain, false);
+      assert.match(error.message, /原图已保留，新增图片已移除/);
+      return true;
+    });
+    assert.equal(state.pictures.length, 1);
+    assert.equal(state.pictures[0], original);
+    assert.equal(original.deleted, false);
+    assert.equal(state.text, '前文\uFFFC后文\r');
+    assert.deepEqual(state.calls.filter(call => call.delete).map(call => call.delete), ['new']);
+    assert.equal(state.undoStarted, 1);
+    assert.equal(state.undoEnded, 1);
+  }
+});
+
+test('新增图片清理失败明确报告不确定状态，绝不删除原图', () => {
+  for (const newDeleteError of ['before', 'after']) {
+    const { state } = replacementHost({ resizeError: true, newDeleteError });
+    const original = state.pictures[0];
+    assert.throws(() => replacePicture(asset, captureReplacementTarget()), error => {
+      assert.equal(error.replaced, false);
+      assert.equal(error.resultUncertain, true);
+      assert.match(error.message, /原图尚未删除.*不要重复替换/);
+      return true;
+    });
+    assert.equal(original.deleted, false);
+    assert.ok(state.pictures.includes(original));
+    assert.equal(state.pictures.length, newDeleteError === 'before' ? 2 : 1);
+    assert.equal(state.undoEnded, 1);
+  }
+});
+
+test('原图删除开始后的异常保留新图，兼容删除前失败与删除后报错', () => {
+  for (const oldDeleteError of ['before', 'after']) {
+    const { state } = replacementHost({ oldDeleteError });
+    assert.throws(() => replacePicture(asset, captureReplacementTarget()), error => {
+      assert.equal(error.inserted, true);
+      assert.equal(error.replaced, false);
+      assert.equal(error.resultUncertain, true);
+      assert.match(error.message, /新图已插入，但无法确认原图是否已删除.*不要重复替换/);
+      return true;
+    });
+    assert.ok(state.pictures.some(picture => !picture.original));
+    assert.equal(state.pictures.length, oldDeleteError === 'before' ? 2 : 1);
+    assert.deepEqual(state.calls.filter(call => call.delete).map(call => call.delete), ['original']);
+    assert.equal(state.undoEnded, 1);
+  }
+});
+
+test('AddPicture 调用结果未返回时不谎报原图已替换，也不盲目清理其他图片', () => {
+  for (const options of [{ insertError: true }, { insertErrorAfterAdd: true }]) {
+    const { state } = replacementHost(options);
+    const original = state.pictures[0];
+    assert.throws(() => replacePicture(asset, captureReplacementTarget()), error => {
+      assert.equal(error.replaced, false);
+      assert.equal(error.resultUncertain, true);
+      assert.match(error.message, /原图尚未删除.*不要重复替换/);
+      return true;
+    });
+    assert.equal(original.deleted, false);
+    assert.equal(state.calls.some(call => call.delete), false);
+    assert.equal(state.pictures.length, options.insertError ? 1 : 2);
+    assert.equal(state.undoEnded, 1);
+  }
+});
+
+test('替换完成后光标或撤销收尾失败仍报告 replaced，不让用户重复替换', () => {
+  for (const options of [{ selectError: true }, { undoEndError: true }]) {
+    const { state } = replacementHost(options);
+    assert.throws(() => replacePicture(asset, captureReplacementTarget()), error => {
+      assert.equal(error.inserted, true);
+      assert.equal(error.replaced, true);
+      assert.equal(error.resultUncertain, false);
+      assert.match(error.message, /图片已替换.*不要重复替换/);
+      return true;
+    });
+    assert.equal(state.pictures.length, 1);
+    assert.equal(state.pictures[0].original, false);
+    assert.equal(state.text, '前文\uFFFC后文\r');
+    assert.equal(state.undoEnded, 1);
+  }
 });
 
 test('Ribbon 重复打开复用任务窗格，关闭后可以再次显示', async () => {

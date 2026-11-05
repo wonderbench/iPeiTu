@@ -116,10 +116,13 @@ textarea:disabled { background: var(--surface); }
 .empty-state .button { margin-top: 8px; }
 .empty-state .supporting { max-width: 360px; overflow-wrap: anywhere; }
 .selection-bar {
-  display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 12px;
+  display: grid; grid-template-columns: minmax(0, 1fr); align-items: center; gap: 12px;
   border-top: 1px solid var(--line); padding: 16px; background: #fff;
 }
 .selected-asset { display: flex; align-items: center; gap: 12px; min-width: 0; }
+.document-actions { display: grid; grid-template-columns: minmax(0, 1fr); gap: 8px; }
+.document-actions.with-replacement { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.document-actions .button { min-width: 0; }
 .preview-button { flex: 0 0 48px; height: 48px; border: 1px solid var(--line); border-radius: 8px; padding: 0; background: var(--surface); overflow: hidden; color: var(--muted); font-size: 12px; }
 .preview-button:not(:disabled):hover { border-color: var(--accent); }
 .preview-button img { width: 100%; height: 100%; object-fit: contain; }
@@ -184,8 +187,6 @@ dialog > .meta { margin-top: 12px; }
   .directory-form { grid-template-columns: 1fr; }
   .directory-form button { justify-self: start; }
   .selection-bar { gap: 8px; }
-  .selected-asset { grid-column: 1 / -1; }
-  #insertButton { grid-column: 1 / -1; }
   .size-fields { grid-template-columns: 1fr; }
 }
 @media (min-width: 800px) {
