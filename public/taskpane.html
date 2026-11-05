@@ -127,8 +127,16 @@
           <h2 id="layoutTitle">插图排版</h2>
           <button id="resetLayout" class="text-button" type="button">恢复默认</button>
         </div>
-        <p class="supporting">设置用于接下来插入的图片，不改变文档中已有图片</p>
+        <p class="supporting">排版用于插入，图片质量用于插入与替换</p>
         <div class="layout-fields">
+          <div class="field-group">
+            <label for="qualityProfile">图片质量</label>
+            <select id="qualityProfile" name="qualityProfile">
+              <option value="original">原图</option>
+              <option value="clear">清晰 · 长边 ≤ 2400 像素</option>
+              <option value="balanced">均衡 · 长边 ≤ 1600 像素</option>
+            </select>
+          </div>
           <div class="field-group">
             <label for="widthMode">图片宽度</label>
             <select id="widthMode" name="widthMode">

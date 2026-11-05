@@ -1,3 +1,8 @@
+export function normalizeQualityProfile(profile = 'original') {
+  if (!['original', 'clear', 'balanced'].includes(profile)) throw new Error('请选择原图、清晰或均衡画质');
+  return profile;
+}
+
 export function normalizeLayoutOptions(options = {}) {
   if (!options || typeof options !== 'object' || Array.isArray(options)) {
     throw new Error('配图排版设置无效');

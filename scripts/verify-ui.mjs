@@ -6,6 +6,7 @@ import { chromium } from 'playwright';
 import sharp from 'sharp';
 import { startServer } from '../server/http.js';
 import { verifyImportAndTrash } from './verify-import-ui.mjs';
+import { verifyQuality } from './verify-quality-ui.mjs';
 
 const temporary = await mkdtemp(path.join(os.tmpdir(), 'ipeitu-ui-'));
 const { server } = await startServer({ port: 0, dataDirectory: path.join(temporary, 'library') });
@@ -185,8 +186,24 @@ try {
     await page.locator('#cancelMetadata').click();
   }
 
+  // v0.2 layout settings without a quality field remain compatible.
+  await page.evaluate(() => { const saved = JSON.parse(localStorage.getItem('ipeitu.layout.v1')); delete saved.qualityProfile; localStorage.setItem('ipeitu.layout.v1', JSON.stringify(saved)); });
+  await page.reload();
+  await page.locator('#layoutSettingsButton').click();
+  assert.equal(await page.locator('#qualityProfile').inputValue(), 'original');
+  assert.equal(await page.locator('#widthCm').inputValue(), '8');
+  await page.locator('#qualityProfile').selectOption('balanced');
+  await page.locator('#saveLayout').click();
+  await page.reload();
+  await page.locator('#layoutSettingsButton').click();
+  assert.equal(await page.locator('#qualityProfile').inputValue(), 'balanced');
+  await page.locator('#cancelLayout').click();
+  await visibleText('#layoutSettingsButton', '均衡');
+  const qualityRequests = [];
+  page.on('request', request => { if (/\/api\/assets\/[^/]+\/insertion(?:\?|$)/.test(request.url())) qualityRequests.push(new URL(request.url()).searchParams.get('profile')); });
+
   // Linux CI exercises a simulated Windows host; keep its local-path contract.
-  await page.route('**/api/assets/*/insertion', async route => {
+  await page.route(/\/api\/assets\/[^/]+\/insertion(?:\?.*)?$/, async route => {
     const response = await route.fetch();
     const data = await response.json();
     await route.fulfill({ response, json: { ...data, path: `C:\\test\\${data.name}` } });
@@ -234,6 +251,7 @@ try {
   await visibleText('#actionStatus', '已插入');
   const inserted = await page.evaluate(() => window.insertions);
   assert.equal(inserted.length, 1);
+  assert.equal(qualityRequests.at(-1), 'balanced', '插入使用已保存质量档');
   assert.equal(inserted[0].link, false);
   assert.equal(inserted[0].save, true);
   assert.equal(inserted[0].start, 12);
@@ -341,6 +359,7 @@ try {
   await page.waitForFunction(() => !document.querySelector('#insertButton').disabled);
   let replacement = await page.evaluate(() => window.replacementFixture);
   assert.equal(replacement.added, 1);
+  assert.equal(qualityRequests.at(-1), 'balanced', '替换使用已保存质量档');
   assert.equal(replacement.oldDeleted, true);
   assert.equal(replacement.width, 180, '替换保留原宽度，不用当前8厘米插图偏好');
   assert.equal(replacement.height, 120);
@@ -366,7 +385,7 @@ try {
     const data = await response.json();
     await route.fulfill({ response, json: { ...data, path: `C:\\test\\${data.name}` } });
   };
-  await page.route('**/api/assets/*/insertion', delayedInsertion);
+  await page.route(/\/api\/assets\/[^/]+\/insertion(?:\?.*)?$/, delayedInsertion);
   await page.locator('#replaceButton').click();
   assert.equal(await page.locator('#insertButton').isDisabled(), true, '替换等待时不能同时插入');
   assert.equal(await page.locator('#replaceButton').isDisabled(), true);
@@ -376,7 +395,7 @@ try {
   replacement = await page.evaluate(() => window.replacementFixture);
   assert.equal(replacement.added, 0, '等待期间目标变化必须在写入前中止');
   assert.equal(replacement.oldDeleted, false);
-  await page.unroute('**/api/assets/*/insertion', delayedInsertion);
+  await page.unroute(/\/api\/assets\/[^/]+\/insertion(?:\?.*)?$/, delayedInsertion);
   await page.route('**/api/library?*', route => route.fulfill({ status: 500, contentType: 'application/json', body: JSON.stringify({ error: '验收用读取失败' }) }));
   await page.locator('#searchInput').fill('失败');
   await visibleText('#stateTitle', '图库暂时无法读取');
@@ -396,6 +415,7 @@ try {
   await visibleText('#actionStatus', '未能保存在本机');
   await visibleText('#layoutSettingsButton', '宽 9 厘米');
   await verifyImportAndTrash({ page, base, temporary, picture, filename });
+  await verifyQuality({ base });
   assert.deepEqual(failures, []);
   console.log('UI 验收通过：导入/检索/预览、素材信息与组合筛选、收藏重载与写失败恢复、最近成功记录及失败分离、键盘选图不误插入、排版偏好恢复、320/420/1080 布局、模拟 WPS 插图与替换、目标变更拒绝写入、只读与读取失败恢复');
   console.log('WPS 行为使用模拟宿主；真实 WPS 验收另行记录。');
