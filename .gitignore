@@ -1,0 +1,13 @@
+# User-provided artwork and generated local library stay on this computer.
+/部分标书配图/
+/.ipeitu/
+/node_modules/
+/dist/
+/coverage/
+/test-results/
+/playwright-report/
+*.log
+.env
+.env.*
+!.env.example
+
