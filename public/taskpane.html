@@ -43,11 +43,16 @@
 
         <section class="library" aria-labelledby="libraryTitle">
           <div class="search-block">
-            <label for="searchInput">按图片名称检索</label>
+            <label for="searchInput">检索名称、别名或工序</label>
             <div class="search-field">
-              <input id="searchInput" type="search" autocomplete="off" spellcheck="false" placeholder="输入工序或图片名称" aria-controls="assetGrid">
+              <input id="searchInput" type="search" autocomplete="off" spellcheck="false" placeholder="多个关键词用空格分隔" aria-controls="assetGrid">
               <button id="clearSearch" type="button" class="text-button" hidden>清空</button>
             </div>
+          </div>
+          <div class="filter-bar">
+            <button id="openFilters" class="button secondary" type="button" aria-haspopup="dialog" aria-controls="filterDialog" disabled>筛选</button>
+            <span id="filterSummary" class="meta">全部分类 · 不限工序</span>
+            <button id="clearFilters" class="text-button" type="button" hidden>清除筛选</button>
           </div>
           <div class="section-heading library-heading">
             <h2 id="libraryTitle">本地素材</h2>
@@ -74,7 +79,10 @@
           </div>
         </div>
         <button id="insertButton" class="button primary" type="button" disabled>插入光标处</button>
-        <button id="layoutSettingsButton" class="layout-summary" type="button" aria-haspopup="dialog" aria-controls="layoutDialog">排版设置 · 自适应 · 原段落</button>
+        <div class="selection-options">
+          <button id="layoutSettingsButton" class="layout-summary" type="button" aria-haspopup="dialog" aria-controls="layoutDialog">排版设置 · 自适应 · 原段落</button>
+          <button id="editMetadata" class="text-button" type="button" aria-haspopup="dialog" aria-controls="metadataDialog" disabled>素材信息</button>
+        </div>
         <p id="hostStatus" class="host-status">正在检查 WPS 状态</p>
         <p id="actionStatus" class="action-status" role="status" aria-live="polite" hidden></p>
       </footer>
@@ -141,6 +149,62 @@
         <div class="dialog-actions">
           <button id="cancelLayout" class="button secondary" type="button">取消</button>
           <button id="saveLayout" class="button primary" type="submit">保存设置</button>
+        </div>
+      </form>
+    </dialog>
+
+    <dialog id="filterDialog" class="compact-dialog" aria-labelledby="filterTitle">
+      <form id="filterForm">
+        <div class="dialog-heading">
+          <h2 id="filterTitle">筛选素材</h2>
+        </div>
+        <div class="field-group">
+          <label for="categorySelect">分类</label>
+          <select id="categorySelect" name="category">
+            <option value="all">全部分类</option>
+          </select>
+        </div>
+        <fieldset class="tag-fieldset">
+          <legend>工序标签</legend>
+          <p class="supporting">选择多个标签时，图片须同时包含这些标签</p>
+          <div id="filterTags" class="tag-options"></div>
+        </fieldset>
+        <div class="dialog-actions">
+          <button id="cancelFilters" class="button secondary" type="button">取消</button>
+          <button id="applyFilters" class="button primary" type="submit">应用筛选</button>
+        </div>
+      </form>
+    </dialog>
+
+    <dialog id="metadataDialog" class="compact-dialog" aria-labelledby="metadataTitle">
+      <form id="metadataForm" novalidate>
+        <div class="dialog-heading">
+          <h2 id="metadataTitle">素材信息</h2>
+        </div>
+        <p class="supporting">修改图库中的显示和检索信息，不改动原始文件</p>
+        <div class="layout-fields">
+          <div class="field-group">
+            <label for="assetName">图片名称</label>
+            <input id="assetName" name="name" type="text" maxlength="255" autocomplete="off" required>
+          </div>
+          <div class="field-group">
+            <label for="assetAliases">别名 · 每行一个</label>
+            <textarea id="assetAliases" name="aliases" rows="2" placeholder="可用于检索的其他名称"></textarea>
+          </div>
+          <div class="field-group">
+            <label for="assetCategories">分类 · 每行一个</label>
+            <textarea id="assetCategories" name="categories" rows="2" placeholder="例如：机电安装"></textarea>
+          </div>
+          <div class="field-group">
+            <label for="assetTags">工序标签 · 每行一个</label>
+            <textarea id="assetTags" name="tags" rows="2" placeholder="例如：管道安装"></textarea>
+          </div>
+        </div>
+        <p class="supporting metadata-hint">留空可清除对应的别名、分类或标签；未设置分类的图片归入“未分类”</p>
+        <p id="metadataError" class="form-error" role="alert" hidden></p>
+        <div class="dialog-actions">
+          <button id="cancelMetadata" class="button secondary" type="button">取消</button>
+          <button id="saveMetadata" class="button primary" type="submit">保存信息</button>
         </div>
       </form>
     </dialog>

@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, writeFile, readFile, rm, symlink, unlink } from 'node:fs/promises';
+import { mkdtemp, mkdir, writeFile, readFile, rm, symlink, unlink, readdir, rename } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import sharp from 'sharp';
@@ -179,4 +179,216 @@ test('rejects managed descendants and filesystem aliases of an overlapping sourc
   await assert.rejects(library.importDirectory(path.join(aliasParent, 'linked-root', path.basename(directory))), /不能包含/);
   await assert.rejects(library.importDirectory(path.join(aliasParent, 'linked-root', path.basename(directory), 'images')), /图库内/);
   assert.equal(library.list().total, 1);
+});
+
+test('v1 migration keeps exact backup bytes, asset identities and historical metadata, and runs once', async t => {
+  const { directory, library } = await setup(t);
+  const bytes = await image();
+  await library.importFile('旧图片.png', bytes);
+  const { categories, tags, ...legacy } = library.assets[0];
+  // v0.1 did not cap historical alias counts; migration must never truncate them.
+  legacy.aliases = Array.from({ length: 101 }, (_, index) => `历史别名_${index}.png`);
+  const original = Buffer.from(` \r\n${JSON.stringify({ version: 1, assets: [legacy] }, null, 3)}\r\n`, 'utf8');
+  await writeFile(path.join(directory, 'index.json'), original);
+  const migrated = await Library.open(directory);
+  const backups = (await readdir(directory)).filter(name => name.startsWith('index-v1-backup-'));
+  assert.equal(backups.length, 1);
+  assert.deepEqual(await readFile(path.join(directory, backups[0])), original);
+  assert.deepEqual(migrated.assets, [{ ...legacy, categories: [], tags: [] }]);
+  assert.equal(JSON.parse(await readFile(path.join(directory, 'index.json'), 'utf8')).version, 2);
+  assert.deepEqual(await readFile((await migrated.file(legacy.id, 'image')).path), bytes);
+  await Library.open(directory);
+  assert.deepEqual((await readdir(directory)).filter(name => name.startsWith('index-v1-backup-')), backups);
+});
+
+test('unknown versions and invalid v2 metadata do not modify or back up the index', async t => {
+  const { directory, library } = await setup(t);
+  await library.importFile('工程图.png', await image());
+  const asset = library.assets[0];
+  for (const value of [
+    { version: 3, assets: [asset] },
+    { version: 2, assets: [{ ...asset, categories: '土建' }] },
+    { version: 2, assets: [{ ...asset, tags: [null] }] },
+    { version: 2, assets: [{ ...asset, categories: Array(33).fill('分类') }] },
+  ]) {
+    const original = JSON.stringify(value);
+    await writeFile(path.join(directory, 'index.json'), original);
+    await assert.rejects(Library.open(directory), /索引/);
+    assert.equal(await readFile(path.join(directory, 'index.json'), 'utf8'), original);
+    assert.equal((await readdir(directory)).some(name => name.startsWith('index-v1-backup-')), false);
+  }
+});
+
+test('a failed migration preserves the original v1 bytes and their backup for retry', async t => {
+  const { directory, library } = await setup(t);
+  await library.importFile('旧图片.png', await image());
+  const { categories, tags, ...legacy } = library.assets[0];
+  const original = Buffer.from(JSON.stringify({ version: 1, assets: [legacy] }));
+  await writeFile(path.join(directory, 'index.json'), original);
+  const failure = t.mock.method(Library.prototype, 'persist', async () => {
+    throw Object.assign(new Error('migration write refused'), { code: 'EACCES' });
+  });
+  await assert.rejects(Library.open(directory), { code: 'EACCES' });
+  assert.deepEqual(await readFile(path.join(directory, 'index.json')), original);
+  const backups = (await readdir(directory)).filter(name => name.startsWith('index-v1-backup-'));
+  assert.equal(backups.length, 1);
+  assert.deepEqual(await readFile(path.join(directory, backups[0])), original);
+  failure.mock.restore();
+  const migrated = await Library.open(directory);
+  assert.deepEqual(migrated.assets, [{ ...legacy, categories: [], tags: [] }]);
+});
+
+test('metadata edits normalize lists, preserve commas, and do not rename managed image files', async t => {
+  const { directory, library } = await setup(t);
+  await library.importFile('原图.png', await image());
+  const id = library.assets[0].id;
+  const insertionPath = (await library.insertion(id)).path;
+  const edited = await library.updateAsset(id, {
+    name: ' 新图片名称 ', aliases: [' 原名 ', '原名', 'Alias', 'ａｌｉａｓ'],
+    categories: [' 土建/基础 ', '土建/基础', 'ＡBC', 'abc'], tags: ['沟槽，开挖', '沟槽，开挖', ' NIGHT ', 'night'],
+  });
+  assert.equal(edited.name, '新图片名称');
+  assert.deepEqual(edited.aliases, ['原名', 'Alias']);
+  assert.deepEqual(edited.categories, ['土建/基础', 'ＡBC']);
+  assert.deepEqual(edited.tags, ['沟槽，开挖', 'NIGHT']);
+  assert.match(edited.imageUrl, new RegExp(id));
+  assert.match(edited.thumbnailUrl, new RegExp(id));
+  const reopened = await Library.open(directory);
+  assert.equal((await reopened.insertion(id)).path, insertionPath);
+  assert.equal(reopened.list('原名 NIGHT').assets[0].id, id);
+  await reopened.updateAsset(id, { categories: [], tags: [], aliases: [] });
+  const empty = (await Library.open(directory)).getAsset(id);
+  assert.equal(empty.name, '新图片名称');
+  assert.deepEqual([empty.aliases, empty.categories, empty.tags], [[], [], []]);
+});
+
+test('invalid metadata patches reject as a whole and preserve the index and in-memory record', async t => {
+  const { directory, library } = await setup(t);
+  await library.importFile('原名.png', await image());
+  const id = library.assets[0].id;
+  const snapshot = await readFile(path.join(directory, 'index.json'));
+  const invalid = [null, [], 'name', {}, { path: 'C:\\secret' }, { id }, { name: '' }, { name: false },
+    { name: 'x'.repeat(256) }, { name: '换\n行' }, { name: '修改名', tags: [null] },
+    { aliases: '不是数组' }, { aliases: [''] }, { aliases: Array(101).fill('同名') },
+    { aliases: ['x'.repeat(256)] }, { categories: Array(33).fill('分类') },
+    { categories: ['x'.repeat(256)] }, { tags: Array(65).fill('标签') }, { tags: ['x'.repeat(65)] },
+    { tags: ['标签\u2028另一项'] }, JSON.parse('{"__proto__":{}}')];
+  for (const patch of invalid) await assert.rejects(library.updateAsset(id, patch), error => error.status === 400);
+  assert.equal(library.getAsset(id).name, '原名.png');
+  assert.deepEqual(await readFile(path.join(directory, 'index.json')), snapshot);
+  await assert.rejects(library.updateAsset('f'.repeat(64), { name: '不存在' }), error => error.status === 404);
+});
+
+test('metadata field boundaries are accepted without dropping entries', async t => {
+  const { library } = await setup(t);
+  await library.importFile('边界.png', await image());
+  const metadata = {
+    name: '图'.repeat(255),
+    aliases: Array.from({ length: 100 }, (_, index) => String(index).padStart(3, '0') + '别'.repeat(252)),
+    categories: Array.from({ length: 32 }, (_, index) => String(index).padStart(2, '0') + '类'.repeat(253)),
+    tags: Array.from({ length: 64 }, (_, index) => String(index).padStart(2, '0') + '签'.repeat(62)),
+  };
+  const updated = await library.updateAsset(library.assets[0].id, metadata);
+  for (const field of Object.keys(metadata)) assert.deepEqual(updated[field], metadata[field]);
+});
+
+test('query terms, exact categories and AND tags intersect while facets describe the entire library', async t => {
+  const { library } = await setup(t);
+  for (const [name, color] of [['沟槽开挖.png', 'red'], ['基础回填.png', 'green'], ['未分类.png', 'blue']]) {
+    await library.importFile(name, await image(color));
+  }
+  const [first, second, third] = library.assets;
+  await library.updateAsset(first.id, { aliases: ['Excavation'], categories: ['土建/基础'], tags: ['夜间', '支护', 'NIGHT'] });
+  await library.updateAsset(second.id, { aliases: ['EXCAVATION'], categories: ['土建'], tags: ['夜间', '回填', 'night'] });
+  assert.deepEqual(library.list('  ｅｘｃａｖａｔｉｏｎ\t支护 ').assets.map(asset => asset.id), [first.id]);
+  assert.deepEqual(library.list('', { category: '土建' }).assets.map(asset => asset.id), [second.id]);
+  assert.deepEqual(library.list('excavation', { category: '土建/基础', tags: ['night', '支护'] }).assets.map(asset => asset.id), [first.id]);
+  assert.equal(library.list('', { tags: ['支护', '回填'] }).assets.length, 0);
+  assert.deepEqual(library.list('', { uncategorized: true }).assets.map(asset => asset.id), [third.id]);
+  assert.equal(library.list('土建').assets.length, 0, '分类使用独立精确筛选，不暗中加入关键词范围');
+  const full = library.list();
+  assert.equal(full.total, 3);
+  assert.equal(full.facets.uncategorized, 1);
+  assert.equal(full.facets.tags.find(tag => tag.name === 'NIGHT').count, 2);
+  assert.deepEqual(library.list('不匹配', { category: '土建' }).facets, full.facets);
+  assert.throws(() => library.list('', { category: '土建', uncategorized: true }), /不能同时/);
+  assert.throws(() => library.list('x'.repeat(513)), /512/);
+});
+
+test('directory categories retain nested folders and merge duplicate provenance without overriding edits', async t => {
+  const { root, directory, library } = await setup(t);
+  const source = path.join(root, '工程素材');
+  await mkdir(path.join(source, '土建', '基础'), { recursive: true });
+  await mkdir(path.join(source, '机电'), { recursive: true });
+  const bytes = await image();
+  await writeFile(path.join(source, '根图.png'), bytes);
+  await writeFile(path.join(source, '土建', '基础', '基础图.png'), bytes);
+  await writeFile(path.join(source, '机电', '机电图.png'), bytes);
+  assert.deepEqual(await library.importDirectory(source), { imported: 1, duplicates: 2, failed: [], total: 1 });
+  const id = library.assets[0].id;
+  assert.deepEqual(new Set(library.getAsset(id).categories), new Set(['工程素材', '土建/基础', '机电']));
+  await library.updateAsset(id, { name: '人工名称', tags: ['人工标签'], categories: ['手工分类'] });
+  assert.equal((await library.importDirectory(source)).duplicates, 3);
+  const reopened = await Library.open(directory);
+  const asset = reopened.getAsset(id);
+  assert.equal(asset.name, '人工名称');
+  assert.deepEqual(asset.tags, ['人工标签']);
+  assert.deepEqual(new Set(asset.categories), new Set(['手工分类', '工程素材', '土建/基础', '机电']));
+  assert.equal(reopened.list('基础图').assets[0].id, id);
+  assert.equal(JSON.stringify(asset).includes(root), false, '不得把绝对源目录写入元数据');
+});
+
+test('concurrent partial edits and classified imports preserve all unrelated changes', async t => {
+  const { directory, library } = await setup(t);
+  const bytes = await image();
+  await library.importFile('原图.png', bytes);
+  const id = library.assets[0].id;
+  await Promise.all([
+    library.updateAsset(id, { name: '人工新名称' }),
+    library.importFile('来源别名.png', bytes, '机电安装'),
+    library.updateAsset(id, { tags: ['桥架'] }),
+  ]);
+  const asset = (await Library.open(directory)).getAsset(id);
+  assert.equal(asset.name, '人工新名称');
+  assert.deepEqual(asset.aliases, ['来源别名.png']);
+  assert.deepEqual(asset.categories, ['机电安装']);
+  assert.deepEqual(asset.tags, ['桥架']);
+});
+
+test('a filesystem root without a basename leaves root images uncategorized and retains child categories', async t => {
+  const { root, library } = await setup(t);
+  const source = path.join(root, 'root-source');
+  await mkdir(path.join(source, '子目录'), { recursive: true });
+  await writeFile(path.join(source, '根图.png'), await image('red'));
+  await writeFile(path.join(source, '子目录', '子图.png'), await image('blue'));
+  const basename = path.basename;
+  // Simulate a drive root using an isolated folder; never scan a user's drive.
+  t.mock.method(path, 'basename', (value, suffix) => value === source ? '' : basename(value, suffix));
+  assert.deepEqual(await library.importDirectory(source), { imported: 2, duplicates: 0, failed: [], total: 2 });
+  assert.deepEqual(library.list('根图').assets[0].categories, []);
+  assert.deepEqual(library.list('子图').assets[0].categories, ['子目录']);
+  assert.equal(library.list().facets.uncategorized, 1);
+});
+
+test('a real index replacement failure does not apply edited metadata in memory', async t => {
+  const { directory, library } = await setup(t);
+  await library.importFile('原名.png', await image());
+  const id = library.assets[0].id;
+  const indexPath = path.join(directory, 'index.json');
+  const savedPath = path.join(directory, 'original-index.json');
+  const original = await readFile(indexPath);
+  await rename(indexPath, savedPath);
+  await mkdir(indexPath);
+  try {
+    await assert.rejects(library.updateAsset(id, { name: '不应保存', tags: ['不应保存'] }));
+    assert.equal(library.getAsset(id).name, '原名.png');
+    assert.deepEqual(library.getAsset(id).tags, []);
+    assert.deepEqual(await readFile(savedPath), original);
+  } finally {
+    assert.equal(path.dirname(indexPath), directory);
+    await rm(indexPath, { recursive: true });
+    await rename(savedPath, indexPath);
+  }
+  await library.updateAsset(id, { name: '恢复后名称' });
+  assert.equal((await Library.open(directory)).getAsset(id).name, '恢复后名称');
 });

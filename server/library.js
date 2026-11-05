@@ -9,6 +9,13 @@ export const MAX_IMAGE_PIXELS = 64 * 1000 * 1000;
 const formats = new Set(['jpeg', 'png', 'webp']);
 const extensions = new Set(['.jpg', '.jpeg', '.png', '.webp', '.bmp', '.gif', '.tif', '.tiff', '.svg', '.heic', '.avif']);
 const idPattern = /^[a-f0-9]{64}$/;
+const metadataLimits = { aliases: [100, 255], categories: [32, 255], tags: [64, 64] };
+const fieldLabels = { name: '图片名称', aliases: '别名', categories: '分类', tags: '标签' };
+const controlCharacters = /[\x00-\x1f\x7f\u2028\u2029]/;
+
+function matchKey(value) {
+  return value.normalize('NFKC').toLowerCase();
+}
 
 export class LibraryError extends Error {
   constructor(message, status = 400) {
@@ -28,6 +35,61 @@ function validRecord(asset) {
     && Array.isArray(asset.aliases) && asset.aliases.every(name => typeof name === 'string')
     && (asset.normalized === undefined || typeof asset.normalized === 'boolean')
     && formats.has(asset.format) && ['width', 'height', 'bytes'].every(key => Number.isSafeInteger(asset[key]) && asset[key] > 0);
+}
+
+function metadataText(value, field, maximum) {
+  if (typeof value !== 'string' || controlCharacters.test(value) || !value.trim() || value.length > maximum) {
+    throw new LibraryError(`${fieldLabels[field] || field}须为 1–${maximum} 个字符的单行文字`);
+  }
+  return value.trim();
+}
+
+function metadataList(value, field) {
+  const [maximumItems, maximumLength] = metadataLimits[field];
+  if (!Array.isArray(value) || value.length > maximumItems) {
+    throw new LibraryError(`${fieldLabels[field]}须为数组，最多 ${maximumItems} 项`);
+  }
+  const seen = new Set();
+  return value.map(item => metadataText(item, field, maximumLength)).filter(item => {
+    const key = matchKey(item);
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+function validV2Record(asset) {
+  if (!validRecord(asset)) return false;
+  try {
+    // Legacy names and aliases remain byte-for-byte values during migration.
+    // New categories and tags are always written in their validated form.
+    return ['categories', 'tags'].every(field => {
+      const values = metadataList(asset[field], field);
+      return values.length === asset[field].length && values.every((value, index) => value === asset[field][index]);
+    });
+  } catch (error) {
+    if (error instanceof LibraryError) return false;
+    throw error;
+  }
+}
+
+function displayAsset(asset) {
+  return { ...asset, aliases: [...asset.aliases], categories: [...asset.categories], tags: [...asset.tags],
+    thumbnailUrl: `/api/assets/${asset.id}/thumbnail`, imageUrl: `/api/assets/${asset.id}/image` };
+}
+
+function mergeMetadata(existing, additions, field) {
+  const values = [...existing];
+  const seen = new Set(existing.map(matchKey));
+  for (const item of additions) {
+    const key = matchKey(item);
+    if (!seen.has(key)) {
+      if (values.length >= metadataLimits[field][0]) throw new LibraryError(`${fieldLabels[field]}最多 ${metadataLimits[field][0]} 项，请先整理该图片`);
+      values.push(item);
+      seen.add(key);
+    }
+  }
+  return values;
 }
 
 function safeName(name) {
@@ -58,22 +120,31 @@ export class Library {
     await mkdir(path.join(library.directory, 'images'), { recursive: true });
     await mkdir(path.join(library.directory, 'thumbnails'), { recursive: true });
     await mkdir(path.join(library.directory, 'insertion'), { recursive: true });
-    let text;
+    let original;
     try {
-      text = await readFile(path.join(library.directory, 'index.json'), 'utf8');
+      original = await readFile(path.join(library.directory, 'index.json'));
     } catch (error) {
       if (error.code !== 'ENOENT') throw error;
       return library;
     }
     let index;
-    try { index = JSON.parse(text); } catch {
+    try { index = JSON.parse(original.toString('utf8')); } catch {
       throw new LibraryError('图库索引不是有效 JSON，请保留原文件并恢复备份', 500);
     }
-    if (!index || index.version !== 1 || !Array.isArray(index.assets) || !index.assets.every(validRecord)
+    if (index && ![1, 2].includes(index.version)) {
+      throw new LibraryError('图库索引版本不受支持，请使用对应版本的 iPeiTu；原文件未修改', 500);
+    }
+    if (!index || !Array.isArray(index.assets) || !index.assets.every(index.version === 1 ? validRecord : validV2Record)
       || new Set(index.assets.map(asset => asset.id)).size !== index.assets.length) {
       throw new LibraryError('图库索引结构损坏，无法安全读取', 500);
     }
-    library.assets = index.assets;
+    if (index.version === 1) {
+      const backup = path.join(library.directory, `index-v1-backup-${Date.now()}-${randomUUID()}.json`);
+      await writeFile(backup, original, { flag: 'wx' });
+      await library.persist(index.assets.map(asset => ({ ...asset, categories: [], tags: [] })));
+    } else {
+      library.assets = index.assets;
+    }
     return library;
   }
 
@@ -85,18 +156,58 @@ export class Library {
 
   async persist(assets) {
     const temporary = path.join(this.directory, `index-${randomUUID()}.tmp`);
-    await writeFile(temporary, `${JSON.stringify({ version: 1, assets }, null, 2)}\n`, { flag: 'wx' });
+    await writeFile(temporary, `${JSON.stringify({ version: 2, assets }, null, 2)}\n`, { flag: 'wx' });
     await rename(temporary, path.join(this.directory, 'index.json'));
     this.assets = assets;
   }
 
-  list(query = '') {
-    const search = query.trim().normalize('NFKC').toLocaleLowerCase();
-    const assets = this.assets.filter(asset => [asset.name, ...asset.aliases]
-      .some(name => name.normalize('NFKC').toLocaleLowerCase().includes(search)))
-      .map(asset => ({ ...asset, aliases: [...asset.aliases],
-        thumbnailUrl: `/api/assets/${asset.id}/thumbnail`, imageUrl: `/api/assets/${asset.id}/image` }));
-    return { assets, total: this.assets.length };
+  list(query = '', { category = '', tags = [], uncategorized = false } = {}) {
+    if (typeof query !== 'string' || query.length > 512 || /[\x00-\x08\x0e-\x1f\x7f]/.test(query)) {
+      throw new LibraryError('检索词须为不超过 512 个字符的文字');
+    }
+    if (typeof category !== 'string') throw new LibraryError('分类筛选须为文字');
+    if (typeof uncategorized !== 'boolean') throw new LibraryError('未分类筛选值无效');
+    const categoryKey = category ? matchKey(metadataText(category, 'categories', 255)) : '';
+    if (categoryKey && uncategorized) throw new LibraryError('分类与未分类条件不能同时使用');
+    const tagKeys = metadataList(tags, 'tags').map(matchKey);
+    const terms = matchKey(query).trim().split(/\s+/).filter(Boolean);
+    const assets = this.assets.filter(asset => {
+      const names = [asset.name, ...asset.aliases, ...asset.tags].map(matchKey);
+      return terms.every(term => names.some(name => name.includes(term)))
+        && (!categoryKey || asset.categories.some(item => matchKey(item) === categoryKey))
+        && (!uncategorized || asset.categories.length === 0)
+        && tagKeys.every(tag => asset.tags.some(item => matchKey(item) === tag));
+    }).map(displayAsset);
+    const facets = { categories: [], tags: [], uncategorized: this.assets.filter(asset => asset.categories.length === 0).length };
+    for (const field of ['categories', 'tags']) {
+      const counts = new Map();
+      for (const asset of this.assets) {
+        for (const name of asset[field]) {
+          const key = matchKey(name);
+          if (counts.has(key)) counts.get(key).count++;
+          else counts.set(key, { name, count: 1 });
+        }
+      }
+      facets[field] = [...counts.values()].sort((a, b) => a.name.localeCompare(b.name, 'zh-CN'));
+    }
+    return { assets, total: this.assets.length, facets };
+  }
+
+  updateAsset(id, input) {
+    return this.serialize(async () => {
+      const asset = this.getAsset(id);
+      if (!input || typeof input !== 'object' || Array.isArray(input)) throw new LibraryError('素材整理内容须为 JSON 对象');
+      const fields = Object.keys(input);
+      if (!fields.length || fields.some(field => !Object.hasOwn(fieldLabels, field))) {
+        throw new LibraryError('仅可修改名称、别名、分类和标签，且至少提供一项');
+      }
+      const changes = {};
+      for (const field of fields) changes[field] = field === 'name'
+        ? metadataText(input[field], field, 255) : metadataList(input[field], field);
+      const updated = { ...asset, ...changes };
+      await this.persist(this.assets.map(item => item.id === id ? updated : item));
+      return displayAsset(updated);
+    });
   }
 
   getAsset(id) {
@@ -130,8 +241,9 @@ export class Library {
     return { path: filePath, name: asset.name, width: asset.width, height: asset.height };
   }
 
-  async importImage(name, buffer) {
+  async importImage(name, buffer, categories = []) {
     name = safeName(name);
+    categories = metadataList(categories, 'categories');
     if (!buffer.length || buffer.length > MAX_IMAGE_BYTES) throw new LibraryError('单张图片须大于 0 字节且不超过 32 MB', 413);
     const image = sharp(buffer, { limitInputPixels: MAX_IMAGE_PIXELS, failOn: 'warning' });
     let metadata;
@@ -150,18 +262,19 @@ export class Library {
     const normalized = metadata.format === 'webp' || (metadata.orientation >= 2 && metadata.orientation <= 8);
     const existing = this.assets.find(asset => asset.id === id);
     if (existing) {
+      const aliases = mergeMetadata(existing.aliases, matchKey(existing.name) === matchKey(name) ? [] : [name], 'aliases');
+      const mergedCategories = mergeMetadata(existing.categories, categories, 'categories');
       // Restore missing managed files on reimport, as the missing-file message directs.
       await this.writeImages(id, metadata.format, buffer, thumbnail, image, normalized);
-      const newAlias = existing.name !== name && !existing.aliases.includes(name);
-      if (newAlias || existing.normalized !== normalized) {
-        const updated = { ...existing, normalized, aliases: newAlias ? [...existing.aliases, name] : existing.aliases };
+      if (aliases.length !== existing.aliases.length || mergedCategories.length !== existing.categories.length || existing.normalized !== normalized) {
+        const updated = { ...existing, normalized, aliases, categories: mergedCategories };
         await this.persist(this.assets.map(asset => asset.id === id ? updated : asset));
       }
       return 'duplicates';
     }
     await this.writeImages(id, metadata.format, buffer, thumbnail, image, normalized);
     const rotated = metadata.orientation >= 5 && metadata.orientation <= 8;
-    const asset = { id, name, aliases: [], format: metadata.format, bytes: buffer.length, normalized,
+    const asset = { id, name, aliases: [], categories, tags: [], format: metadata.format, bytes: buffer.length, normalized,
       width: rotated ? metadata.height : metadata.width, height: rotated ? metadata.width : metadata.height };
     await this.persist([...this.assets, asset]);
     return 'imported';
@@ -173,10 +286,11 @@ export class Library {
     if (normalized) await replaceFile(path.join(this.directory, 'insertion', `${id}.png`), await image.clone().rotate().png().toBuffer());
   }
 
-  importFile(name, buffer) {
+  importFile(name, buffer, category) {
     return this.serialize(async () => {
+      const categories = category === undefined ? [] : [metadataText(category, 'categories', 255)];
       const result = { imported: 0, duplicates: 0, failed: [], total: this.assets.length };
-      try { result[await this.importImage(name, buffer)]++; } catch (error) {
+      try { result[await this.importImage(name, buffer, categories)]++; } catch (error) {
         if (!(error instanceof LibraryError)) throw error;
         result.failed.push({ name: typeof name === 'string' ? name : '', error: error.message });
       }
@@ -230,7 +344,8 @@ export class Library {
             result.failed.push({ name: entry.name, error: error.message });
             continue;
           }
-          try { result[await this.importImage(entry.name, buffer)]++; } catch (error) {
+          const category = path.relative(rootPath, current).split(path.sep).join('/') || path.basename(rootPath);
+          try { result[await this.importImage(entry.name, buffer, category ? [category] : [])]++; } catch (error) {
             if (!(error instanceof LibraryError)) throw error;
             result.failed.push({ name: entry.name, error: error.message });
           }

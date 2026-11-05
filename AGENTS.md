@@ -10,6 +10,7 @@
 - 同一工作目录内，不并行切换分支或提交。分配到不同模块的子任务只修改约定文件，由协调者提交与合并。
 - 针对数据持久化、文件输入、检索和 WPS 文档操作运行有价值的测试。模拟 WPS 测试与实机验收分别记录，不能互相替代。
 - 中文 UI、中文开发文档。界面以素材为主体，4px 间距节奏、灰白中性色、单一深青强调色、明确焦点状态，无装饰渐变或表情图标。
+- Avoid unnecessary secondary labels and descriptions. Let the layout do the explaining.
 - 长任务进度与真实阻碍记录于 `docs/PLAN.md`；每个 PR 说明具体行为变化、验证结果与尚未验证的范围。
 
 unslop 由 Damir Sokolovsky（[@heydamir](https://x.com/heydamir)）创作，采用 [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/)。本项目设计规则参考其方法，来源：https://github.com/heydamir/unslop。

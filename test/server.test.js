@@ -102,3 +102,60 @@ test('oversized JSON is reported without crashing or changing the library', asyn
   assert.match((await response.json()).error, /大小/);
   assert.equal((await fetch(`${base}/api/library`)).status, 200);
 });
+
+test('HTTP classified upload, metadata editing and combined filters share the v2 contract', async t => {
+  const { base } = await setup(t);
+  const bytes = await sharp({ create: { width: 10, height: 8, channels: 3, background: '#227766' } }).png().toBuffer();
+  const upload = await fetch(`${base}/api/import-file?name=${encodeURIComponent('原图.png')}&category=${encodeURIComponent('机电安装')}`, {
+    method: 'POST', headers: { 'content-type': 'application/octet-stream' }, body: bytes,
+  });
+  assert.equal(upload.status, 200);
+  const first = await (await fetch(`${base}/api/library`)).json();
+  const id = first.assets[0].id;
+  assert.deepEqual(first.assets[0].categories, ['机电安装']);
+  assert.deepEqual(first.assets[0].tags, []);
+  const patch = await fetch(`${base}/api/assets/${id}`, {
+    method: 'PATCH', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ name: '桥架安装', aliases: ['Tray'], tags: ['室内', '夜间'], categories: ['机电安装', '工程/桥架'] }),
+  });
+  assert.equal(patch.status, 200);
+  const { asset } = await patch.json();
+  assert.equal(asset.name, '桥架安装');
+  assert.equal(asset.thumbnailUrl, `/api/assets/${id}/thumbnail`);
+  const parameters = new URLSearchParams({ q: 'tray 夜间', category: '机电安装' });
+  parameters.append('tag', '夜间');
+  parameters.append('tag', '室内');
+  const listing = await (await fetch(`${base}/api/library?${parameters}`)).json();
+  assert.deepEqual(listing.assets.map(item => item.id), [id]);
+  assert.equal(listing.facets.categories.length, 2);
+  assert.equal(listing.facets.tags.length, 2);
+  const empty = await (await fetch(`${base}/api/library?uncategorized=1`)).json();
+  assert.equal(empty.assets.length, 0);
+  assert.equal(empty.total, 1);
+  assert.deepEqual(empty.facets, listing.facets);
+});
+
+test('HTTP metadata and query validation rejects unknown, duplicate and invalid fields without writes', async t => {
+  const { base, library } = await setup(t);
+  const bytes = await sharp({ create: { width: 3, height: 3, channels: 3, background: 'blue' } }).png().toBuffer();
+  await library.importFile('原图.png', bytes);
+  const id = library.assets[0].id;
+  for (const input of [null, [], {}, { name: '不保存', tags: [null] }, { path: 'C:\\secret' }, { categories: '分类' }]) {
+    const response = await fetch(`${base}/api/assets/${id}`, { method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify(input) });
+    assert.equal(response.status, 400);
+    assert.equal(typeof (await response.json()).error, 'string');
+  }
+  for (const query of ['q=a&q=b', 'category=a&category=b', 'category=a&uncategorized=1', 'tag=', 'uncategorized=true', 'unexpected=1']) {
+    assert.equal((await fetch(`${base}/api/library?${query}`)).status, 400, query);
+  }
+  assert.equal((await fetch(`${base}/api/assets/${id}?unknown=1`, { method: 'PATCH', headers: { 'content-type': 'application/json' }, body: '{"name":"不保存"}' })).status, 400);
+  assert.equal((await fetch(`${base}/api/assets/${id}`, { method: 'PATCH', headers: { 'content-type': 'text/plain' }, body: '{}' })).status, 415);
+  assert.equal((await fetch(`${base}/api/assets/${id}`, { method: 'PATCH', headers: { 'content-type': 'application/json' }, body: '{broken' })).status, 400);
+  assert.equal((await fetch(`${base}/api/assets/${'f'.repeat(64)}`, { method: 'PATCH', headers: { 'content-type': 'application/json' }, body: '{"name":"不存在"}' })).status, 404);
+  assert.equal((await fetch(`${base}/api/assets/${id}`, { method: 'PATCH', headers: { 'content-type': 'application/json', origin: 'https://attacker.example' }, body: '{"name":"不保存"}' })).status, 403);
+  assert.equal((await fetch(`${base}/api/import`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{"directory":"C:/素材","unknown":true}' })).status, 400);
+  assert.equal((await fetch(`${base}/api/import-file?name=a.png&category=`, { method: 'POST', headers: { 'content-type': 'application/octet-stream' }, body: bytes })).status, 400);
+  assert.equal(library.getAsset(id).name, '原图.png');
+  assert.deepEqual(library.getAsset(id).categories, []);
+  assert.equal(library.list().total, 1);
+});

@@ -82,6 +82,53 @@ try {
   await page.locator('#layoutMode').selectOption('inline');
   await page.locator('#saveLayout').click();
 
+  await page.locator('#editMetadata').click();
+  await page.locator('#assetName').fill('桥架施工.png');
+  await page.locator('#assetAliases').fill('电气安装\nBridge');
+  await page.locator('#assetCategories').fill('机电/桥架');
+  await page.locator('#assetTags').fill('桥架\n室内');
+  await page.locator('#saveMetadata').click();
+  await visibleText('#selectedName', '桥架施工.png');
+  await page.locator('#searchInput').fill('bridge 室内');
+  await visibleText('#resultCount', '1 / 2 张');
+  await visibleText('.asset-name', '桥架施工.png');
+  await page.locator('#openFilters').click();
+  await page.locator('#categorySelect').selectOption('category:机电/桥架');
+  await page.locator('#filterTags input[value="室内"]').check();
+  await page.locator('#applyFilters').click();
+  await visibleText('#resultCount', '1 / 2 张');
+  await page.locator('#searchInput').fill('不存在的工序');
+  await visibleText('#stateTitle', '没有找到');
+  await page.locator('#clearSearch').click();
+  await visibleText('#resultCount', '1 / 2 张');
+  await page.locator('#openFilters').click();
+  await page.locator('#categorySelect').selectOption('uncategorized');
+  await page.locator('#filterTags input[value="室内"]').uncheck();
+  await page.locator('#applyFilters').click();
+  await visibleText('#resultCount', '1 / 2 张');
+  await visibleText('.asset-name', filename);
+  await page.locator('#clearFilters').click();
+  await visibleText('#resultCount', '2 张');
+  await page.reload();
+  await page.locator('#searchInput').fill('桥架 室内');
+  await visibleText('#resultCount', '1 / 2 张');
+  await visibleText('.asset-name', '桥架施工.png');
+  await page.locator('#clearSearch').click();
+  await visibleText('#resultCount', '2 张');
+
+  await page.locator('.asset-card').first().click();
+  await page.locator('#editMetadata').click();
+  await page.locator('#assetName').fill('不应保存的名称');
+  await page.route('**/api/assets/*', route => route.request().method() === 'PATCH'
+    ? route.fulfill({ status: 500, contentType: 'application/json', body: JSON.stringify({ error: '验收用信息保存失败' }) })
+    : route.continue());
+  await page.locator('#saveMetadata').click();
+  await visibleText('#metadataError', '验收用信息保存失败');
+  assert.equal(await page.locator('#assetName').inputValue(), '不应保存的名称');
+  await page.locator('#cancelMetadata').click();
+  await page.unroute('**/api/assets/*');
+  await visibleText('#selectedName', filename);
+
   for (const width of [320, 420, 1080]) {
     await page.setViewportSize({ width, height: 800 });
     assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true, `${width}px 无横向溢出`);
@@ -90,6 +137,9 @@ try {
     await page.locator('#layoutSettingsButton').click();
     assert.equal(await page.evaluate(() => document.querySelector('#layoutDialog').scrollWidth <= document.querySelector('#layoutDialog').clientWidth), true, `${width}px 排版对话框无横向溢出`);
     await page.locator('#cancelLayout').click();
+    await page.locator('#editMetadata').click();
+    assert.equal(await page.evaluate(() => document.querySelector('#metadataDialog').scrollWidth <= document.querySelector('#metadataDialog').clientWidth), true, `${width}px 素材信息无横向溢出`);
+    await page.locator('#cancelMetadata').click();
   }
 
   // Linux CI exercises a simulated Windows host; keep its local-path contract.
@@ -167,7 +217,7 @@ try {
   await visibleText('#actionStatus', '未能保存在本机');
   await visibleText('#layoutSettingsButton', '宽 9 厘米');
   assert.deepEqual(failures, []);
-  console.log('UI 验收通过：导入/检索/预览、排版偏好重载与损坏/写入失败恢复、图题切图隔离、320/420/1080 布局、模拟 WPS 固定宽度插入及保留选区、连续插图、只读提示、读取失败重试');
+  console.log('UI 验收通过：导入/检索/预览、素材信息编辑与失败保留、分类/未分类/多词标签筛选及重载、排版偏好恢复、图题切图隔离、320/420/1080 布局、模拟 WPS 固定宽度插入及保留选区、连续插图、只读提示、读取失败重试');
   console.log('WPS 行为使用模拟宿主；真实 WPS 验收另行记录。');
 } finally {
   await browser?.close();

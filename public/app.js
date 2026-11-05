@@ -14,6 +14,10 @@ const ui = Object.fromEntries([
   'layoutSettingsButton', 'layoutDialog', 'layoutForm', 'widthMode', 'widthCm',
   'maxHeightCm', 'layoutMode', 'includeCaption', 'captionFields', 'captionText',
   'layoutError', 'saveLayout', 'cancelLayout', 'resetLayout',
+  'openFilters', 'filterSummary', 'clearFilters', 'filterDialog', 'filterForm',
+  'categorySelect', 'filterTags', 'applyFilters', 'cancelFilters',
+  'editMetadata', 'metadataDialog', 'metadataForm', 'assetName', 'assetAliases',
+  'assetCategories', 'assetTags', 'metadataError', 'saveMetadata', 'cancelMetadata',
 ].map((id) => [id, element(id)]));
 
 let selected = null;
@@ -26,6 +30,81 @@ let libraryRequest;
 let stateAction = null;
 let layoutPreferences = { ...normalizeLayoutOptions(), includeCaption: false };
 let captionDraft = '';
+let filters = { category: '', uncategorized: false, tags: [] };
+let libraryFacets = { categories: [], tags: [], uncategorized: 0 };
+let editingAsset = null;
+let savingMetadata = false;
+
+function hasFilters() {
+  return Boolean(filters.category || filters.uncategorized || filters.tags.length);
+}
+
+function updateFilterSummary() {
+  const category = filters.uncategorized ? '未分类' : filters.category || '全部分类';
+  const tags = filters.tags.length ? filters.tags.join('、') : '不限工序';
+  ui.filterSummary.textContent = `${category} · ${tags}`;
+  ui.filterSummary.title = ui.filterSummary.textContent;
+  ui.clearFilters.hidden = !hasFilters();
+}
+
+function fillFilters() {
+  const categories = [...libraryFacets.categories];
+  if (filters.category && !categories.some(item => item.name === filters.category)) {
+    categories.push({ name: filters.category, count: 0 });
+  }
+  ui.categorySelect.replaceChildren(
+    new Option('全部分类', 'all'),
+    new Option(`未分类（${libraryFacets.uncategorized}）`, 'uncategorized'),
+    ...categories.map(item => new Option(`${item.name}（${item.count}）`, `category:${item.name}`)),
+  );
+  ui.categorySelect.value = filters.uncategorized ? 'uncategorized' : filters.category ? `category:${filters.category}` : 'all';
+  const tags = [...libraryFacets.tags];
+  for (const name of filters.tags) {
+    if (!tags.some(item => item.name === name)) tags.push({ name, count: 0 });
+  }
+  ui.filterTags.replaceChildren();
+  for (const [index, tag] of tags.entries()) {
+    const label = document.createElement('label');
+    label.className = 'checkbox-label';
+    const input = document.createElement('input');
+    input.type = 'checkbox';
+    input.name = 'filterTag';
+    input.id = `filterTag-${index}`;
+    input.value = tag.name;
+    input.checked = filters.tags.includes(tag.name);
+    const name = document.createElement('span');
+    name.textContent = tag.name;
+    const count = document.createElement('span');
+    count.className = 'meta';
+    count.textContent = String(tag.count);
+    label.append(input, name, count);
+    ui.filterTags.append(label);
+  }
+  if (!tags.length) {
+    const empty = document.createElement('p');
+    empty.className = 'supporting';
+    empty.textContent = '尚无工序标签，可在所选图片的“素材信息”中添加';
+    ui.filterTags.append(empty);
+  }
+}
+
+function applyFilterChange() {
+  clearTimeout(searchTimer);
+  requestVersion += 1;
+  libraryRequest?.abort();
+  selectAsset(null);
+  renderAssets([]);
+  ui.libraryState.hidden = true;
+  updateFilterSummary();
+  loadLibrary();
+}
+
+function clearAllConditions() {
+  ui.searchInput.value = '';
+  ui.clearSearch.hidden = true;
+  filters = { category: '', uncategorized: false, tags: [] };
+  applyFilterChange();
+}
 
 function defaultCaption(asset) {
   return asset ? asset.name.replace(/\.(?:png|jpe?g|webp)$/i, '').slice(0, 200) : '';
@@ -106,12 +185,15 @@ function refreshHost() {
 }
 
 function selectAsset(asset) {
-  if (asset?.id !== selected?.id) captionDraft = defaultCaption(asset);
+  if (asset?.id !== selected?.id || (asset && asset.name !== selected?.name && captionDraft === defaultCaption(selected))) {
+    captionDraft = defaultCaption(asset);
+  }
   selected = asset;
   for (const card of ui.assetGrid.children) {
     card.setAttribute('aria-pressed', String(card.dataset.id === asset?.id));
   }
   ui.previewButton.disabled = !asset;
+  ui.editMetadata.disabled = !asset;
   ui.selectedThumbnail.hidden = !asset;
   ui.previewPlaceholder.hidden = Boolean(asset);
   ui.selectedName.textContent = asset ? asset.name : '尚未选择图片';
@@ -189,19 +271,26 @@ async function loadLibrary() {
   libraryRequest?.abort();
   libraryRequest = new AbortController();
   const query = ui.searchInput.value.trim();
+  const parameters = new URLSearchParams({ q: query });
+  if (filters.category) parameters.set('category', filters.category);
+  if (filters.uncategorized) parameters.set('uncategorized', '1');
+  for (const tag of filters.tags) parameters.append('tag', tag);
   ui.assetGrid.setAttribute('aria-busy', 'true');
   ui.resultCount.textContent = '正在检索';
   try {
-    const data = await request(`/api/library?q=${encodeURIComponent(query)}`, { signal: libraryRequest.signal });
+    const data = await request(`/api/library?${parameters}`, { signal: libraryRequest.signal });
     if (version !== requestVersion) return;
+    libraryFacets = data.facets;
+    ui.openFilters.disabled = false;
     renderAssets(data.assets);
-    ui.resultCount.textContent = query ? `${data.assets.length} / ${data.total} 张` : `${data.total} 张`;
+    ui.resultCount.textContent = query || hasFilters() ? `${data.assets.length} / ${data.total} 张` : `${data.total} 张`;
     ui.libraryState.hidden = data.assets.length > 0;
     if (!data.assets.length) {
-      if (query) showLibraryState('没有找到匹配图片', '换一个图片名称，或清空搜索查看全部素材', '清空搜索', clearSearch);
+      if (query || hasFilters()) showLibraryState('没有找到匹配图片', '关键词、分类和工序标签需要同时匹配，试着减少条件', '清除全部条件', clearAllConditions);
       else showLibraryState('先添加一组标书配图', '导入本地图片后，就可以按名称查找并插入标书', '导入素材', openImport);
     }
     if (selected) selectAsset(data.assets.find((asset) => asset.id === selected.id) || null);
+    return data;
   } catch (error) {
     if (version !== requestVersion || error.name === 'AbortError') return;
     renderAssets([]);
@@ -219,6 +308,10 @@ function scheduleSearch() {
   libraryRequest?.abort();
   ui.clearSearch.hidden = !ui.searchInput.value;
   selectAsset(null);
+  renderAssets([]);
+  ui.libraryState.hidden = true;
+  ui.assetGrid.setAttribute('aria-busy', 'true');
+  ui.resultCount.textContent = '正在检索';
   searchTimer = setTimeout(loadLibrary, 180);
 }
 
@@ -307,6 +400,91 @@ ui.directoryForm.addEventListener('submit', (event) => {
 });
 ui.searchInput.addEventListener('input', scheduleSearch);
 ui.clearSearch.addEventListener('click', clearSearch);
+ui.openFilters.addEventListener('click', () => {
+  fillFilters();
+  ui.filterDialog.showModal();
+  ui.categorySelect.focus();
+});
+ui.cancelFilters.addEventListener('click', () => ui.filterDialog.close());
+ui.filterForm.addEventListener('submit', (event) => {
+  event.preventDefault();
+  const category = ui.categorySelect.value;
+  filters = {
+    category: category.startsWith('category:') ? category.slice('category:'.length) : '',
+    uncategorized: category === 'uncategorized',
+    tags: Array.from(ui.filterTags.querySelectorAll('input[name="filterTag"]:checked'), input => input.value),
+  };
+  ui.filterDialog.close();
+  applyFilterChange();
+});
+ui.clearFilters.addEventListener('click', () => {
+  filters = { category: '', uncategorized: false, tags: [] };
+  applyFilterChange();
+});
+ui.editMetadata.addEventListener('click', () => {
+  if (!selected || savingMetadata) return;
+  editingAsset = selected;
+  ui.assetName.value = selected.name;
+  ui.assetAliases.value = selected.aliases.join('\n');
+  ui.assetCategories.value = selected.categories.join('\n');
+  ui.assetTags.value = selected.tags.join('\n');
+  ui.metadataError.hidden = true;
+  ui.metadataDialog.showModal();
+  ui.assetName.focus();
+});
+ui.cancelMetadata.addEventListener('click', () => ui.metadataDialog.close());
+ui.metadataDialog.addEventListener('cancel', event => {
+  if (savingMetadata) event.preventDefault();
+});
+ui.metadataForm.addEventListener('submit', async (event) => {
+  event.preventDefault();
+  if (!editingAsset || savingMetadata) return;
+  ui.metadataError.hidden = true;
+  const name = ui.assetName.value.trim();
+  if (!name) {
+    ui.metadataError.textContent = '请填写图片名称';
+    ui.metadataError.hidden = false;
+    ui.assetName.focus();
+    return;
+  }
+  const lines = value => value.split(/\r?\n/).map(item => item.trim()).filter(Boolean);
+  const fields = {
+    name,
+    aliases: lines(ui.assetAliases.value),
+    categories: lines(ui.assetCategories.value),
+    tags: lines(ui.assetTags.value),
+  };
+  const patch = Object.fromEntries(Object.entries(fields)
+    .filter(([key, value]) => JSON.stringify(value) !== JSON.stringify(editingAsset[key])));
+  if (!Object.keys(patch).length) {
+    ui.metadataDialog.close();
+    showAction('素材信息未改变');
+    return;
+  }
+  savingMetadata = true;
+  for (const control of ui.metadataForm.elements) control.disabled = true;
+  ui.saveMetadata.textContent = '正在保存';
+  let persisted = false;
+  try {
+    const { asset } = await request(`/api/assets/${encodeURIComponent(editingAsset.id)}`, {
+      method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(patch),
+    });
+    persisted = true;
+    const data = await loadLibrary();
+    const visible = data?.assets.find(item => item.id === asset.id);
+    if (data) selectAsset(visible || null);
+    ui.metadataDialog.close();
+    showAction(!data ? '素材信息已保存，但图库刷新失败，请重新读取'
+      : visible ? '素材信息已保存' : '素材信息已保存，图片不在当前筛选结果中', !data);
+  } catch (error) {
+    ui.metadataError.textContent = persisted ? '素材信息已保存，但显示未能刷新，请关闭后重新读取图库' : `保存失败：${readableError(error)}`;
+    ui.metadataError.hidden = false;
+  } finally {
+    savingMetadata = false;
+    for (const control of ui.metadataForm.elements) control.disabled = false;
+    ui.saveMetadata.textContent = '保存信息';
+  }
+});
 ui.stateAction.addEventListener('click', () => stateAction?.());
 ui.previewButton.addEventListener('click', () => {
   if (!selected) return;
