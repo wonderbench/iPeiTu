@@ -1,13 +1,15 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { mkdir, readFile, writeFile, rename, lstat, readdir, stat, realpath } from 'node:fs/promises';
+import { mkdir, readFile, writeFile, rename, lstat, opendir, open, stat, realpath } from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
 import sharp from 'sharp';
 
 export const MAX_IMAGE_BYTES = 32 * 1024 * 1024;
 export const MAX_IMAGE_PIXELS = 64 * 1000 * 1000;
+export const MAX_IMPORT_ENTRIES = 10000;
+export const MAX_IMPORT_FAILURES = 1000;
 const formats = new Set(['jpeg', 'png', 'webp']);
-const extensions = new Set(['.jpg', '.jpeg', '.png', '.webp', '.bmp', '.gif', '.tif', '.tiff', '.svg', '.heic', '.avif']);
+const extensions = new Set(['.jpg', '.jpeg', '.jfif', '.png', '.webp', '.bmp', '.gif', '.tif', '.tiff', '.svg', '.heic', '.heif', '.avif', '.ico']);
 const idPattern = /^[a-f0-9]{64}$/;
 const metadataLimits = { aliases: [100, 255], categories: [32, 255], tags: [64, 64] };
 const fieldLabels = { name: '图片名称', aliases: '别名', categories: '分类', tags: '标签' };
@@ -71,6 +73,31 @@ function validV2Record(asset) {
     if (error instanceof LibraryError) return false;
     throw error;
   }
+}
+
+function validTimestamp(value) {
+  return typeof value === 'string' && Number.isFinite(Date.parse(value)) && new Date(value).toISOString() === value;
+}
+
+function validV3Record(asset) {
+  return validV2Record(asset) && (asset.deletedAt === null || validTimestamp(asset.deletedAt));
+}
+
+function comparablePath(value) {
+  return process.platform === 'win32' ? value.toLowerCase() : value;
+}
+
+function pathContains(parent, child) {
+  const relative = path.relative(comparablePath(parent), comparablePath(child));
+  return relative === '' || (relative !== '..' && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative));
+}
+
+export function importErrorMessage(error) {
+  if (error instanceof LibraryError) return error.message;
+  console.error('iPeiTu 导入失败:', error);
+  return ({ ENOENT: '来源已不存在，请重新选择或恢复文件后重试', ENOTDIR: '来源目录结构已改变',
+    EACCES: '没有读取或写入权限，请检查文件权限', EPERM: '文件被占用或没有操作权限',
+    ENOSPC: '图库所在磁盘空间不足，请释放空间后重试' })[error.code] || '本地文件读写失败，请查看服务窗口后重试';
 }
 
 function hasExactFields(value, fields) {
@@ -159,19 +186,21 @@ export class Library {
     try { index = JSON.parse(original.toString('utf8')); } catch {
       throw new LibraryError('图库索引不是有效 JSON，请保留原文件并恢复备份', 500);
     }
-    if (index && ![1, 2].includes(index.version)) {
+    if (index && ![1, 2, 3].includes(index.version)) {
       throw new LibraryError('图库索引版本不受支持，请使用对应版本的 iPeiTu；原文件未修改', 500);
     }
-    if (!index || !Array.isArray(index.assets) || !index.assets.every(index.version === 1 ? validRecord : validV2Record)
+    const validator = index?.version === 1 ? validRecord : index?.version === 2 ? validV2Record : validV3Record;
+    if (!index || !Array.isArray(index.assets) || !index.assets.every(validator)
       || new Set(index.assets.map(asset => asset.id)).size !== index.assets.length) {
       throw new LibraryError('图库索引结构损坏，无法安全读取', 500);
     }
     // Refuse damaged personal state before attempting any historical index migration.
     await library.loadUsage(index.assets);
-    if (index.version === 1) {
-      const backup = path.join(library.directory, `index-v1-backup-${Date.now()}-${randomUUID()}.json`);
+    if (index.version < 3) {
+      const backup = path.join(library.directory, `index-v${index.version}-backup-${Date.now()}-${randomUUID()}.json`);
       await writeFile(backup, original, { flag: 'wx' });
-      await library.persist(index.assets.map(asset => ({ ...asset, categories: [], tags: [] })));
+      await library.persist(index.assets.map(asset => ({ ...asset,
+        ...(index.version === 1 ? { categories: [], tags: [] } : {}), deletedAt: null })));
     } else {
       library.assets = index.assets;
     }
@@ -202,7 +231,7 @@ export class Library {
 
   async persist(assets) {
     const temporary = path.join(this.directory, `index-${randomUUID()}.tmp`);
-    await writeFile(temporary, `${JSON.stringify({ version: 2, assets }, null, 2)}\n`, { flag: 'wx' });
+    await writeFile(temporary, `${JSON.stringify({ version: 3, assets }, null, 2)}\n`, { flag: 'wx' });
     await rename(temporary, path.join(this.directory, 'index.json'));
     this.assets = assets;
   }
@@ -212,22 +241,29 @@ export class Library {
     this.usage = usage;
   }
 
+  get activeTotal() {
+    return this.assets.filter(asset => asset.deletedAt === null).length;
+  }
+
   list(query = '', { category = '', tags = [], uncategorized = false, view = 'all' } = {}) {
     if (typeof query !== 'string' || query.length > 512 || /[\x00-\x08\x0e-\x1f\x7f]/.test(query)) {
       throw new LibraryError('检索词须为不超过 512 个字符的文字');
     }
     if (typeof category !== 'string') throw new LibraryError('分类筛选须为文字');
     if (typeof uncategorized !== 'boolean') throw new LibraryError('未分类筛选值无效');
-    if (!['all', 'favorites', 'recent'].includes(view)) throw new LibraryError('view 仅接受 all、favorites 或 recent');
+    if (!['all', 'favorites', 'recent', 'trash'].includes(view)) throw new LibraryError('view 仅接受 all、favorites、recent 或 trash');
     const categoryKey = category ? matchKey(metadataText(category, 'categories', 255)) : '';
     if (categoryKey && uncategorized) throw new LibraryError('分类与未分类条件不能同时使用');
     const tagKeys = metadataList(tags, 'tags').map(matchKey);
     const terms = matchKey(query).trim().split(/\s+/).filter(Boolean);
-    let viewAssets = this.assets;
-    if (view === 'favorites') viewAssets = this.assets.filter(asset => this.usage.favorites.includes(asset.id));
+    const activeAssets = this.assets.filter(asset => asset.deletedAt === null);
+    const facetAssets = view === 'trash' ? this.assets.filter(asset => asset.deletedAt !== null) : activeAssets;
+    let viewAssets = facetAssets;
+    if (view === 'trash') viewAssets = [...facetAssets].sort((a, b) => Date.parse(b.deletedAt) - Date.parse(a.deletedAt));
+    else if (view === 'favorites') viewAssets = activeAssets.filter(asset => this.usage.favorites.includes(asset.id));
     else if (view === 'recent') {
-      const byId = new Map(this.assets.map(asset => [asset.id, asset]));
-      viewAssets = this.usage.recent.map(entry => byId.get(entry.id));
+      const byId = new Map(activeAssets.map(asset => [asset.id, asset]));
+      viewAssets = this.usage.recent.map(entry => byId.get(entry.id)).filter(Boolean);
     }
     const assets = viewAssets.filter(asset => {
       const names = [asset.name, ...asset.aliases, ...asset.tags].map(matchKey);
@@ -236,10 +272,10 @@ export class Library {
         && (!uncategorized || asset.categories.length === 0)
         && tagKeys.every(tag => asset.tags.some(item => matchKey(item) === tag));
     }).map(asset => displayAsset(asset, this.usage));
-    const facets = { categories: [], tags: [], uncategorized: this.assets.filter(asset => asset.categories.length === 0).length };
+    const facets = { categories: [], tags: [], uncategorized: facetAssets.filter(asset => asset.categories.length === 0).length };
     for (const field of ['categories', 'tags']) {
       const counts = new Map();
-      for (const asset of this.assets) {
+      for (const asset of facetAssets) {
         for (const name of asset[field]) {
           const key = matchKey(name);
           if (counts.has(key)) counts.get(key).count++;
@@ -248,7 +284,7 @@ export class Library {
       }
       facets[field] = [...counts.values()].sort((a, b) => a.name.localeCompare(b.name, 'zh-CN'));
     }
-    return { assets, total: this.assets.length, viewTotal: viewAssets.length, facets };
+    return { assets, total: activeAssets.length, viewTotal: viewAssets.length, facets };
   }
 
   updateAsset(id, input) {
@@ -295,15 +331,36 @@ export class Library {
     });
   }
 
-  getAsset(id) {
+  setTrash(id, input) {
+    return this.serialize(async () => {
+      const asset = this.getAsset(id, { includeDeleted: true });
+      if (!hasExactFields(input, ['trashed']) || typeof input.trashed !== 'boolean') throw new LibraryError('移出设置仅接受 trashed 布尔值');
+      if ((asset.deletedAt !== null) === input.trashed) return displayAsset(asset, this.usage);
+      if (!input.trashed) {
+        await this.file(id, 'image');
+        if (asset.normalized || asset.format === 'webp') {
+          try { await stat(path.join(this.directory, 'insertion', `${id}.png`)); } catch (error) {
+            if (error.code === 'ENOENT') throw new LibraryError('插入副本已丢失，请重新导入原素材以恢复', 404);
+            throw error;
+          }
+        }
+      }
+      const updated = { ...asset, deletedAt: input.trashed ? new Date().toISOString() : null };
+      await this.persist(this.assets.map(item => item.id === id ? updated : item));
+      return displayAsset(updated, this.usage);
+    });
+  }
+
+  getAsset(id, { includeDeleted = false } = {}) {
     if (!idPattern.test(id)) throw new LibraryError('找不到该图片', 404);
     const asset = this.assets.find(item => item.id === id);
     if (!asset) throw new LibraryError('找不到该图片', 404);
+    if (!includeDeleted && asset.deletedAt !== null) throw new LibraryError('图片已移出图库，请先恢复后使用', 410);
     return asset;
   }
 
   async file(id, kind) {
-    const asset = this.getAsset(id);
+    const asset = this.getAsset(id, { includeDeleted: true });
     const filePath = kind === 'thumbnail'
       ? path.join(this.directory, 'thumbnails', `${id}.jpeg`)
       : path.join(this.directory, 'images', `${id}.${asset.format}`);
@@ -323,7 +380,8 @@ export class Library {
       if (error.code === 'ENOENT') throw new LibraryError('图片文件已丢失，请重新导入素材', 404);
       throw error;
     }
-    return { path: filePath, name: asset.name, width: asset.width, height: asset.height };
+    const current = this.getAsset(id);
+    return { path: filePath, name: current.name, width: current.width, height: current.height };
   }
 
   async importImage(name, buffer, categories = []) {
@@ -347,19 +405,21 @@ export class Library {
     const normalized = metadata.format === 'webp' || (metadata.orientation >= 2 && metadata.orientation <= 8);
     const existing = this.assets.find(asset => asset.id === id);
     if (existing) {
-      const aliases = mergeMetadata(existing.aliases, matchKey(existing.name) === matchKey(name) ? [] : [name], 'aliases');
-      const mergedCategories = mergeMetadata(existing.categories, categories, 'categories');
+      const restoring = existing.deletedAt !== null;
+      const aliases = restoring ? existing.aliases
+        : mergeMetadata(existing.aliases, matchKey(existing.name) === matchKey(name) ? [] : [name], 'aliases');
+      const mergedCategories = restoring ? existing.categories : mergeMetadata(existing.categories, categories, 'categories');
       // Restore missing managed files on reimport, as the missing-file message directs.
       await this.writeImages(id, metadata.format, buffer, thumbnail, image, normalized);
-      if (aliases.length !== existing.aliases.length || mergedCategories.length !== existing.categories.length || existing.normalized !== normalized) {
-        const updated = { ...existing, normalized, aliases, categories: mergedCategories };
+      if (existing.deletedAt !== null || aliases.length !== existing.aliases.length || mergedCategories.length !== existing.categories.length || existing.normalized !== normalized) {
+        const updated = { ...existing, normalized, aliases, categories: mergedCategories, deletedAt: null };
         await this.persist(this.assets.map(asset => asset.id === id ? updated : asset));
       }
-      return 'duplicates';
+      return existing.deletedAt !== null ? 'restored' : 'duplicates';
     }
     await this.writeImages(id, metadata.format, buffer, thumbnail, image, normalized);
     const rotated = metadata.orientation >= 5 && metadata.orientation <= 8;
-    const asset = { id, name, aliases: [], categories, tags: [], format: metadata.format, bytes: buffer.length, normalized,
+    const asset = { id, name, aliases: [], categories, tags: [], deletedAt: null, format: metadata.format, bytes: buffer.length, normalized,
       width: rotated ? metadata.height : metadata.width, height: rotated ? metadata.width : metadata.height };
     await this.persist([...this.assets, asset]);
     return 'imported';
@@ -374,71 +434,132 @@ export class Library {
   importFile(name, buffer, category) {
     return this.serialize(async () => {
       const categories = category === undefined ? [] : [metadataText(category, 'categories', 255)];
-      const result = { imported: 0, duplicates: 0, failed: [], total: this.assets.length };
+      const result = { imported: 0, duplicates: 0, restored: 0, failed: [], total: this.activeTotal };
       try { result[await this.importImage(name, buffer, categories)]++; } catch (error) {
         if (!(error instanceof LibraryError)) throw error;
         result.failed.push({ name: typeof name === 'string' ? name : '', error: error.message });
       }
-      result.total = this.assets.length;
+      result.total = this.activeTotal;
       return result;
     });
   }
 
-  importDirectory(directory) {
-    return this.serialize(async () => {
-      if (typeof directory !== 'string' || !path.isAbsolute(directory) || directory.includes('\0')) {
-        throw new LibraryError('请输入素材文件夹的完整本地路径');
+  async prepareImportDirectory(directory) {
+    if (typeof directory !== 'string' || !path.isAbsolute(directory) || directory.includes('\0')) {
+      throw new LibraryError('请输入素材文件夹的完整本地路径');
+    }
+    const source = path.resolve(directory);
+    let details;
+    try {
+      // Reject junctions in ancestors too: validating only the final directory
+      // would allow a stored retry source to be redirected through its parent.
+      const root = path.parse(source).root;
+      let component = root;
+      for (const part of source.slice(root.length).split(path.sep).filter(Boolean)) {
+        component = path.join(component, part);
+        details = await lstat(component);
+        if (details.isSymbolicLink()) throw new LibraryError('请选择实际文件夹，路径不能包含符号链接');
       }
-      let root;
-      try { root = await lstat(directory); } catch (error) {
-        if (error.code === 'ENOENT' || error.code === 'ENOTDIR') throw new LibraryError('素材文件夹不存在');
-        throw error;
-      }
-      if (!root.isDirectory() || root.isSymbolicLink()) throw new LibraryError('请选择实际文件夹，不能使用文件或符号链接');
-      const rootPath = await realpath(directory);
-      const libraryPath = await realpath(this.directory);
-      const compareRoot = process.platform === 'win32' ? rootPath.toLowerCase() : rootPath;
-      const compareLibrary = process.platform === 'win32' ? libraryPath.toLowerCase() : libraryPath;
-      const isWithin = (parent, child) => {
-        const relative = path.relative(parent, child);
-        return relative === '' || (relative !== '..' && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative));
-      };
-      if (isWithin(compareRoot, compareLibrary) || isWithin(compareLibrary, compareRoot)) {
-        throw new LibraryError('素材目录不能包含图库的存储目录，也不能位于图库内');
-      }
-      const result = { imported: 0, duplicates: 0, failed: [], total: this.assets.length };
-      const visit = async current => {
-        let entries;
-        try { entries = await readdir(current, { withFileTypes: true }); } catch (error) {
-          result.failed.push({ name: path.basename(current), error: `无法读取文件夹：${error.message}` });
-          return;
+      details = await lstat(source);
+    } catch (error) {
+      if (error.code === 'ENOENT' || error.code === 'ENOTDIR') throw new LibraryError('素材文件夹不存在');
+      throw error;
+    }
+    if (!details.isDirectory() || details.isSymbolicLink()) throw new LibraryError('请选择实际文件夹，不能使用文件或符号链接');
+    const root = await realpath(source);
+    const storage = await realpath(this.directory);
+    if (pathContains(root, storage) || pathContains(storage, root)) throw new LibraryError('素材目录不能包含图库的存储目录，也不能位于图库内');
+    return { source, root };
+  }
+
+  async resolveImportSource(context, relativePath, kind) {
+    const current = await this.prepareImportDirectory(context.source);
+    if (comparablePath(current.root) !== comparablePath(context.root)) throw new LibraryError('来源目录指向已改变，请重新选择素材目录');
+    if (typeof relativePath !== 'string' || relativePath.includes('\\') || relativePath.includes('\0')
+      || path.isAbsolute(relativePath) || path.win32.isAbsolute(relativePath)
+      || relativePath.split('/').some(part => part === '.' || part === '..' || part.includes(':'))
+      || (relativePath && relativePath.split('/').some(part => !part))) throw new LibraryError('来源相对路径无效');
+    const parts = relativePath ? relativePath.split('/') : [];
+    let candidate = context.root;
+    let details = await lstat(candidate);
+    for (const [index, part] of parts.entries()) {
+      candidate = path.join(candidate, part);
+      details = await lstat(candidate);
+      if (details.isSymbolicLink()) throw new LibraryError('来源已变为符号链接，请重新选择实际文件');
+      if (index < parts.length - 1 && !details.isDirectory()) throw new LibraryError('来源目录结构已改变');
+    }
+    if ((kind === 'file' && !details.isFile()) || (kind === 'directory' && !details.isDirectory())) throw new LibraryError('来源文件类型已改变');
+    if (!pathContains(context.root, await realpath(candidate))) throw new LibraryError('来源文件已移出所选目录');
+    return { path: candidate, details };
+  }
+
+  async *walkImportDirectory(context, { relativePath = '', budget = { entries: 0 }, limit = MAX_IMPORT_ENTRIES } = {}) {
+    let folder;
+    try {
+      const resolved = await this.resolveImportSource(context, relativePath, 'directory');
+      folder = await opendir(resolved.path);
+    } catch (error) {
+      yield { kind: 'directory', relativePath, name: path.posix.basename(relativePath) || path.basename(context.root) || '根目录', error };
+      return;
+    }
+    try {
+      for await (const entry of folder) {
+        const child = relativePath ? `${relativePath}/${entry.name}` : entry.name;
+        budget.entries++;
+        if (budget.entries > limit) throw new LibraryError(`目录扫描达到 ${limit} 个文件或目录的上限，已停止于「${child}」，其后项目尚未扫描，请选择更小的目录`);
+        if (entry.isSymbolicLink()) continue;
+        if (entry.isDirectory()) {
+          yield* this.walkImportDirectory(context, { relativePath: child, budget, limit });
+        } else if (entry.isFile() && extensions.has(path.extname(entry.name).toLowerCase())) {
+          yield { kind: 'file', name: entry.name, relativePath: child };
         }
-        entries.sort((a, b) => a.name.localeCompare(b.name, 'zh-CN'));
-        for (const entry of entries) {
-          const filePath = path.join(current, entry.name);
-          if (entry.isSymbolicLink()) continue;
-          if (entry.isDirectory()) { await visit(filePath); continue; }
-          if (!entry.isFile() || !extensions.has(path.extname(entry.name).toLowerCase())) continue;
-          let buffer;
-          try {
-            const details = await lstat(filePath);
-            if (details.isSymbolicLink() || !details.isFile()) continue;
-            if (details.size > MAX_IMAGE_BYTES) throw new LibraryError('单张图片不超过 32 MB', 413);
-            buffer = await readFile(filePath);
-          } catch (error) {
-            result.failed.push({ name: entry.name, error: error.message });
-            continue;
-          }
-          const category = path.relative(rootPath, current).split(path.sep).join('/') || path.basename(rootPath);
-          try { result[await this.importImage(entry.name, buffer, category ? [category] : [])]++; } catch (error) {
-            if (!(error instanceof LibraryError)) throw error;
-            result.failed.push({ name: entry.name, error: error.message });
-          }
+      }
+    } catch (error) {
+      if (error instanceof LibraryError) throw error;
+      yield { kind: 'directory', relativePath, name: path.posix.basename(relativePath) || path.basename(context.root) || '根目录', error };
+    }
+  }
+
+  async importSourceFile(context, descriptor) {
+    const source = await this.resolveImportSource(context, descriptor.relativePath, 'file');
+    if (source.details.size > MAX_IMAGE_BYTES) throw new LibraryError('单张图片不超过 32 MB', 413);
+    const handle = await open(source.path, 'r');
+    let buffer;
+    try {
+      const opened = await handle.stat();
+      if (!opened.isFile() || opened.dev !== source.details.dev || opened.ino !== source.details.ino) throw new LibraryError('来源文件在读取前已改变，请重新选择');
+      const verified = await this.resolveImportSource(context, descriptor.relativePath, 'file');
+      if (opened.dev !== verified.details.dev || opened.ino !== verified.details.ino) throw new LibraryError('来源文件在读取前已改变，请重新选择');
+      const chunks = [];
+      let length = 0;
+      const stream = handle.createReadStream({ autoClose: false });
+      try {
+        for await (const chunk of stream) {
+          length += chunk.length;
+          if (length > MAX_IMAGE_BYTES) throw new LibraryError('单张图片不超过 32 MB', 413);
+          chunks.push(chunk);
         }
-      };
-      await visit(rootPath);
-      result.total = this.assets.length;
-      return result;
-    });
+      } finally { stream.destroy(); }
+      buffer = Buffer.concat(chunks);
+    } finally { await handle.close(); }
+    const parent = path.posix.dirname(descriptor.relativePath);
+    const category = parent === '.' ? path.basename(context.root) : parent;
+    return this.serialize(() => this.importImage(descriptor.name, buffer, category ? [category] : []));
+  }
+
+  async importDirectory(directory) {
+    const context = await this.prepareImportDirectory(directory);
+    const result = { imported: 0, duplicates: 0, restored: 0, failed: [], total: this.activeTotal };
+    for await (const entry of this.walkImportDirectory(context)) {
+      try {
+        if (entry.error) throw entry.error;
+        result[await this.importSourceFile(context, entry)]++;
+      } catch (error) {
+        result.failed.push({ name: entry.name, error: importErrorMessage(error) });
+        if (result.failed.length >= MAX_IMPORT_FAILURES) throw new LibraryError(`导入达到 ${MAX_IMPORT_FAILURES} 项失败报告上限，已停止；已成功导入 ${result.imported} 张、恢复 ${result.restored} 张，结果仍保留`);
+      }
+    }
+    result.total = this.activeTotal;
+    return result;
   }
 }

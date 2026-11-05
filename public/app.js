@@ -4,6 +4,7 @@ import {
 } from './wps-bridge.js';
 import { normalizeLayoutOptions } from './layout-options.js';
 import { loadLayoutPreferences, saveLayoutPreferences } from './layout-preferences.js';
+import { createImportController } from './import-controller.js';
 
 const element = (id) => document.getElementById(id);
 const ui = Object.fromEntries([
@@ -22,12 +23,13 @@ const ui = Object.fromEntries([
   'editMetadata', 'metadataDialog', 'metadataForm', 'assetName', 'assetAliases',
   'assetCategories', 'assetTags', 'metadataError', 'saveMetadata', 'cancelMetadata',
   'libraryViews', 'viewAll', 'viewFavorites', 'viewRecent', 'favoriteButton',
-  'documentActions', 'replaceButton',
+  'documentActions', 'replaceButton', 'viewTrash', 'libraryTitle',
+  'chooseFolder', 'folderInput', 'retryImport', 'resumeImport', 'importMeter',
+  'trashButton', 'restoreButton',
 ].map((id) => [id, element(id)]));
 
 let selected = null;
 let hostAvailable = false;
-let importing = false;
 let inserting = false;
 let replacing = false;
 let replacementAvailable = false;
@@ -41,13 +43,15 @@ let filters = { category: '', uncategorized: false, tags: [] };
 let libraryFacets = { categories: [], tags: [], uncategorized: 0 };
 let editingAsset = null;
 let savingMetadata = false;
+let changingTrash = false;
 let libraryView = 'all';
 let visibleAssets = [];
 const favoriteRequests = new Set();
 
 function refreshFavoriteButton() {
   const pending = selected && favoriteRequests.has(selected.id);
-  ui.favoriteButton.disabled = !selected || pending;
+  ui.favoriteButton.hidden = libraryView === 'trash';
+  ui.favoriteButton.disabled = !selected || pending || changingTrash || libraryView === 'trash';
   ui.favoriteButton.setAttribute('aria-pressed', String(Boolean(selected?.favorite)));
   ui.favoriteButton.textContent = pending ? '保存中' : selected?.favorite ? '已收藏' : '收藏';
 }
@@ -55,6 +59,7 @@ function refreshFavoriteButton() {
 function setLibraryView(view) {
   if (view === libraryView) return;
   libraryView = view;
+  ui.libraryTitle.textContent = view === 'trash' ? '回收站' : '本地素材';
   for (const button of ui.libraryViews.children) {
     button.setAttribute('aria-pressed', String(button.dataset.view === view));
   }
@@ -175,7 +180,11 @@ function insertionOptions() {
 async function request(url, options = {}) {
   const response = await fetch(url, options);
   const data = await response.json();
-  if (!response.ok) throw new Error(data.error || `操作失败（${response.status}）`);
+  if (!response.ok) {
+    const error = new Error(data.error || `操作失败（${response.status}）`);
+    error.status = response.status;
+    throw error;
+  }
   return data;
 }
 
@@ -198,6 +207,14 @@ function showAction(message, error = false) {
 }
 
 function refreshHost() {
+  const trashed = libraryView === 'trash';
+  ui.documentActions.hidden = trashed;
+  ui.layoutSettingsButton.parentElement.hidden = trashed;
+  ui.hostStatus.hidden = trashed;
+  ui.restoreButton.hidden = !trashed;
+  ui.restoreButton.disabled = !selected || changingTrash || inserting || replacing;
+  ui.editMetadata.disabled = !selected || changingTrash || inserting || replacing || trashed;
+  ui.trashButton.disabled = changingTrash || savingMetadata || inserting || replacing;
   try {
     const status = getHostStatus();
     hostAvailable = status.available;
@@ -208,7 +225,7 @@ function refreshHost() {
     ui.hostStatus.textContent = error.message;
   }
   const inWps = typeof globalThis.Application !== 'undefined';
-  ui.replaceButton.hidden = !inWps;
+  ui.replaceButton.hidden = !inWps || trashed;
   ui.documentActions.classList.toggle('with-replacement', inWps);
   replacementAvailable = false;
   if (inWps) {
@@ -220,8 +237,8 @@ function refreshHost() {
       ui.replaceButton.title = error.message || '无法读取当前图片，请重新选择';
     }
   }
-  ui.insertButton.disabled = !selected || !hostAvailable || inserting || replacing;
-  ui.replaceButton.disabled = !selected || !replacementAvailable || inserting || replacing;
+  ui.insertButton.disabled = !selected || !hostAvailable || inserting || replacing || changingTrash || trashed;
+  ui.replaceButton.disabled = !selected || !replacementAvailable || inserting || replacing || changingTrash || trashed;
 }
 
 async function recordSuccessfulUse(asset, action) {
@@ -353,7 +370,9 @@ async function loadLibrary() {
     ui.resultCount.textContent = query || hasFilters() ? `${data.assets.length} / ${data.viewTotal} 张` : `${data.viewTotal} 张`;
     ui.libraryState.hidden = data.assets.length > 0;
     if (!data.assets.length) {
-      if (data.total === 0) showLibraryState('先添加一组标书配图', '', '导入素材', openImport);
+      if (libraryView === 'trash' && data.viewTotal === 0) showLibraryState('回收站为空', '');
+      else if (libraryView === 'trash') showLibraryState('没有找到匹配图片', '', '清除全部条件', clearAllConditions);
+      else if (data.total === 0) showLibraryState('先添加一组标书配图', '', '导入素材', openImport);
       else if (libraryView === 'favorites' && data.viewTotal === 0) showLibraryState('还没有收藏', '', '浏览全部', () => setLibraryView('all'));
       else if (libraryView === 'recent' && data.viewTotal === 0) showLibraryState('还没有插入记录', '', '浏览全部', () => setLibraryView('all'));
       else if (query || hasFilters()) showLibraryState('没有找到匹配图片', '', '清除全部条件', clearAllConditions);
@@ -391,43 +410,6 @@ function clearSearch() {
   ui.searchInput.focus();
 }
 
-function setImporting(value) {
-  importing = value;
-  for (const control of [ui.chooseFiles, ui.fileInput, ui.directoryInput, ui.importDirectory]) control.disabled = value;
-  ui.importPanel.setAttribute('aria-busy', String(value));
-}
-
-function reportImport(result) {
-  ui.importProgress.textContent = `导入 ${result.imported} 张，重复 ${result.duplicates} 张，失败 ${result.failed.length} 张`;
-  ui.failureSummary.textContent = `查看 ${result.failed.length} 项失败原因`;
-  ui.failureList.replaceChildren();
-  for (const failure of result.failed) {
-    const item = document.createElement('li');
-    item.textContent = `${failure.name}：${failure.error}`;
-    ui.failureList.append(item);
-  }
-  ui.importFailures.hidden = result.failed.length === 0;
-}
-
-async function runImport(action) {
-  if (importing) return;
-  setImporting(true);
-  ui.importProgress.hidden = false;
-  ui.importProgress.textContent = '正在导入，请稍候';
-  ui.importFailures.hidden = true;
-  showAction('');
-  try {
-    reportImport(await action());
-    clearTimeout(searchTimer);
-    await loadLibrary();
-  } catch (error) {
-    ui.importProgress.textContent = `导入失败：${readableError(error)}`;
-  } finally {
-    setImporting(false);
-    ui.fileInput.value = '';
-  }
-}
-
 ui.toggleImport.addEventListener('click', () => {
   if (ui.importPanel.hidden) openImport();
   else {
@@ -435,38 +417,9 @@ ui.toggleImport.addEventListener('click', () => {
     ui.toggleImport.setAttribute('aria-expanded', 'false');
   }
 });
-ui.chooseFiles.addEventListener('click', () => ui.fileInput.click());
-ui.fileInput.addEventListener('change', () => {
-  const files = Array.from(ui.fileInput.files);
-  if (!files.length) return;
-  runImport(async () => {
-    const result = { imported: 0, duplicates: 0, failed: [] };
-    for (const [index, file] of files.entries()) {
-      ui.importProgress.textContent = `正在导入 ${index + 1} / ${files.length}：${file.name}`;
-      try {
-        const current = await request(`/api/import-file?name=${encodeURIComponent(file.name)}`, {
-          method: 'POST', headers: { 'Content-Type': 'application/octet-stream' }, body: file,
-        });
-        result.imported += current.imported;
-        result.duplicates += current.duplicates;
-        result.failed.push(...current.failed);
-      } catch (error) {
-        result.failed.push({ name: file.name, error: readableError(error) });
-      }
-    }
-    return result;
-  });
-});
-ui.directoryForm.addEventListener('submit', (event) => {
-  event.preventDefault();
-  const directory = ui.directoryInput.value.trim().replace(/^"(.*)"$/, '$1');
-  if (!directory) {
-    ui.directoryInput.focus();
-    return;
-  }
-  runImport(() => request('/api/import', {
-    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ directory }),
-  }));
+createImportController({
+  ui, request, readableError, refreshLibrary: loadLibrary, clearAction: () => showAction(''),
+  reveal: () => { ui.importPanel.hidden = false; ui.toggleImport.setAttribute('aria-expanded', 'true'); },
 });
 ui.searchInput.addEventListener('input', scheduleSearch);
 ui.clearSearch.addEventListener('click', clearSearch);
@@ -496,7 +449,7 @@ ui.assetGrid.addEventListener('keydown', (event) => {
   selectAsset(visibleAssets[next]);
 });
 ui.favoriteButton.addEventListener('click', async () => {
-  if (!selected || favoriteRequests.has(selected.id)) return;
+  if (!selected || changingTrash || libraryView === 'trash' || favoriteRequests.has(selected.id)) return;
   const asset = selected;
   const favorite = !asset.favorite;
   favoriteRequests.add(asset.id);
@@ -544,7 +497,7 @@ ui.clearFilters.addEventListener('click', () => {
   applyFilterChange();
 });
 ui.editMetadata.addEventListener('click', () => {
-  if (!selected || savingMetadata) return;
+  if (!selected || savingMetadata || changingTrash || inserting || replacing || libraryView === 'trash') return;
   editingAsset = selected;
   ui.assetName.value = selected.name;
   ui.assetAliases.value = selected.aliases.join('\n');
@@ -555,12 +508,51 @@ ui.editMetadata.addEventListener('click', () => {
   ui.assetName.focus();
 });
 ui.cancelMetadata.addEventListener('click', () => ui.metadataDialog.close());
+async function changeTrash(asset, trashed) {
+  if (!asset || changingTrash || savingMetadata || inserting || replacing) return;
+  changingTrash = true;
+  ui.metadataError.hidden = true;
+  if (trashed) for (const control of ui.metadataForm.elements) control.disabled = true;
+  refreshFavoriteButton();
+  refreshHost();
+  const originalView = libraryView;
+  try {
+    await request(`/api/assets/${encodeURIComponent(asset.id)}/trash`, {
+      method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ trashed }),
+    });
+    if (trashed) ui.metadataDialog.close();
+    if (libraryView === originalView) {
+      renderAssets(visibleAssets.filter(item => item.id !== asset.id));
+      if (selected?.id === asset.id) selectAsset(null);
+    }
+    const data = await loadLibrary();
+    showAction(data ? trashed ? '已移入回收站' : '已恢复到图库'
+      : `${trashed ? '图片已移入回收站' : '图片已恢复'}，但图库刷新失败，请重新读取`, !data);
+  } catch (error) {
+    const message = `${trashed ? '移出' : '恢复'}失败：${readableError(error)}`;
+    if (trashed) {
+      ui.metadataError.textContent = message;
+      ui.metadataError.hidden = false;
+    } else showAction(message, true);
+  } finally {
+    changingTrash = false;
+    if (trashed) for (const control of ui.metadataForm.elements) control.disabled = false;
+    refreshFavoriteButton();
+    refreshHost();
+  }
+}
+ui.trashButton.addEventListener('click', () => {
+  if (libraryView !== 'trash' && ui.metadataDialog.open) changeTrash(editingAsset, true);
+});
+ui.restoreButton.addEventListener('click', () => {
+  if (libraryView === 'trash') changeTrash(selected, false);
+});
 ui.metadataDialog.addEventListener('cancel', event => {
-  if (savingMetadata) event.preventDefault();
+  if (savingMetadata || changingTrash) event.preventDefault();
 });
 ui.metadataForm.addEventListener('submit', async (event) => {
   event.preventDefault();
-  if (!editingAsset || savingMetadata) return;
+  if (!editingAsset || savingMetadata || changingTrash) return;
   ui.metadataError.hidden = true;
   const name = ui.assetName.value.trim();
   if (!name) {
@@ -605,6 +597,7 @@ ui.metadataForm.addEventListener('submit', async (event) => {
     savingMetadata = false;
     for (const control of ui.metadataForm.elements) control.disabled = false;
     ui.saveMetadata.textContent = '保存信息';
+    refreshHost();
   }
 });
 ui.stateAction.addEventListener('click', () => stateAction?.());
@@ -669,7 +662,7 @@ ui.layoutForm.addEventListener('submit', (event) => {
   showAction(saved ? '排版设置已保存，用于接下来插入的图片' : '排版设置已应用于本次使用，但未能保存在本机', !saved);
 });
 ui.insertButton.addEventListener('click', async () => {
-  if (!selected || inserting || replacing) return;
+  if (!selected || inserting || replacing || changingTrash || libraryView === 'trash') return;
   refreshHost();
   if (!hostAvailable) return;
   const asset = selected;
@@ -693,7 +686,7 @@ ui.insertButton.addEventListener('click', async () => {
   }
 });
 ui.replaceButton.addEventListener('click', async () => {
-  if (!selected || inserting || replacing) return;
+  if (!selected || inserting || replacing || changingTrash || libraryView === 'trash') return;
   refreshHost();
   if (!replacementAvailable) return;
   const asset = selected;

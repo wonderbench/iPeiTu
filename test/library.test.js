@@ -21,8 +21,8 @@ function image(color = '#147d70', format = 'png') {
 test('imports originals and thumbnails, persists metadata, and searches Chinese names and duplicate aliases', async t => {
   const { directory, library } = await setup(t);
   const bytes = await image();
-  assert.deepEqual(await library.importFile('沟槽开挖.PNG', bytes), { imported: 1, duplicates: 0, failed: [], total: 1 });
-  assert.deepEqual(await library.importFile('现场 Excavation.png', bytes), { imported: 0, duplicates: 1, failed: [], total: 1 });
+  assert.deepEqual(await library.importFile('沟槽开挖.PNG', bytes), { imported: 1, duplicates: 0, restored: 0, failed: [], total: 1 });
+  assert.deepEqual(await library.importFile('现场 Excavation.png', bytes), { imported: 0, duplicates: 1, restored: 0, failed: [], total: 1 });
   const reopened = await Library.open(directory);
   const { assets, total } = reopened.list('  沟槽 ');
   assert.equal(total, 1);
@@ -177,7 +177,7 @@ test('rejects managed descendants and filesystem aliases of an overlapping sourc
   t.after(() => rm(aliasParent, { recursive: true, force: true }));
   await symlink(root, path.join(aliasParent, 'linked-root'), process.platform === 'win32' ? 'junction' : 'dir');
   await assert.rejects(library.importDirectory(path.join(aliasParent, 'linked-root', path.basename(directory))), /不能包含/);
-  await assert.rejects(library.importDirectory(path.join(aliasParent, 'linked-root', path.basename(directory), 'images')), /图库内/);
+  await assert.rejects(library.importDirectory(path.join(aliasParent, 'linked-root', path.basename(directory), 'images')), /图库内|符号链接/);
   assert.equal(library.list().total, 1);
 });
 
@@ -185,7 +185,7 @@ test('v1 migration keeps exact backup bytes, asset identities and historical met
   const { directory, library } = await setup(t);
   const bytes = await image();
   await library.importFile('旧图片.png', bytes);
-  const { categories, tags, ...legacy } = library.assets[0];
+  const { categories, tags, deletedAt, ...legacy } = library.assets[0];
   // v0.1 did not cap historical alias counts; migration must never truncate them.
   legacy.aliases = Array.from({ length: 101 }, (_, index) => `历史别名_${index}.png`);
   const original = Buffer.from(` \r\n${JSON.stringify({ version: 1, assets: [legacy] }, null, 3)}\r\n`, 'utf8');
@@ -194,8 +194,8 @@ test('v1 migration keeps exact backup bytes, asset identities and historical met
   const backups = (await readdir(directory)).filter(name => name.startsWith('index-v1-backup-'));
   assert.equal(backups.length, 1);
   assert.deepEqual(await readFile(path.join(directory, backups[0])), original);
-  assert.deepEqual(migrated.assets, [{ ...legacy, categories: [], tags: [] }]);
-  assert.equal(JSON.parse(await readFile(path.join(directory, 'index.json'), 'utf8')).version, 2);
+  assert.deepEqual(migrated.assets, [{ ...legacy, categories: [], tags: [], deletedAt: null }]);
+  assert.equal(JSON.parse(await readFile(path.join(directory, 'index.json'), 'utf8')).version, 3);
   assert.deepEqual(await readFile((await migrated.file(legacy.id, 'image')).path), bytes);
   await Library.open(directory);
   assert.deepEqual((await readdir(directory)).filter(name => name.startsWith('index-v1-backup-')), backups);
@@ -206,7 +206,7 @@ test('unknown versions and invalid v2 metadata do not modify or back up the inde
   await library.importFile('工程图.png', await image());
   const asset = library.assets[0];
   for (const value of [
-    { version: 3, assets: [asset] },
+    { version: 4, assets: [asset] },
     { version: 2, assets: [{ ...asset, categories: '土建' }] },
     { version: 2, assets: [{ ...asset, tags: [null] }] },
     { version: 2, assets: [{ ...asset, categories: Array(33).fill('分类') }] },
@@ -222,7 +222,7 @@ test('unknown versions and invalid v2 metadata do not modify or back up the inde
 test('a failed migration preserves the original v1 bytes and their backup for retry', async t => {
   const { directory, library } = await setup(t);
   await library.importFile('旧图片.png', await image());
-  const { categories, tags, ...legacy } = library.assets[0];
+  const { categories, tags, deletedAt, ...legacy } = library.assets[0];
   const original = Buffer.from(JSON.stringify({ version: 1, assets: [legacy] }));
   await writeFile(path.join(directory, 'index.json'), original);
   const failure = t.mock.method(Library.prototype, 'persist', async () => {
@@ -235,7 +235,7 @@ test('a failed migration preserves the original v1 bytes and their backup for re
   assert.deepEqual(await readFile(path.join(directory, backups[0])), original);
   failure.mock.restore();
   const migrated = await Library.open(directory);
-  assert.deepEqual(migrated.assets, [{ ...legacy, categories: [], tags: [] }]);
+  assert.deepEqual(migrated.assets, [{ ...legacy, categories: [], tags: [], deletedAt: null }]);
 });
 
 test('metadata edits normalize lists, preserve commas, and do not rename managed image files', async t => {
@@ -324,7 +324,7 @@ test('directory categories retain nested folders and merge duplicate provenance 
   await writeFile(path.join(source, '根图.png'), bytes);
   await writeFile(path.join(source, '土建', '基础', '基础图.png'), bytes);
   await writeFile(path.join(source, '机电', '机电图.png'), bytes);
-  assert.deepEqual(await library.importDirectory(source), { imported: 1, duplicates: 2, failed: [], total: 1 });
+  assert.deepEqual(await library.importDirectory(source), { imported: 1, duplicates: 2, restored: 0, failed: [], total: 1 });
   const id = library.assets[0].id;
   assert.deepEqual(new Set(library.getAsset(id).categories), new Set(['工程素材', '土建/基础', '机电']));
   await library.updateAsset(id, { name: '人工名称', tags: ['人工标签'], categories: ['手工分类'] });
@@ -365,7 +365,7 @@ test('a filesystem root without a basename leaves root images uncategorized and 
   const basename = path.basename;
   // Simulate a drive root using an isolated folder; never scan a user's drive.
   t.mock.method(path, 'basename', (value, suffix) => value === canonicalSource ? '' : basename(value, suffix));
-  assert.deepEqual(await library.importDirectory(source), { imported: 2, duplicates: 0, failed: [], total: 2 });
+  assert.deepEqual(await library.importDirectory(source), { imported: 2, duplicates: 0, restored: 0, failed: [], total: 2 });
   assert.deepEqual(library.list('根图').assets[0].categories, []);
   assert.deepEqual(library.list('子图').assets[0].categories, ['子目录']);
   assert.equal(library.list().facets.uncategorized, 1);
@@ -524,8 +524,8 @@ test('damaged or unknown usage state fails explicitly without resetting records 
   const [first, second] = library.assets;
   const normal = { version: 1, favorites: [], recent: [] };
   const entry = { id: first.id, insertedAt: '2026-11-05T02:00:00.000Z' };
-  const { categories, tags, ...legacy } = first;
-  const originalIndex = Buffer.from(JSON.stringify({ version: 1, assets: [legacy, { ...second, categories: undefined, tags: undefined }] }));
+  const { categories, tags, deletedAt, ...legacy } = first;
+  const originalIndex = Buffer.from(JSON.stringify({ version: 1, assets: [legacy, { ...second, categories: undefined, tags: undefined, deletedAt: undefined }] }));
   await writeFile(path.join(directory, 'index.json'), originalIndex);
   const invalid = ['{broken', null, [], { ...normal, version: 2 }, { ...normal, extra: true },
     { ...normal, favorites: [first.id, first.id] }, { ...normal, favorites: ['f'.repeat(64)] },
@@ -602,4 +602,126 @@ test('queued imports, metadata edits, favorites and recency updates retain each 
   assert.deepEqual(asset.tags, ['新标签']);
   assert.deepEqual(asset.categories, ['新分类']);
   assert.deepEqual(asset.aliases, ['导入别名.png']);
+});
+
+test('v2 migration backs up exact bytes, refuses damaged usage, and retries failed writes atomically', async t => {
+  const { directory, library } = await setup(t);
+  await library.importFile('历史.png', await image());
+  const { deletedAt, ...legacy } = library.assets[0];
+  const original = Buffer.from(` \r\n${JSON.stringify({ version: 2, assets: [legacy] }, null, 3)}\r\n`);
+  const filename = path.join(directory, 'index.json');
+  await writeFile(filename, original);
+  await writeFile(path.join(directory, 'usage.json'), '{broken');
+  await assert.rejects(Library.open(directory), /usage.json/);
+  assert.deepEqual(await readFile(filename), original);
+  assert.equal((await readdir(directory)).some(name => name.startsWith('index-v2-backup-')), false);
+  await unlink(path.join(directory, 'usage.json'));
+  const failure = t.mock.method(Library.prototype, 'persist', async () => { throw new Error('模拟索引写入失败'); });
+  await assert.rejects(Library.open(directory), /模拟索引写入失败/);
+  failure.mock.restore();
+  assert.deepEqual(await readFile(filename), original);
+  const backups = (await readdir(directory)).filter(name => name.startsWith('index-v2-backup-'));
+  assert.equal(backups.length, 1);
+  assert.deepEqual(await readFile(path.join(directory, backups[0])), original);
+  assert.deepEqual((await Library.open(directory)).assets, [{ ...legacy, deletedAt: null }]);
+  assert.equal(JSON.parse(await readFile(filename, 'utf8')).version, 3);
+});
+
+test('v3 rejects missing, noncanonical and invalid trash timestamps without changing original bytes', async t => {
+  const { directory, library } = await setup(t);
+  await library.importFile('历史.png', await image());
+  for (const deletedAt of [undefined, false, 0, '', '2026-11-05', '2026-11-05T00:00:00+00:00', 'invalid']) {
+    const original = Buffer.from(JSON.stringify({ version: 3, assets: [{ ...library.assets[0], deletedAt }] }));
+    await writeFile(path.join(directory, 'index.json'), original);
+    await assert.rejects(Library.open(directory), error => error.status === 500 && /索引/.test(error.message));
+    assert.deepEqual(await readFile(path.join(directory, 'index.json')), original);
+  }
+});
+
+test('trash preserves originals, manual metadata and usage across restart; restore and reimport retain identity', async t => {
+  const { directory, library } = await setup(t);
+  const bytes = await image();
+  await library.importFile('来源.png', bytes, '来源分类');
+  const id = library.assets[0].id;
+  await library.updateAsset(id, { name: '人工名称', aliases: ['人工别名'], categories: ['人工分类'], tags: ['人工标签'] });
+  await library.setFavorite(id, { favorite: true });
+  await library.recordRecent(id, {});
+  const original = library.list().assets[0];
+  const usageBytes = await readFile(path.join(directory, 'usage.json'));
+  const removed = await library.setTrash(id, { trashed: true });
+  assert.equal(new Date(removed.deletedAt).toISOString(), removed.deletedAt);
+  const indexBytes = await readFile(path.join(directory, 'index.json'));
+  assert.deepEqual(await library.setTrash(id, { trashed: true }), removed);
+  assert.deepEqual(await readFile(path.join(directory, 'index.json')), indexBytes);
+  const reopened = await Library.open(directory);
+  for (const view of ['all', 'favorites', 'recent']) {
+    assert.equal(reopened.list('', { view }).viewTotal, 0);
+    assert.equal(reopened.list('', { view }).total, 0);
+    assert.deepEqual(reopened.list('', { view }).facets.categories, []);
+  }
+  const trash = reopened.list('人工名称', { view: 'trash' });
+  assert.equal(trash.total, 0);
+  assert.equal(trash.viewTotal, 1);
+  assert.deepEqual(trash.facets.categories, [{ name: '人工分类', count: 1 }]);
+  assert.deepEqual(await readFile((await reopened.file(id, 'image')).path), bytes);
+  assert.ok((await reopened.file(id, 'thumbnail')).path);
+  for (const operation of [() => reopened.updateAsset(id, { name: '不保存' }),
+    () => reopened.setFavorite(id, { favorite: false }), () => reopened.recordRecent(id, {}), () => reopened.insertion(id)]) {
+    await assert.rejects(operation(), error => error.status === 410);
+  }
+  assert.deepEqual(await reopened.setTrash(id, { trashed: false }), original);
+  assert.deepEqual(await reopened.setTrash(id, { trashed: false }), original);
+  await reopened.setTrash(id, { trashed: true });
+  assert.deepEqual(await reopened.importFile('另一来源.png', bytes, '另一目录'),
+    { imported: 0, duplicates: 0, restored: 1, failed: [], total: 1 });
+  assert.deepEqual((await Library.open(directory)).list().assets[0], original);
+  assert.deepEqual(await readFile(path.join(directory, 'usage.json')), usageBytes);
+  await reopened.importFile('普通重复.png', bytes, '重复目录');
+  assert.deepEqual(reopened.getAsset(id).aliases, ['人工别名', '普通重复.png']);
+  assert.deepEqual(reopened.getAsset(id).categories, ['人工分类', '重复目录']);
+});
+
+test('trash validates exact boolean input and failed persistence retains active state', async t => {
+  const { directory, library } = await setup(t);
+  await library.importFile('图片.png', await image());
+  const id = library.assets[0].id;
+  const original = await readFile(path.join(directory, 'index.json'));
+  for (const input of [null, [], {}, { trashed: 1 }, { trashed: 'true' }, { trashed: true, other: true }]) {
+    await assert.rejects(library.setTrash(id, input), error => error.status === 400);
+  }
+  await assert.rejects(library.setTrash('f'.repeat(64), { trashed: true }), error => error.status === 404);
+  const failure = t.mock.method(library, 'persist', async () => { throw new Error('模拟写入失败'); });
+  await assert.rejects(library.setTrash(id, { trashed: true }), /模拟写入失败/);
+  failure.mock.restore();
+  assert.equal(library.activeTotal, 1);
+  assert.equal(library.getAsset(id).deletedAt, null);
+  assert.deepEqual(await readFile(path.join(directory, 'index.json')), original);
+});
+
+test('insertion rechecks trash and current name after asynchronous file lookup', async t => {
+  const { library } = await setup(t);
+  await library.importFile('图片.png', await image());
+  const id = library.assets[0].id;
+  const file = library.file.bind(library);
+  let entered, release;
+  const waiting = new Promise(resolve => { entered = resolve; });
+  const continueLookup = new Promise(resolve => { release = resolve; });
+  const lookup = t.mock.method(library, 'file', async (...args) => {
+    entered();
+    await continueLookup;
+    return file(...args);
+  });
+  const insertion = library.insertion(id);
+  const rejected = assert.rejects(insertion, error => error.status === 410);
+  await waiting;
+  await library.setTrash(id, { trashed: true });
+  release();
+  await rejected;
+  lookup.mock.restore();
+  await library.setTrash(id, { trashed: false });
+  t.mock.method(library, 'file', async (...args) => {
+    await library.updateAsset(id, { name: '最新名称' });
+    return file(...args);
+  });
+  assert.equal((await library.insertion(id)).name, '最新名称');
 });
