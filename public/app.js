@@ -298,6 +298,7 @@ ui.insertButton.addEventListener('click', async () => {
   }
 });
 window.addEventListener('focus', refreshHost);
+document.documentElement.addEventListener('pointerenter', refreshHost);
 document.addEventListener('visibilitychange', () => {
   if (!document.hidden) refreshHost();
 });
