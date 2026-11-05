@@ -3,6 +3,7 @@ import { mkdir, readFile, writeFile, rename, lstat, opendir, open, stat, realpat
 import path from 'node:path';
 import os from 'node:os';
 import sharp from 'sharp';
+import { InsertionQuality, validateProfile } from './insertion-quality.js';
 
 export const MAX_IMAGE_BYTES = 32 * 1024 * 1024;
 export const MAX_IMAGE_PIXELS = 64 * 1000 * 1000;
@@ -167,6 +168,7 @@ export class Library {
     this.assets = [];
     this.usage = { version: 1, favorites: [], recent: [] };
     this.pending = Promise.resolve();
+    this.quality = new InsertionQuality(this.directory);
   }
 
   static async open(directory = defaultDataDirectory()) {
@@ -371,17 +373,23 @@ export class Library {
     return { path: filePath, type: kind === 'thumbnail' ? 'image/jpeg' : `image/${asset.format}` };
   }
 
-  async insertion(id) {
+  async insertion(id, profile = 'original') {
+    validateProfile(profile);
     const asset = this.getAsset(id);
     const filePath = asset.format === 'webp' || asset.normalized
       ? path.join(this.directory, 'insertion', `${id}.png`)
       : (await this.file(id, 'image')).path;
-    try { await stat(filePath); } catch (error) {
+    let details;
+    try { details = await this.quality.originalDetails(filePath); } catch (error) {
       if (error.code === 'ENOENT') throw new LibraryError('图片文件已丢失，请重新导入素材', 404);
       throw error;
     }
+    if (!details.isFile() || details.size <= 0) throw new LibraryError('插入文件类型或大小无效，请重新导入原素材', 500);
+    const output = profile === 'original'
+      ? { path: filePath, width: asset.width, height: asset.height, format: asset.normalized || asset.format === 'webp' ? 'png' : asset.format, bytes: details.size }
+      : await this.quality.get(id, profile, filePath, () => this.getAsset(id));
     const current = this.getAsset(id);
-    return { path: filePath, name: current.name, width: current.width, height: current.height };
+    return { ...output, name: current.name, profile, sourceBytes: current.bytes };
   }
 
   async importImage(name, buffer, categories = []) {

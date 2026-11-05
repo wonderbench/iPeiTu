@@ -114,6 +114,14 @@ export function insertPicture(asset, expectedTarget, options) {
   if (!asset || typeof asset.path !== 'string' || !/^(?:[a-z]:[\\/]|\\\\[^\\]+\\[^\\]+)/i.test(asset.path)) {
     throw new Error('图片路径无效，请从本地素材库重新选择图片');
   }
+  const explicitSize = asset.logicalWidthPt !== undefined || asset.logicalHeightPt !== undefined;
+  const nativeScale = asset.naturalWidthScale !== undefined;
+  if (explicitSize && (![asset.logicalWidthPt, asset.logicalHeightPt].every(value => Number.isFinite(value) && value > 0 && value <= 100000000))) {
+    throw new Error('图片排版尺寸无效，请重新选择素材');
+  }
+  if (nativeScale && (explicitSize || !Number.isFinite(asset.naturalWidthScale) || asset.naturalWidthScale < 1 || asset.naturalWidthScale > 64000000)) {
+    throw new Error('图片自然尺寸倍率无效，请重新选择素材');
+  }
 
   let picture;
   let inserting = false;
@@ -157,7 +165,10 @@ export function insertPicture(asset, expectedTarget, options) {
     if (!(Number.isFinite(width) && width > 0 && Number.isFinite(height) && height > 0)) {
       throw new Error('WPS 返回的图片尺寸无效');
     }
-    const targetWidth = Math.min(layout.widthMode === 'auto' ? width : widthLimit, widthLimit, heightLimit * width / height);
+    const logicalWidth = explicitSize ? asset.logicalWidthPt : nativeScale ? width * asset.naturalWidthScale : width;
+    // Resampling rounds pixel dimensions; use the actual inserted aspect ratio
+    // for the hard height limit so that a one-pixel roundoff cannot exceed it.
+    const targetWidth = Math.min(layout.widthMode === 'auto' ? logicalWidth : widthLimit, widthLimit, heightLimit * width / height);
     if (width !== targetWidth) picture.Width = targetWidth;
     const after = original ? separatePictureParagraphs(picture, original, layout) : picture.Range.Duplicate;
     if (!original) after.Collapse(COLLAPSE_END);

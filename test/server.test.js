@@ -371,3 +371,29 @@ test('HTTP directory jobs return progress, reject concurrent work and retry repa
   assert.equal(result.libraryTotal, 1);
   assert.deepEqual(result.failed, []);
 });
+
+test('HTTP insertion profiles validate all query parameters and expose only real generated files', async t => {
+  const { base, library } = await setup(t);
+  const bytes = await sharp({ create: { width: 2600, height: 1700, channels: 3, background: 'blue' } }).withDensity(300).jpeg().toBuffer();
+  await library.importFile('照片.jpg', bytes);
+  const id = library.assets[0].id, endpoint = `${base}/api/assets/${id}/insertion`;
+  for (const query of ['profile=', 'profile=unknown', 'profile=CLEAR', 'profile=clear&profile=balanced', 'other=1']) {
+    const response = await fetch(`${endpoint}?${query}`);
+    assert.equal(response.status, 400, query);
+  }
+  for (const profile of ['original', 'clear', 'balanced']) {
+    const response = await fetch(`${endpoint}?profile=${profile}`);
+    assert.equal(response.status, 200);
+    const output = await response.json(), buffer = await readFile(output.path), metadata = await sharp(buffer).metadata();
+    assert.equal(output.profile, profile);
+    assert.equal(output.bytes, buffer.length);
+    assert.equal(output.sourceBytes, bytes.length);
+    assert.equal(output.width, metadata.width);
+    assert.equal(output.height, metadata.height);
+    if (profile !== 'original') assert.equal(output.logicalWidthPt, 2600 * 72 / 300);
+  }
+  assert.equal((await (await fetch(endpoint)).json()).profile, 'original');
+  assert.equal((await fetch(`${endpoint}?profile=clear`, { headers: { origin: 'https://attacker.example' } })).status, 403);
+  await library.setTrash(id, { trashed: true });
+  assert.equal((await fetch(`${endpoint}?profile=balanced`)).status, 410);
+});

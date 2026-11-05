@@ -307,6 +307,51 @@ test('小图保持原尺寸，超宽表格仍受页面宽度限制', () => {
   assert.equal(insertPicture(asset).width, 480);
 });
 
+test('压缩副本按源逻辑宽度自适应，仍受页面、单元格及实际像素比例限高', () => {
+  const compressed = { ...asset, width: 1600, height: 960, logicalWidthPt: 720.24, logicalHeightPt: 432.24 };
+  createHost({ pictureWidth: 1200, pictureHeight: 720, page: { PageWidth: 1200, LeftMargin: 60, RightMargin: 60 } });
+  assert.equal(insertPicture(compressed).width, 720.24);
+  createHost({ pictureWidth: 1200, pictureHeight: 720, inTable: true });
+  assert.equal(insertPicture(compressed).width, 200);
+  createHost({ pictureWidth: 1200, pictureHeight: 720 });
+  assert.equal(insertPicture(compressed).width, 480);
+  createHost({ pictureWidth: 1200, pictureHeight: 720 });
+  const fixed = insertPicture(compressed, undefined, { widthMode: 'fixed', widthCm: 8 });
+  assert.equal(fixed.width, 8 * 72 / 2.54);
+  createHost({ pictureWidth: 1200, pictureHeight: 38.25 });
+  const thin = insertPicture({ ...asset, width: 1600, height: 51, logicalWidthPt: 768, logicalHeightPt: 24.24 },
+    undefined, { widthMode: 'fixed', widthCm: 20, maxHeightCm: 0.5 });
+  assert.ok(thin.height <= 0.5 * 72 / 2.54 + 1e-10, '取整后的实际高度不能越限');
+});
+
+test('非法或缺失一维的逻辑尺寸在任何文档写入之前拒绝', () => {
+  const { state } = createHost();
+  for (const size of [{ logicalWidthPt: 100 }, { logicalHeightPt: 100 }, { logicalWidthPt: Infinity, logicalHeightPt: 100 },
+    { logicalWidthPt: '100', logicalHeightPt: 100 }, { logicalWidthPt: 0, logicalHeightPt: 100 }, { logicalWidthPt: 1e9, logicalHeightPt: 100 }]) {
+    assert.throws(() => insertPicture({ ...asset, ...size }), /排版尺寸无效/);
+  }
+  assert.equal(state.calls.length, 0);
+  assert.equal(state.undoStarted, 0);
+});
+
+test('无 DPI 副本以宿主实际自然宽度乘源像素倍率，保留不同 JPEG/PNG 缺省且不越限高', () => {
+  const scaled = { ...asset, naturalWidthScale: 2 };
+  createHost({ pictureWidth: 112.5, pictureHeight: 75 });
+  assert.equal(insertPicture(scaled).width, 225, 'JPEG 宿主缺省为192dpi的样本');
+  createHost({ pictureWidth: 225, pictureHeight: 150 });
+  assert.equal(insertPicture(scaled).width, 450, 'PNG 宿主缺省为96dpi的样本');
+  createHost({ pictureWidth: 225, pictureHeight: 150, inTable: true });
+  assert.equal(insertPicture(scaled).width, 200);
+  createHost({ pictureWidth: 225, pictureHeight: 150 });
+  assert.ok(insertPicture(scaled, undefined, { maxHeightCm: 2 }).height <= 2 * 72 / 2.54 + 1e-10);
+  const { state } = createHost();
+  for (const value of [0, -1, 0.5, Infinity, NaN, '2', 1e9]) {
+    assert.throws(() => insertPicture({ ...asset, naturalWidthScale: value }), /倍率无效/);
+  }
+  assert.throws(() => insertPicture({ ...scaled, logicalWidthPt: 300, logicalHeightPt: 200 }), /倍率无效/);
+  assert.equal(state.calls.length, 0);
+});
+
 test('固定厘米宽度允许等比放大小图，最大高度优先约束竖图', () => {
   createHost({ pictureWidth: 120, pictureHeight: 60 });
   let result = insertPicture(asset, undefined, { widthMode: 'fixed', widthCm: 12 });

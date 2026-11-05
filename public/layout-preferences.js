@@ -1,4 +1,4 @@
-import { normalizeLayoutOptions } from './layout-options.js';
+import { normalizeLayoutOptions, normalizeQualityProfile } from './layout-options.js';
 
 const storageKey = 'ipeitu.layout.v1';
 
@@ -10,7 +10,10 @@ function normalizePreferences(value = {}) {
     throw new Error('保存的图题设置格式无效');
   }
   const { caption, ...options } = normalizeLayoutOptions({ ...value, caption: '' });
-  return { ...options, includeCaption: value.includeCaption ?? false };
+  return {
+    ...options, includeCaption: value.includeCaption ?? false,
+    qualityProfile: normalizeQualityProfile(value.qualityProfile),
+  };
 }
 
 export function loadLayoutPreferences(storage = globalThis.localStorage) {

@@ -2,7 +2,7 @@ import {
   captureInsertionTarget, getHostStatus, insertPicture,
   getReplacementStatus, captureReplacementTarget, replacePicture,
 } from './wps-bridge.js';
-import { normalizeLayoutOptions } from './layout-options.js';
+import { normalizeLayoutOptions, normalizeQualityProfile } from './layout-options.js';
 import { loadLayoutPreferences, saveLayoutPreferences } from './layout-preferences.js';
 import { createImportController } from './import-controller.js';
 
@@ -16,7 +16,7 @@ const ui = Object.fromEntries([
   'selectedMeta', 'insertButton', 'hostStatus', 'actionStatus', 'previewDialog',
   'previewTitle', 'closePreview', 'previewImage', 'previewError', 'previewMeta',
   'layoutSettingsButton', 'layoutDialog', 'layoutForm', 'widthMode', 'widthCm',
-  'maxHeightCm', 'layoutMode', 'includeCaption', 'captionFields', 'captionText',
+  'maxHeightCm', 'layoutMode', 'includeCaption', 'captionFields', 'captionText', 'qualityProfile',
   'layoutError', 'saveLayout', 'cancelLayout', 'resetLayout',
   'openFilters', 'filterSummary', 'clearFilters', 'filterDialog', 'filterForm',
   'categorySelect', 'filterTags', 'applyFilters', 'cancelFilters',
@@ -37,7 +37,7 @@ let requestVersion = 0;
 let searchTimer;
 let libraryRequest;
 let stateAction = null;
-let layoutPreferences = { ...normalizeLayoutOptions(), includeCaption: false };
+let layoutPreferences = { ...normalizeLayoutOptions(), includeCaption: false, qualityProfile: 'original' };
 let captionDraft = '';
 let filters = { category: '', uncategorized: false, tags: [] };
 let libraryFacets = { categories: [], tags: [], uncategorized: 0 };
@@ -147,6 +147,7 @@ function updateLayoutSummary() {
   summary.push(layoutPreferences.layout === 'centered' ? '独立居中'
     : layoutPreferences.includeCaption ? '独立段落，沿用对齐' : '原段落');
   if (layoutPreferences.includeCaption) summary.push('带图题');
+  if (layoutPreferences.qualityProfile !== 'original') summary.push(layoutPreferences.qualityProfile === 'clear' ? '清晰' : '均衡');
   ui.layoutSettingsButton.textContent = `排版设置 · ${summary.join(' · ')}`;
 }
 
@@ -161,6 +162,7 @@ function syncLayoutFields() {
 }
 
 function fillLayoutForm(preferences, caption) {
+  ui.qualityProfile.value = preferences.qualityProfile ?? 'original';
   ui.widthMode.value = preferences.widthMode;
   ui.widthCm.value = String(preferences.widthCm);
   ui.maxHeightCm.value = preferences.maxHeightCm === null ? '' : String(preferences.maxHeightCm);
@@ -625,15 +627,17 @@ ui.widthMode.addEventListener('change', syncLayoutFields);
 ui.includeCaption.addEventListener('change', syncLayoutFields);
 ui.cancelLayout.addEventListener('click', () => ui.layoutDialog.close());
 ui.resetLayout.addEventListener('click', () => {
-  fillLayoutForm({ ...normalizeLayoutOptions(), includeCaption: false }, defaultCaption(selected));
+  fillLayoutForm({ ...normalizeLayoutOptions(), includeCaption: false, qualityProfile: 'original' }, defaultCaption(selected));
 });
 ui.layoutForm.addEventListener('submit', (event) => {
   event.preventDefault();
   ui.layoutError.hidden = true;
   let options;
+  let qualityProfile;
   const includeCaption = ui.includeCaption.checked;
   const caption = includeCaption && selected ? ui.captionText.value.trim() : '';
   try {
+    qualityProfile = normalizeQualityProfile(ui.qualityProfile.value);
     if (includeCaption && selected && !caption) throw new Error('请填写图题，或关闭“添加图题”');
     if (ui.maxHeightCm.validity.badInput) throw new Error('最大高度须填写 0.5–50 之间的数字，或留空');
     options = normalizeLayoutOptions({
@@ -649,7 +653,7 @@ ui.layoutForm.addEventListener('submit', (event) => {
     return;
   }
   const { caption: appliedCaption, ...preferences } = options;
-  layoutPreferences = { ...preferences, includeCaption };
+  layoutPreferences = { ...preferences, includeCaption, qualityProfile };
   if (selected) captionDraft = appliedCaption || ui.captionText.value.trim() || defaultCaption(selected);
   let saved = true;
   try {
@@ -659,7 +663,7 @@ ui.layoutForm.addEventListener('submit', (event) => {
   }
   updateLayoutSummary();
   ui.layoutDialog.close();
-  showAction(saved ? '排版设置已保存，用于接下来插入的图片' : '排版设置已应用于本次使用，但未能保存在本机', !saved);
+  showAction(saved ? '设置已保存' : '设置已应用于本次使用，但未能保存在本机', !saved);
 });
 ui.insertButton.addEventListener('click', async () => {
   if (!selected || inserting || replacing || changingTrash || libraryView === 'trash') return;
@@ -672,8 +676,9 @@ ui.insertButton.addEventListener('click', async () => {
   showAction('');
   try {
     const options = insertionOptions();
+    const profile = normalizeQualityProfile(layoutPreferences.qualityProfile);
     const target = captureInsertionTarget();
-    const insertion = await request(`/api/assets/${encodeURIComponent(asset.id)}/insertion`);
+    const insertion = await request(`/api/assets/${encodeURIComponent(asset.id)}/insertion?profile=${profile}`);
     insertPicture(insertion, target, options);
     showAction(`已插入「${asset.name}」`);
     await recordSuccessfulUse(asset, '插入');
@@ -695,8 +700,9 @@ ui.replaceButton.addEventListener('click', async () => {
   refreshHost();
   showAction('');
   try {
+    const profile = normalizeQualityProfile(layoutPreferences.qualityProfile);
     const target = captureReplacementTarget();
-    const insertion = await request(`/api/assets/${encodeURIComponent(asset.id)}/insertion`);
+    const insertion = await request(`/api/assets/${encodeURIComponent(asset.id)}/insertion?profile=${profile}`);
     replacePicture(insertion, target);
     showAction(`已替换「${asset.name}」`);
     await recordSuccessfulUse(asset, '替换');

@@ -120,7 +120,8 @@ export async function createServer({ dataDirectory, publicDirectory = defaultPub
         validateParameters(url.searchParams, ['name', 'category']);
         json(response, 200, await library.importFile(url.searchParams.get('name'), await body(request, MAX_IMAGE_BYTES), url.searchParams.get('category') ?? undefined));
       } else if (request.method === 'GET' && /^\/api\/assets\/[a-f0-9]{64}\/insertion$/.test(url.pathname)) {
-        json(response, 200, await library.insertion(url.pathname.split('/')[3]));
+        validateParameters(url.searchParams, ['profile']);
+        json(response, 200, await library.insertion(url.pathname.split('/')[3], url.searchParams.get('profile') ?? 'original'));
       } else if (request.method === 'GET' && /^\/api\/assets\/[a-f0-9]{64}\/(image|thumbnail)$/.test(url.pathname)) {
         const [, , , id, kind] = url.pathname.split('/');
         const file = await library.file(id, kind);
