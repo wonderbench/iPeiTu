@@ -32,6 +32,21 @@ async function body(request, limit) {
   return Buffer.concat(chunks);
 }
 
+async function jsonBody(request, limit = 16 * 1024) {
+  if (request.headers['content-type']?.split(';')[0] !== 'application/json') throw new LibraryError('需要 JSON 请求', 415);
+  try { return JSON.parse((await body(request, limit)).toString('utf8')); } catch (error) {
+    if (error instanceof LibraryError) throw error;
+    throw new LibraryError('请求不是有效 JSON');
+  }
+}
+
+function validateParameters(parameters, allowed, repeatable = []) {
+  for (const key of new Set(parameters.keys())) {
+    if (!allowed.includes(key)) throw new LibraryError(`不支持的请求参数：${key}`);
+    if (!repeatable.includes(key) && parameters.getAll(key).length > 1) throw new LibraryError(`请求参数不能重复：${key}`);
+  }
+}
+
 function validateRequest(request, port) {
   const allowedHosts = new Set([`127.0.0.1:${port}`, `localhost:${port}`]);
   if (!allowedHosts.has(request.headers.host)) throw new LibraryError('只接受本机地址请求', 403);
@@ -60,18 +75,26 @@ export async function createServer({ dataDirectory, publicDirectory = defaultPub
       const origin = validateRequest(request, server.address().port);
       const url = new URL(request.url, origin);
       if (request.method === 'GET' && url.pathname === '/api/library') {
-        json(response, 200, library.list(url.searchParams.get('q') || ''));
+        validateParameters(url.searchParams, ['q', 'category', 'tag', 'uncategorized'], ['tag']);
+        const uncategorized = url.searchParams.get('uncategorized');
+        if (uncategorized !== null && !['0', '1'].includes(uncategorized)) throw new LibraryError('uncategorized 仅接受 0 或 1');
+        json(response, 200, library.list(url.searchParams.get('q') || '', {
+          category: url.searchParams.get('category') || '', tags: url.searchParams.getAll('tag'), uncategorized: uncategorized === '1',
+        }));
+      } else if (request.method === 'PATCH' && /^\/api\/assets\/[a-f0-9]{64}$/.test(url.pathname)) {
+        validateParameters(url.searchParams, []);
+        json(response, 200, { asset: await library.updateAsset(url.pathname.split('/')[3], await jsonBody(request, 128 * 1024)) });
       } else if (request.method === 'POST' && url.pathname === '/api/import') {
-        if (request.headers['content-type']?.split(';')[0] !== 'application/json') throw new LibraryError('导入目录需要 JSON 请求', 415);
-        let input;
-        try { input = JSON.parse((await body(request, 16 * 1024)).toString('utf8')); } catch (error) {
-          if (error instanceof LibraryError) throw error;
-          throw new LibraryError('请求不是有效 JSON');
+        validateParameters(url.searchParams, []);
+        const input = await jsonBody(request);
+        if (!input || typeof input !== 'object' || Array.isArray(input) || Object.keys(input).some(key => key !== 'directory')) {
+          throw new LibraryError('目录导入仅接受 directory 字段');
         }
-        json(response, 200, await library.importDirectory(input?.directory));
+        json(response, 200, await library.importDirectory(input.directory));
       } else if (request.method === 'POST' && url.pathname === '/api/import-file') {
         if (request.headers['content-type']?.split(';')[0] !== 'application/octet-stream') throw new LibraryError('图片上传需要 application/octet-stream', 415);
-        json(response, 200, await library.importFile(url.searchParams.get('name'), await body(request, MAX_IMAGE_BYTES)));
+        validateParameters(url.searchParams, ['name', 'category']);
+        json(response, 200, await library.importFile(url.searchParams.get('name'), await body(request, MAX_IMAGE_BYTES), url.searchParams.get('category') ?? undefined));
       } else if (request.method === 'GET' && /^\/api\/assets\/[a-f0-9]{64}\/insertion$/.test(url.pathname)) {
         json(response, 200, await library.insertion(url.pathname.split('/')[3]));
       } else if (request.method === 'GET' && /^\/api\/assets\/[a-f0-9]{64}\/(image|thumbnail)$/.test(url.pathname)) {
