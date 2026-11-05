@@ -23,18 +23,26 @@
             <h2 id="importTitle">添加本地图片</h2>
             <span class="meta">仅保存在本机</span>
           </div>
-          <p class="supporting">选择图片，或填写文件夹路径以导入全部子文件夹</p>
           <div class="file-import">
             <button id="chooseFiles" class="button secondary" type="button">选择图片</button>
-            <input id="fileInput" class="visually-hidden" type="file" accept=".png,.jpg,.jpeg,.webp" multiple tabindex="-1" aria-label="选择要导入的图片">
-            <span class="meta">PNG、JPEG、WebP</span>
+            <button id="chooseFolder" class="button secondary" type="button">选择文件夹</button>
+            <input id="fileInput" class="visually-hidden" type="file" accept="image/*,.png,.jpg,.jpeg,.webp,.bmp,.gif,.tif,.tiff,.svg,.heic,.heif,.avif,.ico" multiple tabindex="-1" aria-label="选择要导入的图片">
+            <input id="folderInput" class="visually-hidden" type="file" webkitdirectory multiple tabindex="-1" aria-label="选择要导入的文件夹">
           </div>
+          <details id="directoryDetails" class="directory-details">
+            <summary>输入路径</summary>
           <form id="directoryForm" class="directory-form">
             <label for="directoryInput">文件夹路径</label>
             <input id="directoryInput" name="directory" type="text" autocomplete="off" spellcheck="false" placeholder="粘贴本机文件夹路径" required>
             <button id="importDirectory" class="button secondary" type="submit">导入文件夹</button>
           </form>
+          </details>
           <p id="importProgress" class="supporting" role="status" aria-live="polite" hidden></p>
+          <progress id="importMeter" aria-label="导入进度" hidden></progress>
+          <div class="import-actions">
+            <button id="resumeImport" class="button secondary" type="button" hidden>继续查看</button>
+            <button id="retryImport" class="button secondary" type="button" hidden>重试失败项</button>
+          </div>
           <details id="importFailures" class="failures" hidden>
             <summary id="failureSummary">查看未导入的图片</summary>
             <ul id="failureList"></ul>
@@ -46,6 +54,7 @@
             <button id="viewAll" type="button" data-view="all" aria-pressed="true">全部</button>
             <button id="viewFavorites" type="button" data-view="favorites" aria-pressed="false">收藏</button>
             <button id="viewRecent" type="button" data-view="recent" aria-pressed="false">最近</button>
+            <button id="viewTrash" type="button" data-view="trash" aria-pressed="false">回收站</button>
           </div>
           <div class="search-block">
             <label for="searchInput">检索名称、别名或工序</label>
@@ -90,6 +99,7 @@
           <button id="insertButton" class="button primary" type="button" disabled>插入光标处</button>
           <button id="replaceButton" class="button secondary" type="button" hidden disabled>替换选中图</button>
         </div>
+        <button id="restoreButton" class="button primary" type="button" hidden disabled>恢复到图库</button>
         <div class="selection-options">
           <button id="layoutSettingsButton" class="layout-summary" type="button" aria-haspopup="dialog" aria-controls="layoutDialog">排版设置 · 自适应 · 原段落</button>
           <button id="editMetadata" class="text-button" type="button" aria-haspopup="dialog" aria-controls="metadataDialog" disabled>素材信息</button>
@@ -214,6 +224,7 @@
         <p class="supporting metadata-hint">留空可清除对应的别名、分类或标签；未设置分类的图片归入“未分类”</p>
         <p id="metadataError" class="form-error" role="alert" hidden></p>
         <div class="dialog-actions">
+          <button id="trashButton" class="text-button trash-button" type="button">移出图库</button>
           <button id="cancelMetadata" class="button secondary" type="button">取消</button>
           <button id="saveMetadata" class="button primary" type="submit">保存信息</button>
         </div>

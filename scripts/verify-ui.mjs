@@ -5,6 +5,7 @@ import path from 'node:path';
 import { chromium } from 'playwright';
 import sharp from 'sharp';
 import { startServer } from '../server/http.js';
+import { verifyImportAndTrash } from './verify-import-ui.mjs';
 
 const temporary = await mkdtemp(path.join(os.tmpdir(), 'ipeitu-ui-'));
 const { server } = await startServer({ port: 0, dataDirectory: path.join(temporary, 'library') });
@@ -26,11 +27,11 @@ try {
   await page.goto(`${base}/taskpane.html`);
   await visibleText('#stateTitle', '先添加');
   await page.locator('#toggleImport').click();
-  await page.locator('#fileInput').setInputFiles([upload, { name: '坏图.png', mimeType: 'image/png', buffer: Buffer.from('broken') }]);
-  await visibleText('#importProgress', '导入 1 张，重复 0 张，失败 1 张');
+  await page.locator('#fileInput').setInputFiles([upload, { name: '无扩展名坏图', mimeType: 'application/octet-stream', buffer: Buffer.from('broken') }]);
+  await visibleText('#importProgress', '导入 1 张，重复 0 张，失败 1 项');
   await page.locator('.asset-card').waitFor();
   await page.locator('#fileInput').setInputFiles({ ...upload, name: '基础施工 Alias.png' });
-  await visibleText('#importProgress', '导入 0 张，重复 1 张，失败 0 张');
+  await visibleText('#importProgress', '导入 0 张，重复 1 张，失败 0 项');
   await page.locator('#searchInput').fill('  alias  ');
   await visibleText('#resultCount', '1 / 1 张');
   await page.locator('.asset-card').click();
@@ -52,9 +53,10 @@ try {
   await mkdir(folder);
   await writeFile(path.join(folder, '机电安装.png'), await sharp({ create: { width: 400, height: 300, channels: 3, background: '#a67d5c' } }).png().toBuffer());
   await page.locator('#toggleImport').click();
+  await page.locator('#directoryDetails > summary').click();
   await page.locator('#directoryInput').fill(folder);
   await page.locator('#importDirectory').click();
-  await visibleText('#importProgress', '导入 1 张，重复 0 张，失败 0 张');
+  await visibleText('#importProgress', '导入 1 张，重复 0 张，失败 0 项');
   await visibleText('#resultCount', '2 张');
   await page.locator('#toggleImport').click();
 
@@ -393,6 +395,7 @@ try {
   await page.locator('#saveLayout').click();
   await visibleText('#actionStatus', '未能保存在本机');
   await visibleText('#layoutSettingsButton', '宽 9 厘米');
+  await verifyImportAndTrash({ page, base, temporary, picture, filename });
   assert.deepEqual(failures, []);
   console.log('UI 验收通过：导入/检索/预览、素材信息与组合筛选、收藏重载与写失败恢复、最近成功记录及失败分离、键盘选图不误插入、排版偏好恢复、320/420/1080 布局、模拟 WPS 插图与替换、目标变更拒绝写入、只读与读取失败恢复');
   console.log('WPS 行为使用模拟宿主；真实 WPS 验收另行记录。');

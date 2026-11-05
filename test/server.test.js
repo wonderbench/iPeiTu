@@ -58,7 +58,7 @@ test('HTTP upload, name search, image preview and insertion metadata work togeth
     method: 'POST', headers: { 'content-type': 'application/octet-stream', origin: base }, body: bytes,
   });
   assert.equal(upload.status, 200);
-  assert.deepEqual(await upload.json(), { imported: 1, duplicates: 0, failed: [], total: 1 });
+  assert.deepEqual(await upload.json(), { imported: 1, duplicates: 0, restored: 0, failed: [], total: 1 });
   const listing = await (await fetch(`${base}/api/library?q=${encodeURIComponent('沟槽')}`)).json();
   assert.equal(listing.assets.length, 1);
   const asset = listing.assets[0];
@@ -288,4 +288,86 @@ test('HTTP state write failures report 500 and keep the last committed GET state
     await rm(statePath, { recursive: true });
     await rename(savedPath, statePath);
   }
+});
+
+test('HTTP trash enforces exact inputs, active write boundaries and previewable recovery', async t => {
+  const { base, library } = await setup(t);
+  await library.importFile('图片.png', await sharp({ create: { width: 3, height: 3, channels: 3, background: 'red' } }).png().toBuffer());
+  const id = library.assets[0].id;
+  const send = (suffix, method, input, headers = {}) => fetch(`${base}/api/assets/${id}${suffix}`, {
+    method, headers: { 'content-type': 'application/json', ...headers }, body: JSON.stringify(input),
+  });
+  for (const input of [null, [], {}, { trashed: 1 }, { trashed: true, extra: true }]) {
+    assert.equal((await send('/trash', 'PATCH', input)).status, 400);
+  }
+  assert.equal((await send('/trash?extra=1', 'PATCH', { trashed: true })).status, 400);
+  assert.equal((await send('/trash', 'PATCH', { trashed: true }, { origin: 'https://attacker.example' })).status, 403);
+  assert.equal((await send('/trash', 'PATCH', { trashed: true }, { 'content-type': 'text/plain' })).status, 415);
+  const removed = await send('/trash', 'PATCH', { trashed: true });
+  assert.equal(removed.status, 200);
+  assert.ok((await removed.json()).asset.deletedAt);
+  assert.equal((await send('/trash', 'PATCH', { trashed: true })).status, 200);
+  assert.equal((await (await fetch(`${base}/api/library`)).json()).total, 0);
+  const trash = await (await fetch(`${base}/api/library?view=trash`)).json();
+  assert.equal(trash.viewTotal, 1);
+  assert.equal(trash.total, 0);
+  for (const [suffix, method, input] of [['', 'PATCH', { name: '不保存' }], ['/favorite', 'PATCH', { favorite: true }], ['/recent', 'POST', {}]]) {
+    assert.equal((await send(suffix, method, input)).status, 410);
+  }
+  assert.equal((await fetch(`${base}/api/assets/${id}/insertion`)).status, 410);
+  assert.equal((await fetch(`${base}/api/assets/${id}/image`)).status, 200);
+  assert.equal((await fetch(`${base}/api/assets/${id}/thumbnail`)).status, 200);
+  assert.equal((await send('/trash', 'PATCH', { trashed: false })).status, 200);
+  assert.equal((await (await fetch(`${base}/api/library`)).json()).total, 1);
+});
+
+test('HTTP directory jobs return progress, reject concurrent work and retry repaired failures', async t => {
+  const { root, base, library } = await setup(t);
+  const source = path.join(root, 'source');
+  await mkdir(source);
+  const filename = path.join(source, '损坏.png');
+  await writeFile(filename, 'broken');
+  const send = (pathname, input, headers = {}) => fetch(`${base}${pathname}`, {
+    method: 'POST', headers: { 'content-type': 'application/json', ...headers }, body: JSON.stringify(input),
+  });
+  for (const input of [null, [], {}, { directory: source, other: true }, { directory: 'relative' }]) {
+    assert.equal((await send('/api/import-jobs', input)).status, 400);
+  }
+  assert.equal((await send('/api/import-jobs?extra=1', { directory: source })).status, 400);
+  assert.equal((await send('/api/import-jobs', { directory: source }, { origin: 'https://attacker.example' })).status, 403);
+  assert.equal((await fetch(`${base}/api/import-jobs/unknown`)).status, 404);
+  assert.equal((await send('/api/import-jobs/unknown/retry', { failureIds: ['unknown'] })).status, 404);
+  let release;
+  const gate = new Promise(resolve => { release = resolve; });
+  const original = library.importSourceFile.bind(library);
+  const paused = t.mock.method(library, 'importSourceFile', async (...args) => { await gate; return original(...args); });
+  const response = await send('/api/import-jobs', { directory: source });
+  assert.equal(response.status, 202);
+  const { job } = await response.json();
+  assert.equal(job.status, 'queued');
+  assert.equal((await send('/api/import-jobs', { directory: source })).status, 409);
+  assert.equal((await send('/api/import', { directory: source })).status, 409);
+  assert.equal((await send(`/api/import-jobs/${job.id}/retry`, { failureIds: ['unknown'] })).status, 409);
+  const progress = await (await fetch(`${base}/api/import-jobs/${job.id}`)).json();
+  assert.ok(['scanning', 'importing'].includes(progress.job.status));
+  release();
+  async function finished(id) {
+    for (let attempt = 0; attempt < 100; attempt++) {
+      const { job: current } = await (await fetch(`${base}/api/import-jobs/${id}`)).json();
+      if (['completed', 'failed'].includes(current.status)) return current;
+      await new Promise(resolve => setTimeout(resolve, 5));
+    }
+    assert.fail('导入任务未及时完成');
+  }
+  const first = await finished(job.id);
+  assert.equal(first.failed.length, 1);
+  paused.mock.restore();
+  await writeFile(filename, await sharp({ create: { width: 3, height: 3, channels: 3, background: 'blue' } }).png().toBuffer());
+  assert.equal((await send(`/api/import-jobs/${job.id}/retry`, {})).status, 400);
+  const retry = await send(`/api/import-jobs/${job.id}/retry`, { failureIds: [first.failed[0].id] });
+  assert.equal(retry.status, 202);
+  const result = await finished((await retry.json()).job.id);
+  assert.equal(result.imported, 1);
+  assert.equal(result.libraryTotal, 1);
+  assert.deepEqual(result.failed, []);
 });

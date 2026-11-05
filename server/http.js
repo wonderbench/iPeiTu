@@ -3,6 +3,7 @@ import { readFile, realpath, stat } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Library, LibraryError, MAX_IMAGE_BYTES } from './library.js';
+import { ImportJobs } from './import-jobs.js';
 
 const defaultPublicDirectory = fileURLToPath(new URL('../public/', import.meta.url));
 const contentTypes = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8',
@@ -65,6 +66,7 @@ function validateRequest(request, port) {
 
 export async function createServer({ dataDirectory, publicDirectory = defaultPublicDirectory } = {}) {
   const library = await Library.open(dataDirectory);
+  const jobs = new ImportJobs(library);
   const publicRoot = path.resolve(publicDirectory);
   const server = http.createServer(async (request, response) => {
     response.setHeader('X-Content-Type-Options', 'nosniff');
@@ -91,13 +93,28 @@ export async function createServer({ dataDirectory, publicDirectory = defaultPub
       } else if (request.method === 'POST' && /^\/api\/assets\/[a-f0-9]{64}\/recent$/.test(url.pathname)) {
         validateParameters(url.searchParams, []);
         json(response, 200, { asset: await library.recordRecent(url.pathname.split('/')[3], await jsonBody(request)) });
+      } else if (request.method === 'PATCH' && /^\/api\/assets\/[a-f0-9]{64}\/trash$/.test(url.pathname)) {
+        validateParameters(url.searchParams, []);
+        json(response, 200, { asset: await library.setTrash(url.pathname.split('/')[3], await jsonBody(request)) });
+      } else if (request.method === 'POST' && url.pathname === '/api/import-jobs') {
+        validateParameters(url.searchParams, []);
+        const input = await jsonBody(request);
+        if (!input || typeof input !== 'object' || Array.isArray(input) || Object.keys(input).length !== 1
+          || !Object.hasOwn(input, 'directory')) throw new LibraryError('目录导入仅接受 directory 字段');
+        json(response, 202, { job: await jobs.create(input.directory) });
+      } else if (request.method === 'GET' && /^\/api\/import-jobs\/[^/]+$/.test(url.pathname)) {
+        validateParameters(url.searchParams, []);
+        json(response, 200, { job: jobs.get(url.pathname.split('/')[3]) });
+      } else if (request.method === 'POST' && /^\/api\/import-jobs\/[^/]+\/retry$/.test(url.pathname)) {
+        validateParameters(url.searchParams, []);
+        json(response, 202, { job: await jobs.retry(url.pathname.split('/')[3], await jsonBody(request, 64 * 1024)) });
       } else if (request.method === 'POST' && url.pathname === '/api/import') {
         validateParameters(url.searchParams, []);
         const input = await jsonBody(request);
         if (!input || typeof input !== 'object' || Array.isArray(input) || Object.keys(input).some(key => key !== 'directory')) {
           throw new LibraryError('目录导入仅接受 directory 字段');
         }
-        json(response, 200, await library.importDirectory(input.directory));
+        json(response, 200, await jobs.importDirectory(input.directory));
       } else if (request.method === 'POST' && url.pathname === '/api/import-file') {
         if (request.headers['content-type']?.split(';')[0] !== 'application/octet-stream') throw new LibraryError('图片上传需要 application/octet-stream', 415);
         validateParameters(url.searchParams, ['name', 'category']);
@@ -138,7 +155,7 @@ export async function createServer({ dataDirectory, publicDirectory = defaultPub
     }
   });
   server.requestTimeout = 120_000;
-  return { server, library };
+  return { server, library, jobs };
 }
 
 export async function startServer({ port = 39831, ...options } = {}) {
