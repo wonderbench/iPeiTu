@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, writeFile, readFile, rm, symlink, unlink, readdir, rename } from 'node:fs/promises';
+import { mkdtemp, mkdir, writeFile, readFile, rm, symlink, unlink, readdir, rename, realpath } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import sharp from 'sharp';
@@ -361,9 +361,10 @@ test('a filesystem root without a basename leaves root images uncategorized and 
   await mkdir(path.join(source, '子目录'), { recursive: true });
   await writeFile(path.join(source, '根图.png'), await image('red'));
   await writeFile(path.join(source, '子目录', '子图.png'), await image('blue'));
+  const canonicalSource = await realpath(source);
   const basename = path.basename;
   // Simulate a drive root using an isolated folder; never scan a user's drive.
-  t.mock.method(path, 'basename', (value, suffix) => value === source ? '' : basename(value, suffix));
+  t.mock.method(path, 'basename', (value, suffix) => value === canonicalSource ? '' : basename(value, suffix));
   assert.deepEqual(await library.importDirectory(source), { imported: 2, duplicates: 0, failed: [], total: 2 });
   assert.deepEqual(library.list('根图').assets[0].categories, []);
   assert.deepEqual(library.list('子图').assets[0].categories, ['子目录']);
