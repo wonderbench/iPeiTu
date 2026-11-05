@@ -1,0 +1,121 @@
+import http from 'node:http';
+import { readFile, realpath, stat } from 'node:fs/promises';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { Library, LibraryError, MAX_IMAGE_BYTES } from './library.js';
+
+const defaultPublicDirectory = fileURLToPath(new URL('../public/', import.meta.url));
+const contentTypes = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8',
+  '.css': 'text/css; charset=utf-8', '.xml': 'application/xml; charset=utf-8', '.json': 'application/json; charset=utf-8',
+  '.png': 'image/png', '.svg': 'image/svg+xml', '.ico': 'image/x-icon', '.jpeg': 'image/jpeg', '.jpg': 'image/jpeg' };
+
+function json(response, status, value) {
+  response.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8' });
+  response.end(JSON.stringify(value));
+}
+
+async function body(request, limit) {
+  if (Number(request.headers['content-length']) > limit) {
+    request.resume();
+    throw new LibraryError('请求超过允许大小', 413);
+  }
+  const chunks = [];
+  let length = 0;
+  for await (const chunk of request.iterator({ destroyOnReturn: false })) {
+    length += chunk.length;
+    if (length > limit) {
+      request.resume();
+      throw new LibraryError('请求超过允许大小', 413);
+    }
+    chunks.push(chunk);
+  }
+  return Buffer.concat(chunks);
+}
+
+function validateRequest(request, port) {
+  const allowedHosts = new Set([`127.0.0.1:${port}`, `localhost:${port}`]);
+  if (!allowedHosts.has(request.headers.host)) throw new LibraryError('只接受本机地址请求', 403);
+  const origin = `http://${request.headers.host}`;
+  if (request.headers.origin && request.headers.origin !== origin) throw new LibraryError('不接受其他网站的请求', 403);
+  if (request.headers['sec-fetch-site'] && !['same-origin', 'none'].includes(request.headers['sec-fetch-site'])) {
+    throw new LibraryError('不接受其他网站的请求', 403);
+  }
+  if (request.headers.referer) {
+    let referer;
+    try { referer = new URL(request.headers.referer); } catch { throw new LibraryError('来源地址无效', 403); }
+    if (referer.origin !== origin) throw new LibraryError('不接受其他网站的请求', 403);
+  }
+  return origin;
+}
+
+export async function createServer({ dataDirectory, publicDirectory = defaultPublicDirectory } = {}) {
+  const library = await Library.open(dataDirectory);
+  const publicRoot = path.resolve(publicDirectory);
+  const server = http.createServer(async (request, response) => {
+    response.setHeader('X-Content-Type-Options', 'nosniff');
+    response.setHeader('Cache-Control', 'no-store');
+    response.setHeader('Cross-Origin-Resource-Policy', 'same-origin');
+    response.setHeader('Referrer-Policy', 'same-origin');
+    try {
+      const origin = validateRequest(request, server.address().port);
+      const url = new URL(request.url, origin);
+      if (request.method === 'GET' && url.pathname === '/api/library') {
+        json(response, 200, library.list(url.searchParams.get('q') || ''));
+      } else if (request.method === 'POST' && url.pathname === '/api/import') {
+        if (request.headers['content-type']?.split(';')[0] !== 'application/json') throw new LibraryError('导入目录需要 JSON 请求', 415);
+        let input;
+        try { input = JSON.parse((await body(request, 16 * 1024)).toString('utf8')); } catch (error) {
+          if (error instanceof LibraryError) throw error;
+          throw new LibraryError('请求不是有效 JSON');
+        }
+        json(response, 200, await library.importDirectory(input?.directory));
+      } else if (request.method === 'POST' && url.pathname === '/api/import-file') {
+        if (request.headers['content-type']?.split(';')[0] !== 'application/octet-stream') throw new LibraryError('图片上传需要 application/octet-stream', 415);
+        json(response, 200, await library.importFile(url.searchParams.get('name'), await body(request, MAX_IMAGE_BYTES)));
+      } else if (request.method === 'GET' && /^\/api\/assets\/[a-f0-9]{64}\/insertion$/.test(url.pathname)) {
+        json(response, 200, await library.insertion(url.pathname.split('/')[3]));
+      } else if (request.method === 'GET' && /^\/api\/assets\/[a-f0-9]{64}\/(image|thumbnail)$/.test(url.pathname)) {
+        const [, , , id, kind] = url.pathname.split('/');
+        const file = await library.file(id, kind);
+        const image = await readFile(file.path);
+        response.writeHead(200, { 'Content-Type': file.type, 'Content-Length': image.length });
+        response.end(image);
+      } else if (url.pathname.startsWith('/api/')) {
+        throw new LibraryError('接口不存在', 404);
+      } else if (request.method === 'GET' || request.method === 'HEAD') {
+        let pathname;
+        try { pathname = decodeURIComponent(url.pathname); } catch { throw new LibraryError('地址编码无效'); }
+        if (pathname.includes('\0') || pathname.includes('\\')) throw new LibraryError('文件不存在', 404);
+        const candidate = path.resolve(publicRoot, `.${pathname === '/' ? '/index.html' : pathname}`);
+        if (!candidate.startsWith(`${publicRoot}${path.sep}`)) throw new LibraryError('文件不存在', 404);
+        let resolved;
+        try { resolved = await realpath(candidate); } catch (error) {
+          if (error.code === 'ENOENT' || error.code === 'ENOTDIR') throw new LibraryError('文件不存在', 404);
+          throw error;
+        }
+        const actualRoot = await realpath(publicRoot);
+        if (!resolved.startsWith(`${actualRoot}${path.sep}`) || !(await stat(resolved)).isFile()) throw new LibraryError('文件不存在', 404);
+        const file = await readFile(resolved);
+        response.writeHead(200, { 'Content-Type': contentTypes[path.extname(resolved)] || 'application/octet-stream', 'Content-Length': file.length });
+        response.end(request.method === 'HEAD' ? undefined : file);
+      } else {
+        throw new LibraryError('不支持该请求方法', 405);
+      }
+    } catch (error) {
+      if (!(error instanceof LibraryError)) console.error('iPeiTu 请求失败:', error);
+      if (!response.headersSent) json(response, error.status || 500, { error: error instanceof LibraryError ? error.message : '本地图库读写失败，请查看服务窗口中的错误并重试' });
+      else response.destroy(error);
+    }
+  });
+  server.requestTimeout = 120_000;
+  return { server, library };
+}
+
+export async function startServer({ port = 39831, ...options } = {}) {
+  const result = await createServer(options);
+  await new Promise((resolve, reject) => {
+    result.server.once('error', reject);
+    result.server.listen(port, '127.0.0.1', resolve);
+  });
+  return result;
+}

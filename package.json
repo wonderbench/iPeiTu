@@ -1,0 +1,15 @@
+{
+  "name": "ipeitu",
+  "version": "0.1.0",
+  "private": true,
+  "description": "WPS 标书本地配图库",
+  "type": "module",
+  "addonType": "wps",
+  "engines": { "node": ">=24" },
+  "scripts": {
+    "start": "node server/index.js",
+    "test": "node --test test/*.test.js",
+    "check": "node --check server/index.js && node --check server/library.js && node --check server/http.js"
+  },
+  "dependencies": { "sharp": "0.35.5" }
+}
