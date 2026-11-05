@@ -1,4 +1,7 @@
-import { captureInsertionTarget, getHostStatus, insertPicture } from './wps-bridge.js';
+import {
+  captureInsertionTarget, getHostStatus, insertPicture,
+  getReplacementStatus, captureReplacementTarget, replacePicture,
+} from './wps-bridge.js';
 import { normalizeLayoutOptions } from './layout-options.js';
 import { loadLayoutPreferences, saveLayoutPreferences } from './layout-preferences.js';
 
@@ -19,12 +22,15 @@ const ui = Object.fromEntries([
   'editMetadata', 'metadataDialog', 'metadataForm', 'assetName', 'assetAliases',
   'assetCategories', 'assetTags', 'metadataError', 'saveMetadata', 'cancelMetadata',
   'libraryViews', 'viewAll', 'viewFavorites', 'viewRecent', 'favoriteButton',
+  'documentActions', 'replaceButton',
 ].map((id) => [id, element(id)]));
 
 let selected = null;
 let hostAvailable = false;
 let importing = false;
 let inserting = false;
+let replacing = false;
+let replacementAvailable = false;
 let requestVersion = 0;
 let searchTimer;
 let libraryRequest;
@@ -201,7 +207,36 @@ function refreshHost() {
     hostAvailable = false;
     ui.hostStatus.textContent = error.message;
   }
-  ui.insertButton.disabled = !selected || !hostAvailable || inserting;
+  const inWps = typeof globalThis.Application !== 'undefined';
+  ui.replaceButton.hidden = !inWps;
+  ui.documentActions.classList.toggle('with-replacement', inWps);
+  replacementAvailable = false;
+  if (inWps) {
+    try {
+      const status = getReplacementStatus();
+      replacementAvailable = status.available;
+      ui.replaceButton.title = status.available ? selected ? '保留文档图片的位置与宽度' : '请先选择素材' : status.message;
+    } catch (error) {
+      ui.replaceButton.title = error.message || '无法读取当前图片，请重新选择';
+    }
+  }
+  ui.insertButton.disabled = !selected || !hostAvailable || inserting || replacing;
+  ui.replaceButton.disabled = !selected || !replacementAvailable || inserting || replacing;
+}
+
+async function recordSuccessfulUse(asset, action) {
+  try {
+    const { asset: updated } = await request(`/api/assets/${encodeURIComponent(asset.id)}/recent`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}',
+    });
+    visibleAssets = visibleAssets.map(item => item.id === asset.id ? { ...item, lastInsertedAt: updated.lastInsertedAt } : item);
+    if (selected?.id === asset.id) selected = { ...selected, lastInsertedAt: updated.lastInsertedAt };
+  } catch {
+    showAction(`图片已${action}，但最近记录未保存`, true);
+    return;
+  }
+  if (libraryView === 'recent') await loadLibrary();
+  showAction(`已${action}「${asset.name}」`);
 }
 
 function selectAsset(asset) {
@@ -634,12 +669,12 @@ ui.layoutForm.addEventListener('submit', (event) => {
   showAction(saved ? '排版设置已保存，用于接下来插入的图片' : '排版设置已应用于本次使用，但未能保存在本机', !saved);
 });
 ui.insertButton.addEventListener('click', async () => {
-  if (!selected || inserting) return;
+  if (!selected || inserting || replacing) return;
   refreshHost();
   if (!hostAvailable) return;
   const asset = selected;
   inserting = true;
-  ui.insertButton.disabled = true;
+  refreshHost();
   ui.insertButton.textContent = '正在插入';
   showAction('');
   try {
@@ -648,23 +683,35 @@ ui.insertButton.addEventListener('click', async () => {
     const insertion = await request(`/api/assets/${encodeURIComponent(asset.id)}/insertion`);
     insertPicture(insertion, target, options);
     showAction(`已插入「${asset.name}」`);
-    try {
-      const { asset: updated } = await request(`/api/assets/${encodeURIComponent(asset.id)}/recent`, {
-        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}',
-      });
-      visibleAssets = visibleAssets.map(item => item.id === asset.id ? { ...item, lastInsertedAt: updated.lastInsertedAt } : item);
-      if (selected?.id === asset.id) selected = { ...selected, lastInsertedAt: updated.lastInsertedAt };
-    } catch {
-      showAction('图片已插入，但最近记录未保存', true);
-      return;
-    }
-    if (libraryView === 'recent') await loadLibrary();
-    showAction(`已插入「${asset.name}」`);
+    await recordSuccessfulUse(asset, '插入');
   } catch (error) {
     showAction(error.inserted ? error.message : `插入失败：${readableError(error)}`, true);
   } finally {
     inserting = false;
     ui.insertButton.textContent = '插入光标处';
+    refreshHost();
+  }
+});
+ui.replaceButton.addEventListener('click', async () => {
+  if (!selected || inserting || replacing) return;
+  refreshHost();
+  if (!replacementAvailable) return;
+  const asset = selected;
+  replacing = true;
+  ui.replaceButton.textContent = '正在替换';
+  refreshHost();
+  showAction('');
+  try {
+    const target = captureReplacementTarget();
+    const insertion = await request(`/api/assets/${encodeURIComponent(asset.id)}/insertion`);
+    replacePicture(insertion, target);
+    showAction(`已替换「${asset.name}」`);
+    await recordSuccessfulUse(asset, '替换');
+  } catch (error) {
+    showAction(error.inserted || error.replaced || error.resultUncertain ? error.message : `替换失败：${readableError(error)}`, true);
+  } finally {
+    replacing = false;
+    ui.replaceButton.textContent = '替换选中图';
     refreshHost();
   }
 });

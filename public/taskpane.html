@@ -86,7 +86,10 @@
             <p id="selectedMeta" class="meta">点击素材查看并选择</p>
           </div>
         </div>
-        <button id="insertButton" class="button primary" type="button" disabled>插入光标处</button>
+        <div id="documentActions" class="document-actions">
+          <button id="insertButton" class="button primary" type="button" disabled>插入光标处</button>
+          <button id="replaceButton" class="button secondary" type="button" hidden disabled>替换选中图</button>
+        </div>
         <div class="selection-options">
           <button id="layoutSettingsButton" class="layout-summary" type="button" aria-haspopup="dialog" aria-controls="layoutDialog">排版设置 · 自适应 · 原段落</button>
           <button id="editMetadata" class="text-button" type="button" aria-haspopup="dialog" aria-controls="metadataDialog" disabled>素材信息</button>
