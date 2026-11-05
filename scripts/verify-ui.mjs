@@ -57,11 +57,39 @@ try {
   await visibleText('#resultCount', '2 张');
   await page.locator('#toggleImport').click();
 
+  await page.locator('#layoutSettingsButton').click();
+  await page.locator('#widthMode').selectOption('fixed');
+  await page.locator('#widthCm').fill('8');
+  await page.locator('#maxHeightCm').fill('5');
+  await page.locator('#includeCaption').check();
+  await page.locator('#saveLayout').click();
+  await page.reload();
+  await page.locator('#layoutSettingsButton').click();
+  assert.equal(await page.locator('#widthMode').inputValue(), 'fixed');
+  assert.equal(await page.locator('#widthCm').inputValue(), '8');
+  assert.equal(await page.locator('#maxHeightCm').inputValue(), '5');
+  assert.equal(await page.locator('#includeCaption').isChecked(), true);
+  await page.locator('#cancelLayout').click();
+  await page.locator('.asset-card').first().click();
+  await page.locator('#layoutSettingsButton').click();
+  assert.equal(await page.locator('#captionText').inputValue(), filename.replace(/\.[^.]+$/, ''));
+  await page.locator('#captionText').fill('本次编辑的图题');
+  await page.locator('#saveLayout').click();
+  await page.locator('.asset-card').nth(1).click();
+  await page.locator('#layoutSettingsButton').click();
+  assert.equal(await page.locator('#captionText').inputValue(), '机电安装');
+  await page.locator('#includeCaption').uncheck();
+  await page.locator('#layoutMode').selectOption('inline');
+  await page.locator('#saveLayout').click();
+
   for (const width of [320, 420, 1080]) {
     await page.setViewportSize({ width, height: 800 });
     assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true, `${width}px 无横向溢出`);
     const bounds = await page.locator('#insertButton').boundingBox();
     assert.ok(bounds.y + bounds.height <= 800, `${width}px 插入操作可见`);
+    await page.locator('#layoutSettingsButton').click();
+    assert.equal(await page.evaluate(() => document.querySelector('#layoutDialog').scrollWidth <= document.querySelector('#layoutDialog').clientWidth), true, `${width}px 排版对话框无横向溢出`);
+    await page.locator('#cancelLayout').click();
   }
 
   // Linux CI exercises a simulated Windows host; keep its local-path contract.
@@ -75,6 +103,8 @@ try {
     window.mockReadOnly = false;
     window.Application = {
       Documents: { Count: 1 },
+      CentimetersToPoints: value => value * 72 / 2.54,
+      UndoRecord: { StartCustomRecord: () => {}, EndCustomRecord: () => {} },
       get ActiveDocument() { return { Name: '验收文档.docx', FullName: 'C:\\test\\验收文档.docx', ReadOnly: window.mockReadOnly, ProtectionType: -1 }; },
       Selection: { get Range() {
         const range = {
@@ -82,8 +112,14 @@ try {
           Information: () => false,
           Collapse: direction => { assertCollapse(direction); range.Start = range.End; },
           InlineShapes: { AddPicture: (filename, link, save, target) => {
-            window.insertions.push({ filename, link, save, start: target.Start, end: target.End });
-            return { Width: 1000, Height: 600, Range: { Duplicate: { Collapse: assertCollapse, Select: () => {} } } };
+            const record = { filename, link, save, start: target.Start, end: target.End, width: 1000, height: 600 };
+            window.insertions.push(record);
+            return {
+              get Width() { return record.width; },
+              set Width(value) { if (this.LockAspectRatio === -1) record.height *= value / record.width; record.width = value; },
+              get Height() { return record.height; },
+              Range: { Duplicate: { Collapse: assertCollapse, Select: () => {} } },
+            };
           } },
         };
         return { Start: range.Start, End: range.End, Duplicate: range };
@@ -101,6 +137,8 @@ try {
   assert.equal(inserted[0].save, true);
   assert.equal(inserted[0].start, 12);
   assert.equal(inserted[0].end, 12);
+  assert.ok(Math.abs(inserted[0].width - 8 * 72 / 2.54) < 0.01, '持久化的固定宽度实际传递到 WPS');
+  assert.ok(inserted[0].height <= 5 * 72 / 2.54, '最大高度限制保持有效');
   await page.locator('#insertButton').click();
   await page.waitForFunction(() => window.insertions.length === 2);
   await page.evaluate(() => { window.mockReadOnly = true; window.dispatchEvent(new Event('focus')); });
@@ -116,8 +154,20 @@ try {
   await page.unroute('**/api/library?*');
   await page.locator('#stateAction').click();
   await visibleText('#stateTitle', '没有找到');
+  await page.evaluate(() => localStorage.setItem('ipeitu.layout.v1', '{broken'));
+  await page.reload();
+  await visibleText('#actionStatus', '无法读取上次的排版设置');
+  await visibleText('#layoutSettingsButton', '自适应');
+  await visibleText('#resultCount', '2 张');
+  await page.evaluate(() => { Storage.prototype.setItem = () => { throw new DOMException('验收用存储失败', 'QuotaExceededError'); }; });
+  await page.locator('#layoutSettingsButton').click();
+  await page.locator('#widthMode').selectOption('fixed');
+  await page.locator('#widthCm').fill('9');
+  await page.locator('#saveLayout').click();
+  await visibleText('#actionStatus', '未能保存在本机');
+  await visibleText('#layoutSettingsButton', '宽 9 厘米');
   assert.deepEqual(failures, []);
-  console.log('UI 验收通过：文件/目录导入、坏图反馈、重复别名、中文搜索、空结果、预览、重载持久化、320/420/1080 布局、模拟 WPS 插入及保留选区、连续插图、只读提示、读取失败重试');
+  console.log('UI 验收通过：导入/检索/预览、排版偏好重载与损坏/写入失败恢复、图题切图隔离、320/420/1080 布局、模拟 WPS 固定宽度插入及保留选区、连续插图、只读提示、读取失败重试');
   console.log('WPS 行为使用模拟宿主；真实 WPS 验收另行记录。');
 } finally {
   await browser?.close();
