@@ -25,8 +25,20 @@ const ui = Object.fromEntries([
   'libraryViews', 'viewAll', 'viewFavorites', 'viewRecent', 'favoriteButton',
   'documentActions', 'replaceButton', 'viewTrash', 'libraryTitle',
   'chooseFolder', 'folderInput', 'retryImport', 'resumeImport', 'importMeter',
-  'trashButton', 'restoreButton',
+  'trashButton', 'restoreButton', 'activeFilters', 'favoriteLabel', 'layoutSummary',
+  'selectedSpec', 'selectedCategories', 'selectedTags',
 ].map((id) => [id, element(id)]));
+
+function icon(name) {
+  const namespace = 'http://www.w3.org/2000/svg';
+  const svg = document.createElementNS(namespace, 'svg');
+  svg.setAttribute('class', 'icon');
+  svg.setAttribute('aria-hidden', 'true');
+  const use = document.createElementNS(namespace, 'use');
+  use.setAttribute('href', `#i-${name}`);
+  svg.append(use);
+  return svg;
+}
 
 let selected = null;
 let hostAvailable = false;
@@ -53,7 +65,7 @@ function refreshFavoriteButton() {
   ui.favoriteButton.hidden = libraryView === 'trash';
   ui.favoriteButton.disabled = !selected || pending || changingTrash || libraryView === 'trash';
   ui.favoriteButton.setAttribute('aria-pressed', String(Boolean(selected?.favorite)));
-  ui.favoriteButton.textContent = pending ? '保存中' : selected?.favorite ? '已收藏' : '收藏';
+  ui.favoriteLabel.textContent = pending ? '保存中' : selected?.favorite ? '已收藏' : '收藏';
 }
 
 function setLibraryView(view) {
@@ -71,11 +83,11 @@ function hasFilters() {
 }
 
 function updateFilterSummary() {
-  const category = filters.uncategorized ? '未分类' : filters.category || '全部分类';
-  const tags = filters.tags.length ? filters.tags.join('、') : '不限工序';
-  ui.filterSummary.textContent = `${category} · ${tags}`;
+  const category = filters.uncategorized ? '未分类' : filters.category;
+  ui.filterSummary.textContent = [category, ...filters.tags].filter(Boolean).join(' · ');
   ui.filterSummary.title = ui.filterSummary.textContent;
-  ui.clearFilters.hidden = !hasFilters();
+  ui.activeFilters.hidden = !hasFilters();
+  ui.openFilters.classList.toggle('active', hasFilters());
 }
 
 function fillFilters() {
@@ -148,7 +160,7 @@ function updateLayoutSummary() {
     : layoutPreferences.includeCaption ? '独立段落，沿用对齐' : '原段落');
   if (layoutPreferences.includeCaption) summary.push('带图题');
   if (layoutPreferences.qualityProfile !== 'original') summary.push(layoutPreferences.qualityProfile === 'clear' ? '清晰' : '均衡');
-  ui.layoutSettingsButton.textContent = `排版设置 · ${summary.join(' · ')}`;
+  ui.layoutSummary.textContent = summary.join(' · ');
 }
 
 function syncLayoutFields() {
@@ -221,11 +233,12 @@ function refreshHost() {
     const status = getHostStatus();
     hostAvailable = status.available;
     ui.hostStatus.textContent = typeof globalThis.Application === 'undefined'
-      ? `浏览器模式 · ${status.message}` : status.message;
+      ? '浏览器模式 · 插入需从 WPS 打开' : status.message;
   } catch (error) {
     hostAvailable = false;
     ui.hostStatus.textContent = error.message;
   }
+  ui.hostStatus.classList.toggle('ready', hostAvailable);
   const inWps = typeof globalThis.Application !== 'undefined';
   ui.replaceButton.hidden = !inWps || trashed;
   ui.documentActions.classList.toggle('with-replacement', inWps);
@@ -274,7 +287,11 @@ function selectAsset(asset) {
   ui.previewPlaceholder.hidden = Boolean(asset);
   ui.selectedName.textContent = asset ? asset.name : '尚未选择图片';
   ui.selectedName.title = asset ? asset.name : '';
-  ui.selectedMeta.textContent = asset ? `${asset.width} × ${asset.height} · 点击左图预览` : '点击素材查看并选择';
+  ui.selectedMeta.hidden = !asset;
+  ui.selectedMeta.textContent = asset ? metadata(asset) : '';
+  ui.selectedSpec.hidden = !asset;
+  ui.selectedCategories.textContent = asset ? asset.categories.join('、') || '未分类' : '';
+  ui.selectedTags.textContent = asset ? asset.tags.join('、') || '未设置' : '';
   if (asset) ui.selectedThumbnail.src = asset.thumbnailUrl;
   else ui.selectedThumbnail.removeAttribute('src');
   showAction('');
@@ -333,15 +350,19 @@ function renderAssets(assets) {
     name.title = asset.name;
     const details = document.createElement('span');
     details.className = 'asset-details';
-    const size = document.createElement('span');
-    size.textContent = `${asset.width} × ${asset.height}`;
-    const label = document.createElement('span');
-    label.className = 'selection-label';
-    label.textContent = '已选';
-    label.setAttribute('aria-hidden', 'true');
-    details.append(size, label);
+    details.classList.add('figures');
+    details.textContent = `${asset.width} × ${asset.height}`;
     caption.append(name, details);
-    card.append(thumbnail, caption);
+    const check = document.createElement('span');
+    check.className = 'card-check';
+    check.append(icon('check'));
+    card.append(thumbnail, check, caption);
+    if (asset.favorite && libraryView !== 'trash') {
+      const favorite = document.createElement('span');
+      favorite.className = 'card-favorite';
+      favorite.append(icon('star'));
+      card.append(favorite);
+    }
     card.addEventListener('click', () => selectAsset(visibleAssets.find(item => item.id === asset.id) || null));
     fragment.append(card);
   }

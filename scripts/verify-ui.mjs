@@ -111,8 +111,10 @@ try {
   await page.locator('#applyFilters').click();
   await visibleText('#resultCount', '1 / 2 张');
   await visibleText('.asset-name', filename);
+  assert.equal(await page.locator('#activeFilters').isVisible(), true, '有筛选条件时显示摘要');
   await page.locator('#clearFilters').click();
   await visibleText('#resultCount', '2 张');
+  assert.equal(await page.locator('#activeFilters').isVisible(), false, '无筛选条件时不占图库空间');
   await page.reload();
   await page.locator('#searchInput').fill('桥架 室内');
   await visibleText('#resultCount', '1 / 2 张');
@@ -178,6 +180,9 @@ try {
     assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true, `${width}px 无横向溢出`);
     const bounds = await page.locator('#insertButton').boundingBox();
     assert.ok(bounds.y + bounds.height <= 800, `${width}px 插入操作可见`);
+    assert.equal(await page.locator('#selectedSpec').isVisible(), width >= 800, `${width}px 分类与工序只在宽窗口展开`);
+    assert.ok((await page.locator('.workspace').boundingBox()).height >= 480, `${width}px 素材区保持为窗格主体`);
+    assert.equal(await page.locator('.thumbnail-wrap img').first().evaluate(image => Math.abs(image.getBoundingClientRect().height - image.parentElement.clientHeight) <= 1), true, `${width}px 缩略图按容器完整显示，竖图不被裁切`);
     await page.locator('#layoutSettingsButton').click();
     assert.equal(await page.evaluate(() => document.querySelector('#layoutDialog').scrollWidth <= document.querySelector('#layoutDialog').clientWidth), true, `${width}px 排版对话框无横向溢出`);
     await page.locator('#cancelLayout').click();
