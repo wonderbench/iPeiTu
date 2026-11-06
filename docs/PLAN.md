@@ -59,7 +59,7 @@ v0.2 的排版、分类、收藏与最近使用已通过 PR #5—8 完成。用�
 
 ## 前端重新设计（2026-11-05）
 
-用户要求按 unslop 重新设计前端，不做本地端到端测试，提交 PR 后审核自动合并。功能、接口与元素 ID 不变，改动集中在 `public/taskpane.html`、`public/styles.css` 与 `public/app.js` 的展示部分。
+[PR #12](https://github.com/wonderbench/iPeiTu/pull/12)。用户要求按 unslop 重新设计前端，不做本地端到端测试，提交 PR 后审核自动合并。功能、接口与元素 ID 不变，改动集中在 `public/taskpane.html`、`public/styles.css` 与 `public/app.js` 的展示部分。
 
 1. 产品：帮标书编制人员在 WPS 文字里查找工程配图并插入光标处。
 2. 性格：沉稳、准确、直接。

@@ -104,9 +104,13 @@ h1 { overflow: hidden; color: var(--text-muted); font-size: 13px; line-height: 2
 
 /* 检索与视图：滚动时留在图库上方 */
 .library-tools {
-  position: sticky; top: 0; z-index: 1;
   display: grid; gap: 8px; padding: 12px 12px 0;
   border-bottom: 1px solid var(--line); background: var(--page);
+}
+/* 矮窗格不固定，否则检索栏会占满素材区；scroll-padding 避免键盘焦点落到固定栏下方 */
+@media (min-height: 480px) {
+  .workspace { scroll-padding-top: 136px; }
+  .library-tools { position: sticky; top: 0; z-index: 1; }
 }
 .search-block { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px; }
 .search-field { position: relative; min-width: 0; }
@@ -286,7 +290,7 @@ dialog > .meta { margin-top: 12px; }
   .selection-bar > * { flex: none; }
   .title-block { border-radius: 12px; }
   .selected-asset { display: block; padding: 0; }
-  .preview-button { display: block; width: 100%; height: clamp(144px, 36dvh, 248px); border-radius: 0; }
+  .preview-button { display: block; width: 100%; height: clamp(144px, 36vh, 248px); border-radius: 0; }
   #previewPlaceholder .icon { width: 24px; height: 24px; stroke-width: 1.5; }
   .preview-hint { right: 8px; bottom: 8px; width: 24px; height: 24px; border-radius: 4px; }
   .preview-hint .icon { width: 16px; height: 16px; stroke-width: 2.25; }

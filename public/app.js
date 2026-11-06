@@ -327,7 +327,8 @@ function renderAssets(assets) {
     card.dataset.id = asset.id;
     card.tabIndex = asset.id === tabId ? 0 : -1;
     card.setAttribute('aria-pressed', String(asset.id === selected?.id));
-    card.setAttribute('aria-label', `选择 ${asset.name}`);
+    const favorited = asset.favorite && libraryView !== 'trash';
+    card.setAttribute('aria-label', `选择 ${asset.name}${favorited ? '（已收藏）' : ''}`);
     const thumbnail = document.createElement('span');
     thumbnail.className = 'thumbnail-wrap';
     const image = document.createElement('img');
@@ -349,15 +350,14 @@ function renderAssets(assets) {
     name.textContent = asset.name;
     name.title = asset.name;
     const details = document.createElement('span');
-    details.className = 'asset-details';
-    details.classList.add('figures');
+    details.className = 'asset-details figures';
     details.textContent = `${asset.width} × ${asset.height}`;
     caption.append(name, details);
     const check = document.createElement('span');
     check.className = 'card-check';
     check.append(icon('check'));
     card.append(thumbnail, check, caption);
-    if (asset.favorite && libraryView !== 'trash') {
+    if (favorited) {
       const favorite = document.createElement('span');
       favorite.className = 'card-favorite';
       favorite.append(icon('star'));
@@ -486,7 +486,7 @@ ui.favoriteButton.addEventListener('click', async () => {
     if (libraryView === 'favorites' && !updated.favorite) {
       if (selected?.id === asset.id) selectAsset(null);
       renderAssets(visibleAssets.filter(item => item.id !== asset.id));
-    }
+    } else renderAssets(visibleAssets);
     const refreshVersion = requestVersion + 1;
     const data = await loadLibrary();
     if (!data && requestVersion === refreshVersion) showAction('收藏已保存，但图库刷新失败', true);
