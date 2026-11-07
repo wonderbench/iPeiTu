@@ -40,6 +40,29 @@
           </div>
         </section>
 
+        <section class="tool-group" aria-labelledby="widthTools">
+          <h2 id="widthTools">表格宽度</h2>
+          <div class="size-fields">
+            <div class="field-group">
+              <label for="singleWidth">一栏页面（厘米）</label>
+              <input id="singleWidth" type="number" min="1" max="60" step="0.1" value="15" inputmode="decimal">
+            </div>
+            <div class="field-group">
+              <label for="multiWidth">多栏页面（厘米）</label>
+              <input id="multiWidth" type="number" min="1" max="60" step="0.1" value="7" inputmode="decimal">
+            </div>
+          </div>
+          <div class="tool-grid">
+            <button id="readTableWidth" class="tool-button" type="button" title="读取光标所在表格的宽度，按所在页面的栏数填入对应输入框">读取当前表格</button>
+            <button id="applyTableWidths" class="tool-button" type="button" title="按一栏或多栏把表格调整为目标宽度，各列等比缩放">执行调整</button>
+          </div>
+          <div class="tool-grid">
+            <button class="tool-button" type="button" data-operation="alignTablesLeft" title="表格整体左对齐，左缩进归零">表格左对齐</button>
+            <button class="tool-button" type="button" data-operation="alignTablesCenter" title="表格整体水平居中">表格居中</button>
+            <button class="tool-button" type="button" data-operation="alignTablesRight" title="表格整体右对齐">表格右对齐</button>
+          </div>
+        </section>
+
         <section class="tool-group" aria-labelledby="documentTools">
           <h2 id="documentTools">全文</h2>
           <div class="tool-grid">

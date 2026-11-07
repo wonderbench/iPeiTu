@@ -12,6 +12,11 @@ const PICTURE_GRAYSCALE = 2;
 const INLINE_PICTURE_TYPES = [3, 4];
 const SHAPE_PICTURE_TYPES = [11, 13];
 const SHAPE_GROUP = 6;
+const PREFERRED_WIDTH_POINTS = 3;
+const ROW_ALIGN_LEFT = 0;
+const ROW_ALIGN_CENTER = 1;
+const ROW_ALIGN_RIGHT = 2;
+const UNDEFINED_WIDTH = 9999998; // WPS/Word 对不确定的宽度返回 9999999
 const FULL_WIDTH_SPACE = String.fromCharCode(0x3000);
 const NO_BREAK_SPACE = String.fromCharCode(0xa0);
 const SPACES = new Set([' ', FULL_WIDTH_SPACE, NO_BREAK_SPACE]);
@@ -236,19 +241,109 @@ const operations = {
       return { count, skipped, unit: '个图片或图形', skippedReason: '组合图形或不支持的图形未处理' };
     },
   },
+  standardizeWidths: {
+    label: '表格宽度',
+    validate(options) {
+      for (const key of ['singleCm', 'multiCm']) {
+        const value = options?.[key];
+        if (typeof value !== 'number' || !Number.isFinite(value) || value < 1 || value > 60) {
+          throw new Error('表格宽度须为 1–60 厘米之间的数字');
+        }
+      }
+    },
+    run({ app, range }, options) {
+      const targets = { single: app.CentimetersToPoints(options.singleCm), multi: app.CentimetersToPoints(options.multiCm) };
+      let single = 0;
+      let multi = 0;
+      let unchanged = 0;
+      let unreadable = 0;
+      each(range.Tables, table => {
+        const rows = rowWidths(table);
+        if (!rows) { unreadable++; return; }
+        const multiColumn = isMultiColumn(table);
+        const target = multiColumn ? targets.multi : targets.single;
+        if (rows.every(row => Math.abs(rowWidth(row) - target) < 0.5)) { unchanged++; return; }
+        // 按行等比缩放单元格宽度：只设首选宽度时，固定列宽的表格不会真正改变；按行计算兼容合并单元格。
+        for (const row of rows) {
+          const factor = target / rowWidth(row);
+          for (const item of row) item.cell.Width = Math.round(item.width * factor * 100) / 100;
+        }
+        table.PreferredWidthType = PREFERRED_WIDTH_POINTS;
+        table.PreferredWidth = Math.round(target * 100) / 100;
+        if (multiColumn) multi++;
+        else single++;
+      });
+      const parts = [`表格宽度：${single + multi ? `已调整 ${single + multi} 个表格（一栏 ${single}、多栏 ${multi}）` : '没有需要调整的表格'}`];
+      if (unchanged) parts.push(`已符合 ${unchanged} 个`);
+      if (unreadable) parts.push(`无法读取宽度 ${unreadable} 个`);
+      return { count: single + multi, message: parts.join('；') };
+    },
+  },
+  alignTablesLeft: alignTables('表格左对齐', ROW_ALIGN_LEFT),
+  alignTablesCenter: alignTables('表格居中', ROW_ALIGN_CENTER),
+  alignTablesRight: alignTables('表格右对齐', ROW_ALIGN_RIGHT),
 };
+
+function alignTables(label, alignment) {
+  return {
+    label,
+    run({ range }) {
+      const count = each(range.Tables, table => {
+        // 通过行集合整体设置，表格含纵向合并单元格时也可用。
+        const rows = table.Rows;
+        if (alignment === ROW_ALIGN_LEFT) rows.LeftIndent = 0;
+        rows.Alignment = alignment;
+      });
+      return { count, unit: '个表格' };
+    },
+  };
+}
+
+// 按行汇总本表格的单元格宽度（不含嵌套表格）；有单元格宽度不确定时返回 null。
+function rowWidths(table) {
+  const rows = new Map();
+  let readable = true;
+  each(table.Range.Cells, cell => {
+    if (cell.NestingLevel !== table.NestingLevel) return;
+    const width = cell.Width;
+    if (!(Number.isFinite(width) && width > 0 && width < UNDEFINED_WIDTH)) {
+      readable = false;
+      return;
+    }
+    if (!rows.has(cell.RowIndex)) rows.set(cell.RowIndex, []);
+    rows.get(cell.RowIndex).push({ cell, width });
+  });
+  return readable && rows.size ? [...rows.values()] : null;
+}
+
+const rowWidth = row => row.reduce((total, item) => total + item.width, 0);
+const isMultiColumn = table => table.Range.PageSetup.TextColumns.Count > 1;
+
+export function readTableWidth() {
+  const app = globalThis.Application;
+  if (!app) throw new Error('请在 WPS 文字中打开排版工具');
+  if (app.Documents.Count === 0 || !app.ActiveDocument) throw new Error('请先打开需要排版的 WPS 文字文档');
+  const tables = app.Selection.Range.Tables;
+  if (!tables || tables.Count === 0) throw new Error('请把光标放在要读取的表格中');
+  const table = tables.Item(1);
+  const rows = rowWidths(table);
+  if (!rows) throw new Error('无法读取该表格的宽度，表格中有宽度不确定的单元格');
+  const widthPt = Math.max(...rows.map(rowWidth));
+  return { widthCm: Math.round(widthPt * 2.54 / 72 * 10) / 10, multiColumn: isMultiColumn(table) };
+}
 
 export const LAYOUT_OPERATIONS = Object.keys(operations);
 
-export function runLayoutOperation(name) {
+export function runLayoutOperation(name, options) {
   const operation = operations[name];
   if (!operation) throw new Error('未知的排版操作');
+  operation.validate?.(options);
   const context = host();
   context.app.UndoRecord.StartCustomRecord(`iPeiTu 排版：${operation.label}`);
   let result;
   let failure;
   try {
-    result = operation.run(context);
+    result = operation.run(context, options);
   } catch (cause) {
     failure = cause;
   }
@@ -264,5 +359,5 @@ export function runLayoutOperation(name) {
   }
   const parts = [`${operation.label}：${result.count ? `已处理 ${result.count} ${result.unit}` : '没有需要处理的内容'}`];
   if (result.skipped) parts.push(`${result.skippedReason} ${result.skipped} 处`);
-  return { ...result, label: operation.label, message: parts.join('；') };
+  return { ...result, label: operation.label, message: result.message ?? parts.join('；') };
 }
