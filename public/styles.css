@@ -139,9 +139,10 @@ h1 { overflow: hidden; color: var(--text-muted); font-size: 13px; line-height: 2
 /* 图库：缩略图即卡片，选中时用描边和角标 */
 .asset-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(132px, 1fr)); gap: 12px; padding: 12px; }
 .asset-grid:empty { display: none; }
+.asset-item { position: relative; min-width: 0; }
 .asset-card {
   position: relative;
-  display: flex; flex-direction: column; min-width: 0; padding: 0;
+  display: flex; flex-direction: column; width: 100%; min-width: 0; padding: 0;
   border: 0; border-radius: 8px; background: transparent; color: inherit; text-align: left;
 }
 .thumbnail-wrap {
@@ -153,7 +154,7 @@ h1 { overflow: hidden; color: var(--text-muted); font-size: 13px; line-height: 2
 /* aspect-ratio 的高度不能被百分比解析；绝对定位才能让竖图完整显示而不被裁切 */
 .thumbnail-wrap img { position: absolute; inset: 0; display: block; width: 100%; height: 100%; object-fit: contain; }
 .thumbnail-error { padding: 12px; color: var(--text-muted); font-size: 12px; line-height: 16px; text-align: center; }
-.asset-card:hover .thumbnail-wrap { border-color: var(--control-line); background: var(--raised-strong); }
+.asset-item:hover .thumbnail-wrap { border-color: var(--control-line); background: var(--raised-strong); }
 .asset-card[aria-pressed="true"] .thumbnail-wrap { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
 .card-check, .card-favorite {
   position: absolute; top: 4px;
@@ -163,6 +164,18 @@ h1 { overflow: hidden; color: var(--text-muted); font-size: 13px; line-height: 2
 .asset-card[aria-pressed="true"] .card-check { display: grid; }
 .card-favorite { left: 4px; background: rgb(255 255 255 / 88%); color: var(--text-secondary); }
 .card-favorite .icon { fill: currentColor; }
+/* 添加按钮常驻缩略图右下角，静止时不抢素材的颜色。bottom = 图名区 40px + 4px 边距 */
+.card-add {
+  position: absolute; right: 4px; bottom: 44px;
+  display: grid; place-items: center; width: 32px; height: 32px; padding: 0;
+  border: 1px solid var(--control-line); border-radius: 4px;
+  background: rgb(255 255 255 / 92%); color: var(--accent);
+  transition: color 120ms var(--ease), background-color 120ms var(--ease), border-color 120ms var(--ease), transform 120ms var(--ease);
+}
+.card-add:hover:not(:disabled):not([aria-disabled="true"]), .card-add.added { border-color: var(--accent); background: var(--accent); color: #fff; }
+.card-add:active:not(:disabled):not([aria-disabled="true"]) { transform: scale(0.96); }
+.card-add:disabled, .card-add[aria-disabled="true"]:not(.added) { border-color: var(--line); color: var(--text-muted); }
+.card-add[aria-disabled="true"] { cursor: default; }
 .asset-caption { padding-top: 4px; }
 .asset-name { display: block; overflow: hidden; font-size: 13px; line-height: 20px; white-space: nowrap; text-overflow: ellipsis; }
 .asset-details { display: block; color: var(--text-muted); font-size: 12px; line-height: 16px; }
@@ -213,7 +226,6 @@ h1 { overflow: hidden; color: var(--text-muted); font-size: 13px; line-height: 2
 .cell-value { min-width: 0; overflow-wrap: anywhere; }
 #editMetadata { border-left: 1px solid var(--line); white-space: nowrap; }
 .document-actions { display: grid; grid-template-columns: minmax(0, 1fr); gap: 8px; }
-.document-actions.with-replacement { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 .document-actions .button, #restoreButton { min-width: 0; min-height: 40px; }
 .host-status, .action-status { color: var(--text-secondary); font-size: 12px; line-height: 16px; overflow-wrap: anywhere; }
 .host-status { display: flex; align-items: flex-start; gap: 8px; }
