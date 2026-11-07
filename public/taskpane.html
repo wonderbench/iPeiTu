@@ -103,9 +103,21 @@
           </form>
           <div class="box-list-heading">
             <span id="boxCount" class="meta" aria-live="polite">尚未扫描文档</span>
-            <button id="scanBoxes" class="text-button" type="button" disabled>重新扫描</button>
+            <div class="box-list-actions">
+              <button id="unfilledOnly" class="text-button toggle-text" type="button" aria-pressed="false">只看未填</button>
+              <button id="scanBoxes" class="text-button" type="button" disabled>重新扫描</button>
+            </div>
           </div>
           <ol id="boxList" class="box-list" aria-label="文档中的占位框"></ol>
+          <div class="box-tools">
+            <button id="findMarkers" class="button secondary" type="button" disabled title="查找【图：名称】格式的文字标记">查找文字标记</button>
+            <button id="clearMarkers" class="button secondary" type="button" disabled title="交付前清除已填框的插件标记，图片保留">清除标记</button>
+          </div>
+          <div id="markerResult" class="marker-result" hidden>
+            <p id="markerSummary" class="supporting" role="status"></p>
+            <ul id="markerList" class="marker-list"></ul>
+            <button id="convertMarkers" class="button primary" type="button">按上方尺寸转为占位框</button>
+          </div>
         </section>
 
         <section class="library" aria-labelledby="libraryTitle">
@@ -193,6 +205,7 @@
               <option value="contain">完整显示</option>
             </select>
             <button id="searchBoxName" class="text-button" type="button">按框名检索</button>
+            <button id="ratioSort" class="text-button toggle-text" type="button" aria-pressed="false" title="比例与占位框接近的图片排在前面">比例接近优先</button>
           </div>
         </div>
         <div id="documentActions" class="document-actions" hidden>
@@ -203,6 +216,19 @@
         <p id="actionStatus" class="action-status" role="status" aria-live="polite" hidden></p>
       </footer>
     </div>
+
+    <dialog id="clearMarkersDialog" class="compact-dialog" aria-labelledby="clearMarkersTitle">
+      <form method="dialog">
+        <div class="dialog-heading">
+          <h2 id="clearMarkersTitle">清除占位框标记</h2>
+        </div>
+        <p id="clearMarkersText" class="supporting"></p>
+        <div class="dialog-actions">
+          <button class="button secondary" type="submit" value="cancel">取消</button>
+          <button id="confirmClearMarkers" class="button primary" type="submit" value="confirm">清除标记</button>
+        </div>
+      </form>
+    </dialog>
 
     <dialog id="previewDialog" aria-labelledby="previewTitle">
       <div class="dialog-heading">

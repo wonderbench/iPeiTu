@@ -47,6 +47,7 @@ export async function verifyPlaceholders({ page }) {
       } },
     });
     const doc = { Name: '占位框.docx', FullName: 'C:\\test\\占位框.docx', ReadOnly: false, ProtectionType: -1,
+      Content: { Text: '正文没有文字标记\r', Paragraphs: { Count: 0 } },
       get InlineShapes() { return { Count: shapes.length, Item: index => shapes[index - 1] }; } };
     window.Application = {
       Documents: { Count: 1 }, ActiveDocument: doc,
@@ -101,6 +102,30 @@ export async function verifyPlaceholders({ page }) {
   assert.deepEqual([shape.Width, shape.Height], [170, 113.3]);
   await visibleText('#boxCount', '文档中 2 个占位框');
   assert.deepEqual(await page.locator('.box-name').allTextContents(), ['脚手架搭设', '基础']);
+  await visibleText('#boxCount', '未填 2');
+
+  // 连续配图的面板工具：只看未填、查找文字标记、清除标记（没有已填框时不弹出确认）。
+  await page.locator('#unfilledOnly').click();
+  assert.equal(await page.locator('#unfilledOnly').getAttribute('aria-pressed'), 'true');
+  assert.equal(await page.locator('.box-item').count(), 2);
+  await page.evaluate(() => { window.boxShapes[1].AlternativeText = 'iPeiTu-box:1:{"name":"基础","asset":"' + 'a'.repeat(64) + '","fit":"cover"}'; });
+  await page.locator('#scanBoxes').click();
+  await visibleText('#boxCount', '未填 1');
+  assert.deepEqual(await page.locator('.box-name').allTextContents(), ['脚手架搭设'], '只看未填时隐藏已填框');
+  await page.locator('#unfilledOnly').click();
+  assert.equal(await page.locator('.box-filled').count(), 1);
+  await page.locator('#findMarkers').click();
+  await visibleText('#markerSummary', '没有找到');
+  assert.equal(await page.locator('#convertMarkers').isVisible(), false);
+  await page.locator('#clearMarkers').click();
+  assert.equal(await page.locator('#clearMarkersDialog').isVisible(), true, '有已填框时先确认');
+  await page.locator('#clearMarkersDialog button[value="cancel"]').click();
+  assert.match(await page.evaluate(() => window.boxShapes[1].AlternativeText), /"asset"/, '取消时不清除');
+  await page.locator('#clearMarkers').click();
+  await page.locator('#confirmClearMarkers').click();
+  await visibleText('#actionStatus', '已清除 1 个标记；还有 1 个未填的框');
+  assert.equal(await page.evaluate(() => window.boxShapes[1].AlternativeText), '');
+  await visibleText('#boxCount', '文档中 1 个占位框');
 
   await page.locator('.box-item').first().click();
   await visibleText('#actionStatus', '已定位到「脚手架搭设」');
@@ -178,6 +203,14 @@ export async function verifyPlaceholders({ page }) {
   assert.match(await page.locator('.card-add').first().getAttribute('aria-label'), /到占位框「脚手架搭设」/);
   await page.locator('#fitMode').selectOption('contain');
   assert.equal(await page.evaluate(() => localStorage.getItem('ipeitu.fit.v1')), 'contain', '适配方式保存在本机');
+  // 比例接近优先：框为 4:3，400 × 300 的图排到前面；关闭后恢复图库原顺序。
+  const firstName = () => page.locator('.asset-name').first().textContent();
+  const originalFirst = await firstName();
+  await page.locator('#ratioSort').click();
+  assert.equal(await page.locator('#ratioSort').getAttribute('aria-pressed'), 'true');
+  assert.equal(await firstName(), '桥架施工.png');
+  await page.locator('#ratioSort').click();
+  assert.equal(await firstName(), originalFirst);
   await page.locator('#searchBoxName').click();
   assert.equal(await page.locator('#searchInput').inputValue(), '脚手架搭设');
   await page.locator('#clearSearch').click();
@@ -193,7 +226,7 @@ export async function verifyPlaceholders({ page }) {
     await route.fulfill({ response, json: { ...data, path: 'C:\\test\\fitted.jpg' } });
   });
   await page.locator('.card-add').first().click();
-  await visibleText('#actionStatus', '已填入');
+  await visibleText('#actionStatus', '已填入「脚手架搭设」，文档中的占位框已全部填入');
   assert.equal(fitRequests.length, 1);
   assert.deepEqual([fitRequests[0].mode, fitRequests[0].widthPt, fitRequests[0].heightPt], ['contain', '340.1', '255.1']);
   const fitted = await sharp(fitRequests[0].file).metadata();

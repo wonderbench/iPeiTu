@@ -426,6 +426,64 @@ function zeroParagraphSpacing(paragraph) {
   format.SpaceAfter = 0;
 }
 
+// 读取放框位置所在段落；空段落（含空单元格）直接作为框所在段落，不再多拆一段，避免撑高表格行。
+function prepareBoxParagraph(range) {
+  const paragraph = range.Paragraphs.Item(1);
+  const paragraphRange = paragraph.Range;
+  const text = paragraphRange.Text;
+  const endingLength = text.endsWith('\r\u0007') ? 2 : text.endsWith('\r') ? 1 : 0;
+  if (range.Start > paragraphRange.End - endingLength) throw new Error('请将光标放在正文或单元格内容内，不要选中结束标记');
+  return {
+    empty: text.length === endingLength,
+    original: {
+      start: paragraphRange.Start,
+      hasPrefix: range.Start > paragraphRange.Start,
+      style: paragraph.Style,
+      format: paragraph.Format.Duplicate,
+    },
+  };
+}
+
+// 在折叠的 range 处放入一个带标记的占位框；进度写入 progress，便于调用方按实际状态清理和报告。
+function placeBox(range, { empty, original }, image, target, progress) {
+  progress.inserting = true;
+  const picture = range.InlineShapes.AddPicture(image.path, false, true, range);
+  progress.picture = picture;
+  picture.LockAspectRatio = UNLOCK_ASPECT_RATIO;
+  picture.Width = target.widthPt;
+  picture.Height = target.heightPt;
+  picture.LockAspectRatio = LOCK_ASPECT_RATIO;
+  if (!(Math.abs(picture.Width - target.widthPt) <= 0.1 && Math.abs(picture.Height - target.heightPt) <= 0.1)) {
+    throw new Error('WPS 未能按框的尺寸设置占位图');
+  }
+  const marker = placeholderMarker(target.name);
+  picture.AlternativeText = marker;
+  if (picture.AlternativeText !== marker) throw new Error('WPS 未能保存占位框标记');
+  progress.marked = true;
+  let after;
+  if (empty) {
+    formatNewParagraph(picture.Range.Paragraphs.Item(1), { layout: 'centered' }, original.format.Alignment);
+    after = picture.Range.Duplicate;
+    after.Collapse(COLLAPSE_END);
+  } else {
+    after = separatePictureParagraphs(picture, original, { layout: 'centered', caption: '' });
+  }
+  zeroParagraphSpacing(picture.Range.Paragraphs.Item(1));
+  return after;
+}
+
+// 没有标记的框无法被扫描和填入，删掉而不是留给用户。
+function removeUnmarkedBox(progress) {
+  if (!progress.picture || progress.marked) return false;
+  try {
+    progress.picture.Delete();
+    return true;
+  } catch (cleanupError) {
+    progress.cleanupError = cleanupError;
+    return false;
+  }
+}
+
 export function insertPlaceholder(image, target) {
   const app = globalThis.Application;
   if (!image || typeof image.path !== 'string' || !LOCAL_PATH.test(image.path)) throw new Error('占位图路径无效，请重试');
@@ -433,9 +491,7 @@ export function insertPlaceholder(image, target) {
     || ![target.widthPt, target.heightPt].every(value => Number.isFinite(value) && value >= MIN_BOX_PT && value <= MAX_BOX_PT)) {
     throw new Error('占位框目标无效，请重新点击插入');
   }
-  let picture;
-  let inserting = false;
-  let marked = false;
+  const progress = {};
   let removed = false;
   let undoRecord;
   let failure;
@@ -447,59 +503,18 @@ export function insertPlaceholder(image, target) {
       throw new Error('当前文档或光标位置已改变，请确认目标后重新点击');
     }
     range.Collapse(COLLAPSE_END);
-    const paragraph = range.Paragraphs.Item(1);
-    const paragraphRange = paragraph.Range;
-    const text = paragraphRange.Text;
-    const endingLength = text.endsWith('\r\u0007') ? 2 : text.endsWith('\r') ? 1 : 0;
-    if (range.Start > paragraphRange.End - endingLength) throw new Error('请将光标放在正文或单元格内容内，不要选中结束标记');
-    // 空段落（含空单元格）直接作为框所在段落，不再多拆一段，避免撑高表格行。
-    const empty = text.length === endingLength;
-    const original = {
-      start: paragraphRange.Start,
-      hasPrefix: range.Start > paragraphRange.Start,
-      style: paragraph.Style,
-      format: paragraph.Format.Duplicate,
-    };
-
+    const prepared = prepareBoxParagraph(range);
     app.UndoRecord.StartCustomRecord('iPeiTu 插入占位框');
     undoRecord = app.UndoRecord;
-    inserting = true;
-    picture = range.InlineShapes.AddPicture(image.path, false, true, range);
-    picture.LockAspectRatio = UNLOCK_ASPECT_RATIO;
-    picture.Width = target.widthPt;
-    picture.Height = target.heightPt;
-    picture.LockAspectRatio = LOCK_ASPECT_RATIO;
-    if (!(Math.abs(picture.Width - target.widthPt) <= 0.1 && Math.abs(picture.Height - target.heightPt) <= 0.1)) {
-      throw new Error('WPS 未能按框的尺寸设置占位图');
-    }
-    const marker = placeholderMarker(target.name);
-    picture.AlternativeText = marker;
-    if (picture.AlternativeText !== marker) throw new Error('WPS 未能保存占位框标记');
-    marked = true;
-
-    let after;
-    if (empty) {
-      formatNewParagraph(picture.Range.Paragraphs.Item(1), { layout: 'centered' }, original.format.Alignment);
-      after = picture.Range.Duplicate;
-      after.Collapse(COLLAPSE_END);
-    } else {
-      after = separatePictureParagraphs(picture, original, { layout: 'centered', caption: '' });
-    }
-    zeroParagraphSpacing(picture.Range.Paragraphs.Item(1));
+    const after = placeBox(range, prepared, image, target, progress);
     after.Select();
-    result = { name: target.name, widthPt: picture.Width, heightPt: picture.Height };
+    result = { name: target.name, widthPt: progress.picture.Width, heightPt: progress.picture.Height };
   } catch (cause) {
     failure = cause;
-    // 没有标记的框无法被扫描和填入，删掉而不是留给用户。
-    if (picture && !marked) {
-      try {
-        picture.Delete();
-        removed = true;
-      } catch (cleanupError) {
-        failure = new Error(`${cause.message}；无法移除未完成的占位图：${cleanupError.message}`);
-      }
-    }
+    removed = removeUnmarkedBox(progress);
+    if (progress.cleanupError) failure = new Error(`${cause.message}；无法移除未完成的占位图：${progress.cleanupError.message}`);
   }
+  const { picture, inserting, marked } = progress;
   if (undoRecord) {
     try { undoRecord.EndCustomRecord(); } catch (cause) {
       failure = new Error(`${failure ? `${failure.message}；` : ''}无法完成本次撤销记录：${cause.message}`);
@@ -694,4 +709,142 @@ export function fillPlaceholder(image, expectedTarget, filled) {
     throw error;
   }
   return result;
+}
+
+// 连续配图：填入后定位下一个空框。先找当前位置之后的空框，没有时从文档开头找。
+export function selectNextEmptyPlaceholder(afterStart = -1) {
+  const scan = scanPlaceholders();
+  const empty = scan.boxes.filter(box => !box.filled);
+  if (!empty.length) return null;
+  const next = empty.find(box => box.start > afterStart) ?? empty[0];
+  selectPlaceholder(scan, next);
+  return next;
+}
+
+// 交付前清除已填框的标记，图片保留；未填的框不清除，否则会留下无法识别的灰色占位图。
+export function clearPlaceholderMarkers() {
+  const app = globalThis.Application;
+  const doc = editableDocument(app, '清除标记');
+  const scan = scanPlaceholders();
+  const filled = scan.boxes.filter(box => box.filled);
+  const unfilled = scan.boxes.length - filled.length;
+  if (!filled.length) return { cleared: 0, unfilled };
+  const shapes = doc.InlineShapes;
+  let cleared = 0;
+  let failure;
+  app.UndoRecord.StartCustomRecord('iPeiTu 清除占位框标记');
+  try {
+    for (const box of filled) {
+      const shape = shapes.Item(box.index);
+      const marker = parsePlaceholderMarker(shape.AlternativeText);
+      if (!marker?.asset || marker.name !== box.name || shape.Range.Start !== box.start) throw new Error('文档已变化，请重新操作');
+      shape.AlternativeText = '';
+      if (shape.AlternativeText !== '') throw new Error('WPS 未能清除标记');
+      cleared++;
+    }
+  } catch (cause) {
+    failure = cause;
+  }
+  try { app.UndoRecord.EndCustomRecord(); } catch (cause) {
+    failure = new Error(`${failure ? `${failure.message}；` : ''}无法完成本次撤销记录：${cause.message}`);
+  }
+  if (failure) {
+    const error = new Error(`已清除 ${cleared} 个标记后中止（${failure.message}）。可撤销一次恢复`);
+    error.cause = failure;
+    throw error;
+  }
+  return { cleared, unfilled };
+}
+
+// 文字标记：如【图：脚手架搭设】，冒号可为全角或半角，框名 1—100 个字符。
+const TEXT_MARKER = /【图[：:]\s*([^】\r\u0007]{1,100}?)\s*】/g;
+// 整体检查用不带 g 的副本：matchAll 会沿用 g 正则的 lastIndex，test 之后再逐段查找会漏掉标记。
+const HAS_TEXT_MARKER = new RegExp(TEXT_MARKER.source);
+
+export function findTextMarkers() {
+  const doc = readableDocument();
+  const content = doc.Content;
+  // 先整体检查一次，没有标记时不逐段读取。
+  if (!HAS_TEXT_MARKER.test(content.Text)) return { document: doc.FullName, markers: [], skipped: 0 };
+  const markers = [];
+  let skipped = 0;
+  const paragraphs = content.Paragraphs;
+  const count = paragraphs.Count;
+  for (let index = 1; index <= count; index++) {
+    const range = paragraphs.Item(index).Range;
+    const text = range.Text;
+    if (!text.includes('【')) continue;
+    const span = range.End - range.Start;
+    // 文字与位置一一对应时才记录；单元格末段的结束标记在文字中多占一个字符，不影响前面的位置。
+    const mapped = text.length === span || (text.endsWith('\r\u0007') && text.length === span + 1);
+    for (const match of text.matchAll(TEXT_MARKER)) {
+      const name = match[1].trim();
+      if (!name) continue;
+      if (!mapped) { skipped++; continue; }
+      markers.push({ name, start: range.Start + match.index, end: range.Start + match.index + match[0].length, text: match[0] });
+    }
+  }
+  return { document: doc.FullName, markers, skipped };
+}
+
+// 按所选尺寸计算每个标记处的框大小；任一标记无法放置时整体拒绝，不做部分转换。
+export function captureTextMarkerTargets(found, sizeInput) {
+  const app = globalThis.Application;
+  const doc = editableDocument(app);
+  if (!found || doc.FullName !== found.document) throw new Error('当前文档已切换，请重新查找文字标记');
+  const targets = found.markers.map(marker => {
+    const options = normalizePlaceholderOptions({ ...sizeInput, name: marker.name });
+    try {
+      const range = doc.Range(marker.start, marker.start);
+      return { ...marker, ...placeholderSize(app, range, options) };
+    } catch (cause) {
+      throw new Error(`「${marker.text}」处无法放置占位框：${cause.message}`);
+    }
+  });
+  return { document: found.document, targets };
+}
+
+export function convertTextMarkers(captured, images) {
+  const app = globalThis.Application;
+  const doc = editableDocument(app);
+  if (!captured || doc.FullName !== captured.document) throw new Error('当前文档已切换，请重新查找文字标记');
+  const { targets } = captured;
+  if (!Array.isArray(images) || images.length !== targets.length
+    || images.some(image => !image || typeof image.path !== 'string' || !LOCAL_PATH.test(image.path))) {
+    throw new Error('占位图路径无效，请重试');
+  }
+  // 写入前逐个核对，文档有任何变化都整体中止。
+  for (const target of targets) {
+    if (doc.Range(target.start, target.end).Text !== target.text) throw new Error('文档已变化，请重新查找文字标记');
+  }
+  const order = targets.map((target, index) => index).sort((a, b) => targets[b].start - targets[a].start);
+  let converted = 0;
+  let progress = {};
+  let failure;
+  app.UndoRecord.StartCustomRecord('iPeiTu 文字标记转为占位框');
+  try {
+    // 从后往前处理，前面标记的位置不受影响。
+    for (const index of order) {
+      const target = targets[index];
+      doc.Range(target.start, target.end).Delete();
+      const range = doc.Range(target.start, target.start);
+      progress = {};
+      placeBox(range, prepareBoxParagraph(range), images[index], target, progress);
+      converted++;
+    }
+  } catch (cause) {
+    failure = cause;
+    removeUnmarkedBox(progress);
+    if (progress.cleanupError) failure = new Error(`${cause.message}；无法移除未完成的占位图：${progress.cleanupError.message}`);
+  }
+  try { app.UndoRecord.EndCustomRecord(); } catch (cause) {
+    failure = new Error(`${failure ? `${failure.message}；` : ''}无法完成本次撤销记录：${cause.message}`);
+  }
+  if (failure) {
+    const error = new Error(`已转换 ${converted} 个标记后中止（${failure.message}）。请检查文档，需要时撤销一次恢复`);
+    error.converted = converted;
+    error.cause = failure;
+    throw error;
+  }
+  return { converted };
 }

@@ -10,6 +10,7 @@ import {
   captureInsertionTarget, getHostStatus, insertPicture, captureReplacementTarget, getReplacementStatus, replacePicture,
   capturePlaceholderTarget, insertPlaceholder, scanPlaceholders, selectPlaceholder, placeholderMarker, parsePlaceholderMarker,
   getFillStatus, captureFillTarget, fillPlaceholder,
+  selectNextEmptyPlaceholder, clearPlaceholderMarkers, findTextMarkers, captureTextMarkerTargets, convertTextMarkers,
 } from '../public/wps-bridge.js';
 import { normalizeLayoutOptions } from '../public/layout-options.js';
 
@@ -111,6 +112,13 @@ function createHost(options = {}) {
         return { RemoveNumbers: () => { state.paragraphs[state.text.slice(0, this.start).split('\r').length - 1].numbered = false; } };
       },
       SetRange(newStart, newEnd) { this.start = newStart; this.end = newEnd; },
+      Delete() {
+        const length = this.end - this.start;
+        assert.ok(!state.text.slice(this.start, this.end).includes('\r'), '只删除段落内的文字');
+        state.text = state.text.slice(0, this.start) + state.text.slice(this.end);
+        for (const picture of state.pictures) if (picture.position >= this.end) picture.position -= length;
+        this.end = this.start;
+      },
       InsertAfter(text) {
         if (options.paragraphError) throw new Error('paragraph insertion unavailable');
         insertText(this.end, text);
@@ -173,6 +181,23 @@ function createHost(options = {}) {
       return { Count: ordered.length, Item: index => ordered[index - 1] };
     },
   });
+  Object.defineProperty(app.ActiveDocument, 'Content', {
+    get() {
+      state.contentReads = (state.contentReads ?? 0) + 1;
+      return {
+        get Text() { return state.text; },
+        Paragraphs: {
+          get Count() { return state.text.split('\r').length - 1; },
+          Item(index) {
+            let at = 0;
+            for (let current = 1; current < index; current++) at = state.text.indexOf('\r', at) + 1;
+            return paragraphAt(at);
+          },
+        },
+      };
+    },
+  });
+  app.ActiveDocument.Range = (start, end) => rangeAt(start, end);
   globalThis.Application = app;
   return { app, state };
 }
@@ -1021,4 +1046,99 @@ test('等待适配图期间选区、框名变化或目标重复使用时在写�
   state.end = 3;
   assert.throws(() => fillPlaceholder(fittedImage, target, { asset: assetId, fit: 'cover' }), /目标已失效/);
   assert.equal(state.calls.filter(call => call.path).length, 1, '中止的填入都没有调用 AddPicture');
+});
+
+// 三个框：甲已填，乙、丙未填；另有一张普通图片。
+function boxesHost(options = {}) {
+  const host = createHost({
+    text: '甲\uFFFC乙\uFFFC丙\uFFFC丁\uFFFC\r', start: 0, end: 0,
+    originalPictures: [{ position: 1 }, { position: 3 }, { position: 5 }, { position: 7 }], ...options,
+  });
+  const [first, second, third] = host.state.pictures;
+  first.altText = placeholderMarker('甲框', { asset: assetId, fit: 'cover' });
+  second.altText = placeholderMarker('乙框');
+  third.altText = placeholderMarker('丙框');
+  return host;
+}
+
+test('填入后定位下一个空框：先找后面的，没有时从文档开头找，全部填完返回 null', () => {
+  const { state } = boxesHost();
+  assert.equal(selectNextEmptyPlaceholder(1).name, '乙框');
+  assert.deepEqual([state.start, state.end], [3, 4]);
+  assert.equal(selectNextEmptyPlaceholder(3).name, '丙框');
+  assert.equal(selectNextEmptyPlaceholder(5).name, '乙框', '后面没有空框时回到文档开头');
+  state.pictures[1].altText = placeholderMarker('乙框', { asset: assetId, fit: 'fill' });
+  state.pictures[2].altText = placeholderMarker('丙框', { asset: assetId, fit: 'fill' });
+  assert.equal(selectNextEmptyPlaceholder(5), null);
+});
+
+test('清除标记只清已填框，未填框和普通图片不动，一次撤销', () => {
+  let { state } = boxesHost();
+  state.pictures[3].altText = '普通图片说明';
+  assert.deepEqual(clearPlaceholderMarkers(), { cleared: 1, unfilled: 2 });
+  assert.deepEqual(state.pictures.map(picture => picture.altText), ['', placeholderMarker('乙框'), placeholderMarker('丙框'), '普通图片说明']);
+  assert.deepEqual([state.undoStarted, state.undoEnded], [1, 1]);
+  assert.deepEqual(clearPlaceholderMarkers(), { cleared: 0, unfilled: 2 }, '没有已填框时不写入');
+  assert.equal(state.undoStarted, 1);
+  ({ state } = boxesHost({ document: { ReadOnly: true } }));
+  assert.throws(() => clearPlaceholderMarkers(), /只读/);
+  ({ state } = boxesHost({ altTextDropped: false }));
+  Object.defineProperty(state.pictures[0], 'AlternativeText', { get() { return this.altText; }, set() { /* 宿主忽略写入 */ } });
+  assert.throws(() => clearPlaceholderMarkers(), /已清除 0 个标记后中止（WPS 未能清除标记）/);
+  assert.deepEqual([state.undoStarted, state.undoEnded], [1, 1]);
+});
+
+const markerText = '前文\r【图：基础施工】\r说明【图: 模板 】结尾\r图片【普通】\r';
+
+test('查找文字标记：支持全角或半角冒号，记录位置与原文，普通括号不算', () => {
+  createHost({ text: markerText, start: 0, end: 0 });
+  assert.deepEqual(findTextMarkers(), {
+    document: 'C:\\文档\\标书.docx', skipped: 0,
+    markers: [
+      { name: '基础施工', start: 3, end: 11, text: '【图：基础施工】' },
+      { name: '模板', start: 14, end: 22, text: '【图: 模板 】' },
+    ],
+  });
+  createHost({ text: '没有标记\r', start: 0, end: 0 });
+  assert.deepEqual(findTextMarkers().markers, []);
+});
+
+test('文字标记按所选尺寸转为占位框：独占一段的直接放入，段中的拆成独立段落，一次撤销', () => {
+  const { state } = createHost({ text: markerText, start: 0, end: 0 });
+  const captured = captureTextMarkerTargets(findTextMarkers(), { size: 'fixed', widthCm: 6, heightCm: 4 });
+  assert.deepEqual(captured.targets.map(target => [target.name, target.widthPt, target.heightPt]), [['基础施工', 170, 113.3], ['模板', 170, 113.3]]);
+  const images = [{ path: 'C:\\图库\\placeholders\\a.png' }, { path: 'C:\\图库\\placeholders\\b.png' }];
+  assert.deepEqual(convertTextMarkers(captured, images), { converted: 2 });
+  assert.equal(state.text, '前文\r\uFFFC\r说明\r\uFFFC\r结尾\r图片【普通】\r');
+  const ordered = [...state.pictures].sort((a, b) => a.position - b.position);
+  assert.deepEqual(ordered.map(picture => parsePlaceholderMarker(picture.altText).name), ['基础施工', '模板']);
+  assert.deepEqual(ordered.map(picture => [picture.Width, picture.Height]), [[170, 113.3], [170, 113.3]]);
+  assert.deepEqual(state.calls.filter(call => call.path).map(call => call.path), [images[1].path, images[0].path], '从后往前处理');
+  assert.deepEqual([state.undoStarted, state.undoEnded], [1, 1]);
+});
+
+test('文字标记转换：文档变化、尺寸无法放置或路径无效时在写入前整体中止', () => {
+  let { state } = createHost({ text: markerText, start: 0, end: 0 });
+  let captured = captureTextMarkerTargets(findTextMarkers(), { size: 'fixed', widthCm: 6, heightCm: 4 });
+  state.text = `新增${state.text}`;
+  assert.throws(() => convertTextMarkers(captured, [{ path: 'C:\\a.png' }, { path: 'C:\\b.png' }]), /文档已变化/);
+  assert.throws(() => captureTextMarkerTargets(findTextMarkers(), { size: 'cell' }), /「【图：基础施工】」处无法放置占位框：光标不在表格单元格内/);
+  ({ state } = createHost({ text: markerText, start: 0, end: 0 }));
+  captured = captureTextMarkerTargets(findTextMarkers(), { size: 'line' });
+  assert.throws(() => convertTextMarkers(captured, [{ path: 'C:\\a.png' }]), /路径无效/);
+  assert.throws(() => convertTextMarkers(captured, [{ path: 'a.png' }, { path: 'C:\\b.png' }]), /路径无效/);
+  assert.equal(state.calls.length, 0);
+  assert.equal(state.undoStarted, 0);
+});
+
+test('文字标记转换中途失败时移除未完成的框，说明已转换数量并提示撤销', () => {
+  const { state } = createHost({ text: markerText, start: 0, end: 0, altTextDropped: true });
+  const captured = captureTextMarkerTargets(findTextMarkers(), { size: 'fixed', widthCm: 6, heightCm: 4 });
+  assert.throws(() => convertTextMarkers(captured, [{ path: 'C:\\a.png' }, { path: 'C:\\b.png' }]), error => {
+    assert.equal(error.converted, 0);
+    assert.match(error.message, /已转换 0 个标记后中止（WPS 未能保存占位框标记）。请检查文档，需要时撤销一次恢复/);
+    return true;
+  });
+  assert.equal(state.pictures.length, 0, '未写入标记的占位图已移除');
+  assert.deepEqual([state.undoStarted, state.undoEnded], [1, 1]);
 });
