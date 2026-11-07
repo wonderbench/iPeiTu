@@ -725,3 +725,59 @@ test('insertion rechecks trash and current name after asynchronous file lookup',
   });
   assert.equal((await library.insertion(id)).name, '最新名称');
 });
+
+async function sized(library, name, width, height, color = '#336677') {
+  const bytes = await sharp({ create: { width, height, channels: 3, background: color } }).png().toBuffer();
+  await library.importFile(name, bytes);
+  return library.assets.find(asset => asset.name === name).id;
+}
+
+test('orientation filters landscape, portrait and near-square images and facets count each group', async t => {
+  const { library } = await setup(t);
+  await sized(library, '横图.png', 400, 300, '#111111');
+  await sized(library, '竖图.png', 300, 400, '#222222');
+  await sized(library, '近方图.png', 410, 400, '#333333');
+  await sized(library, '方图.png', 300, 300, '#444444');
+  const names = orientation => library.list('', { orientation }).assets.map(asset => asset.name).sort();
+  assert.deepEqual(names('landscape'), ['横图.png']);
+  assert.deepEqual(names('portrait'), ['竖图.png']);
+  assert.deepEqual(names('square'), ['方图.png', '近方图.png'].sort(), '宽高比在 1.05 以内算方图');
+  assert.equal(library.list('', { orientation: '' }).assets.length, 4);
+  assert.deepEqual(library.list().facets.orientations, { landscape: 1, portrait: 1, square: 2 });
+  for (const orientation of ['wide', 'LANDSCAPE', 1]) assert.throws(() => library.list('', { orientation }), /orientation/);
+});
+
+test('batch updates add and remove categories and tags on every selected image in one write', async t => {
+  const { directory, library } = await setup(t);
+  const first = await sized(library, '甲.png', 400, 300, '#111111');
+  const second = await sized(library, '乙.png', 400, 300, '#222222');
+  const untouched = await sized(library, '丙.png', 400, 300, '#333333');
+  await library.updateAsset(first, { categories: ['旧分类'], tags: ['Night', '保留'] });
+  assert.deepEqual(await library.updateAssets({
+    ids: [first, second], addCategories: ['机电'], removeCategories: ['旧分类'], addTags: ['桥架'], removeTags: ['night'],
+  }), { updated: 2 });
+  const reopened = await Library.open(directory);
+  const byId = id => reopened.assets.find(asset => asset.id === id);
+  assert.deepEqual([byId(first).categories, byId(first).tags], [['机电'], ['保留', '桥架']]);
+  assert.deepEqual([byId(second).categories, byId(second).tags], [['机电'], ['桥架']]);
+  assert.deepEqual([byId(untouched).categories, byId(untouched).tags], [[], []]);
+});
+
+test('batch updates change nothing when any image is missing, trashed, over a limit or the input is invalid', async t => {
+  const { directory, library } = await setup(t);
+  const first = await sized(library, '甲.png', 400, 300, '#111111');
+  const second = await sized(library, '乙.png', 400, 300, '#222222');
+  const before = await readFile(path.join(directory, 'index.json'));
+  await assert.rejects(library.updateAssets({ ids: [first, 'f'.repeat(64)], addTags: ['桥架'] }), error => error.status === 404);
+  await library.updateAsset(second, { tags: Array.from({ length: 64 }, (_, index) => `标签${index}`) });
+  const full = await readFile(path.join(directory, 'index.json'));
+  await assert.rejects(library.updateAssets({ ids: [first, second], addTags: ['第六十五个'] }), /最多 64 项/);
+  assert.deepEqual(await readFile(path.join(directory, 'index.json')), full, '超过上限时连同第一张也不改');
+  await library.setTrash(first, { trashed: true });
+  await assert.rejects(library.updateAssets({ ids: [first], addTags: ['桥架'] }), error => error.status === 410);
+  for (const input of [null, [], {}, { ids: [] }, { ids: [second] }, { ids: [second], addTags: [] }, { ids: [second, second], addTags: ['x'] },
+    { ids: [second], addTags: ['x'], name: '改名' }, { ids: [second], addTags: '桥架' }, { ids: Array(1001).fill(second), addTags: ['x'] }]) {
+    await assert.rejects(library.updateAssets(input), JSON.stringify(input)?.slice(0, 60));
+  }
+  assert.notDeepEqual(before, full);
+});

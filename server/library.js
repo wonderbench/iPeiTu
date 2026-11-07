@@ -15,6 +15,14 @@ const idPattern = /^[a-f0-9]{64}$/;
 const metadataLimits = { aliases: [100, 255], categories: [32, 255], tags: [64, 64] };
 const fieldLabels = { name: '图片名称', aliases: '别名', categories: '分类', tags: '标签' };
 const controlCharacters = /[\x00-\x1f\x7f\u2028\u2029]/;
+export const MAX_BATCH_ASSETS = 1000;
+// \u5bbd\u9ad8\u6bd4\u5927\u4e8e 1.05 \u4e3a\u6a2a\u56fe\uff0c\u5c0f\u4e8e 1/1.05 \u4e3a\u7ad6\u56fe\uff0c\u5176\u4f59\u4e3a\u65b9\u56fe\u3002
+const orientations = {
+  '': () => true,
+  landscape: asset => asset.width / asset.height > 1.05,
+  portrait: asset => asset.width / asset.height < 1 / 1.05,
+  square: asset => asset.width / asset.height >= 1 / 1.05 && asset.width / asset.height <= 1.05,
+};
 
 function matchKey(value) {
   return value.normalize('NFKC').toLowerCase();
@@ -247,10 +255,11 @@ export class Library {
     return this.assets.filter(asset => asset.deletedAt === null).length;
   }
 
-  list(query = '', { category = '', tags = [], uncategorized = false, view = 'all' } = {}) {
+  list(query = '', { category = '', tags = [], uncategorized = false, view = 'all', orientation = '' } = {}) {
     if (typeof query !== 'string' || query.length > 512 || /[\x00-\x08\x0e-\x1f\x7f]/.test(query)) {
       throw new LibraryError('检索词须为不超过 512 个字符的文字');
     }
+    if (!Object.hasOwn(orientations, orientation)) throw new LibraryError('orientation 仅接受 landscape、portrait 或 square');
     if (typeof category !== 'string') throw new LibraryError('分类筛选须为文字');
     if (typeof uncategorized !== 'boolean') throw new LibraryError('未分类筛选值无效');
     if (!['all', 'favorites', 'recent', 'trash'].includes(view)) throw new LibraryError('view 仅接受 all、favorites、recent 或 trash');
@@ -272,9 +281,13 @@ export class Library {
       return terms.every(term => names.some(name => name.includes(term)))
         && (!categoryKey || asset.categories.some(item => matchKey(item) === categoryKey))
         && (!uncategorized || asset.categories.length === 0)
-        && tagKeys.every(tag => asset.tags.some(item => matchKey(item) === tag));
+        && tagKeys.every(tag => asset.tags.some(item => matchKey(item) === tag))
+        && orientations[orientation](asset);
     }).map(asset => displayAsset(asset, this.usage));
-    const facets = { categories: [], tags: [], uncategorized: facetAssets.filter(asset => asset.categories.length === 0).length };
+    const facets = {
+      categories: [], tags: [], uncategorized: facetAssets.filter(asset => asset.categories.length === 0).length,
+      orientations: Object.fromEntries(['landscape', 'portrait', 'square'].map(key => [key, facetAssets.filter(orientations[key]).length])),
+    };
     for (const field of ['categories', 'tags']) {
       const counts = new Map();
       for (const asset of facetAssets) {
@@ -303,6 +316,40 @@ export class Library {
       const updated = { ...asset, ...changes };
       await this.persist(this.assets.map(item => item.id === id ? updated : item));
       return displayAsset(updated, this.usage);
+    });
+  }
+
+  // 批量添加或移除分类与标签：全部校验通过才一次写入，任何一张有问题都不改。
+  updateAssets(input) {
+    return this.serialize(async () => {
+      const operations = ['addCategories', 'removeCategories', 'addTags', 'removeTags'];
+      if (!input || typeof input !== 'object' || Array.isArray(input) || !Object.hasOwn(input, 'ids')
+        || Object.keys(input).some(key => key !== 'ids' && !operations.includes(key))) {
+        throw new LibraryError('批量整理仅接受 ids、addCategories、removeCategories、addTags、removeTags');
+      }
+      const { ids } = input;
+      if (!Array.isArray(ids) || !ids.length || ids.length > MAX_BATCH_ASSETS || new Set(ids).size !== ids.length
+        || ids.some(id => typeof id !== 'string')) {
+        throw new LibraryError(`请选择 1–${MAX_BATCH_ASSETS} 张不重复的图片`);
+      }
+      const changes = {};
+      for (const key of operations) {
+        if (Object.hasOwn(input, key)) changes[key] = metadataList(input[key], key.endsWith('Tags') ? 'tags' : 'categories');
+      }
+      if (!Object.values(changes).some(list => list.length)) throw new LibraryError('请至少填写一项要添加或移除的分类或标签');
+      const remove = (values, removals) => {
+        const keys = new Set((removals ?? []).map(matchKey));
+        return values.filter(value => !keys.has(matchKey(value)));
+      };
+      const updates = new Map();
+      for (const id of ids) {
+        const asset = this.getAsset(id);
+        const categories = remove(mergeMetadata(asset.categories, changes.addCategories ?? [], 'categories'), changes.removeCategories);
+        const tags = remove(mergeMetadata(asset.tags, changes.addTags ?? [], 'tags'), changes.removeTags);
+        updates.set(id, { ...asset, categories, tags });
+      }
+      await this.persist(this.assets.map(item => updates.get(item.id) ?? item));
+      return { updated: updates.size };
     });
   }
 

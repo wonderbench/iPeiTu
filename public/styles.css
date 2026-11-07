@@ -361,3 +361,26 @@ dialog > .meta { margin-top: 12px; }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { transition: none !important; animation: none !important; }
 }
+
+/* 素材管理：分类按钮行、多选与批量操作、比例筛选、拖入导入 */
+.category-chips { display: flex; gap: 4px; overflow-x: auto; padding-bottom: 4px; scrollbar-width: thin; }
+.category-chips button {
+  flex: none; min-height: 28px; padding: 3px 10px;
+  border: 1px solid var(--line); border-radius: 4px; background: var(--card); color: var(--text-secondary);
+  font-size: 12px; line-height: 20px; white-space: nowrap;
+  transition: border-color 120ms var(--ease), color 120ms var(--ease);
+}
+.category-chips button:hover { border-color: var(--control-line); color: var(--text); }
+.category-chips button[aria-pressed="true"] { border-color: var(--accent); color: var(--accent); font-weight: 500; }
+.category-chips .figures { margin-left: 4px; color: var(--text-muted); font-weight: 400; }
+.library-heading { display: flex; align-items: center; gap: 4px; }
+.library-heading .text-button { flex: none; font-size: 12px; line-height: 20px; }
+.batch-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; padding: 0 0 8px; }
+.batch-bar .meta { margin-right: auto; color: var(--text); }
+.batch-bar .text-button { font-size: 12px; line-height: 20px; }
+.asset-grid.multi .card-check { display: grid; border: 1px solid var(--control-line); background: rgb(255 255 255 / 92%); color: transparent; }
+.asset-grid.multi .asset-card[aria-pressed="true"] .card-check { border-color: var(--accent); background: var(--accent); color: #fff; }
+.orientation-options { display: flex; flex-wrap: wrap; gap: 4px 16px; margin-top: 4px; }
+.orientation-options .checkbox-label input { border-radius: 50%; }
+.orientation-fieldset { margin-top: 0; }
+.workspace.drop-active { outline: 2px dashed var(--accent); outline-offset: -4px; }

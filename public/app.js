@@ -21,7 +21,10 @@ const ui = Object.fromEntries([
   'maxHeightCm', 'layoutMode', 'includeCaption', 'captionFields', 'captionText', 'qualityProfile',
   'layoutError', 'saveLayout', 'cancelLayout', 'resetLayout',
   'openFilters', 'filterSummary', 'clearFilters', 'filterDialog', 'filterForm',
-  'categorySelect', 'filterTags', 'applyFilters', 'cancelFilters',
+  'categoryChips', 'filterOrientations', 'filterTags', 'applyFilters', 'cancelFilters',
+  'toggleMulti', 'batchBar', 'batchCount', 'batchSelectAll', 'batchEdit', 'batchDialog', 'batchForm',
+  'batchDialogCount', 'batchAddCategories', 'batchRemoveCategories', 'batchAddTags', 'batchRemoveTags',
+  'batchError', 'applyBatch', 'cancelBatch', 'workspace',
   'editMetadata', 'metadataDialog', 'metadataForm', 'assetName', 'assetAliases',
   'assetCategories', 'assetTags', 'metadataError', 'saveMetadata', 'cancelMetadata',
   'libraryViews', 'viewAll', 'viewFavorites', 'viewRecent', 'favoriteButton',
@@ -73,8 +76,13 @@ let libraryRequest;
 let stateAction = null;
 let layoutPreferences = { ...normalizeLayoutOptions(), includeCaption: false, qualityProfile: 'original' };
 let captionDraft = '';
-let filters = { category: '', uncategorized: false, tags: [] };
-let libraryFacets = { categories: [], tags: [], uncategorized: 0 };
+const emptyFilters = () => ({ category: '', uncategorized: false, tags: [], orientation: '' });
+const ORIENTATION_LABELS = { landscape: '横图', portrait: '竖图', square: '方图' };
+let filters = emptyFilters();
+let libraryFacets = { categories: [], tags: [], uncategorized: 0, orientations: {} };
+// 多选：勾选的素材 ID 跨检索保留，切到回收站或退出多选时清空。
+let multiMode = false;
+const multiSelected = new Set();
 let editingAsset = null;
 let savingMetadata = false;
 let changingTrash = false;
@@ -91,9 +99,35 @@ function refreshFavoriteButton() {
   ui.favoriteLabel.textContent = pending ? '保存中' : selected?.favorite ? '已收藏' : '收藏';
 }
 
+function setMultiMode(enabled) {
+  multiMode = enabled;
+  if (!enabled) multiSelected.clear();
+  ui.toggleMulti.setAttribute('aria-pressed', String(enabled));
+  ui.assetGrid.classList.toggle('multi', enabled);
+  ui.batchBar.hidden = !enabled;
+  syncCardStates();
+}
+
+// 卡片按下状态：多选时表示是否勾选，否则表示当前所选图片。
+function syncCardStates() {
+  for (const card of ui.assetGrid.querySelectorAll('.asset-card')) {
+    card.setAttribute('aria-pressed', String(multiMode ? multiSelected.has(card.dataset.id) : card.dataset.id === selected?.id));
+  }
+  ui.batchCount.textContent = `已选 ${multiSelected.size} 张`;
+  ui.batchEdit.disabled = multiSelected.size === 0;
+}
+
+function toggleMultiSelected(id) {
+  if (multiSelected.has(id)) multiSelected.delete(id);
+  else multiSelected.add(id);
+  syncCardStates();
+}
+
 function setLibraryView(view) {
   if (view === libraryView) return;
   libraryView = view;
+  if (view === 'trash') setMultiMode(false);
+  ui.toggleMulti.hidden = view === 'trash';
   ui.libraryTitle.textContent = view === 'trash' ? '回收站' : '本地素材';
   for (const button of ui.libraryViews.children) {
     button.setAttribute('aria-pressed', String(button.dataset.view === view));
@@ -102,28 +136,63 @@ function setLibraryView(view) {
 }
 
 function hasFilters() {
-  return Boolean(filters.category || filters.uncategorized || filters.tags.length);
+  return Boolean(filters.category || filters.uncategorized || filters.tags.length || filters.orientation);
 }
 
 function updateFilterSummary() {
   const category = filters.uncategorized ? '未分类' : filters.category;
-  ui.filterSummary.textContent = [category, ...filters.tags].filter(Boolean).join(' · ');
+  ui.filterSummary.textContent = [category, ORIENTATION_LABELS[filters.orientation], ...filters.tags].filter(Boolean).join(' · ');
   ui.filterSummary.title = ui.filterSummary.textContent;
   ui.activeFilters.hidden = !hasFilters();
-  ui.openFilters.classList.toggle('active', hasFilters());
+  ui.openFilters.classList.toggle('active', Boolean(filters.tags.length || filters.orientation));
+  renderCategoryChips();
+}
+
+// 分类直接在窗格上点选：全部、未分类和各分类，单选。
+function renderCategoryChips() {
+  const categories = [...libraryFacets.categories];
+  if (filters.category && !categories.some(item => item.name === filters.category)) categories.push({ name: filters.category, count: 0 });
+  const chips = [
+    { label: '全部分类', pressed: !filters.category && !filters.uncategorized, apply: { category: '', uncategorized: false } },
+    { label: '未分类', count: libraryFacets.uncategorized, pressed: filters.uncategorized, apply: { category: '', uncategorized: true } },
+    ...categories.map(item => ({ label: item.name, count: item.count, pressed: filters.category === item.name, apply: { category: item.name, uncategorized: false } })),
+  ];
+  ui.categoryChips.replaceChildren(...chips.map(chip => {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.setAttribute('aria-pressed', String(chip.pressed));
+    button.append(chip.label);
+    if (chip.count !== undefined) {
+      const count = document.createElement('span');
+      count.className = 'figures';
+      count.textContent = String(chip.count);
+      button.append(count);
+    }
+    button.addEventListener('click', () => {
+      if (chip.pressed) return;
+      filters = { ...filters, ...chip.apply };
+      applyFilterChange();
+    });
+    return button;
+  }));
+  ui.categoryChips.hidden = categories.length === 0 && !filters.uncategorized;
 }
 
 function fillFilters() {
-  const categories = [...libraryFacets.categories];
-  if (filters.category && !categories.some(item => item.name === filters.category)) {
-    categories.push({ name: filters.category, count: 0 });
-  }
-  ui.categorySelect.replaceChildren(
-    new Option('全部分类', 'all'),
-    new Option(`未分类（${libraryFacets.uncategorized}）`, 'uncategorized'),
-    ...categories.map(item => new Option(`${item.name}（${item.count}）`, `category:${item.name}`)),
-  );
-  ui.categorySelect.value = filters.uncategorized ? 'uncategorized' : filters.category ? `category:${filters.category}` : 'all';
+  const orientations = [['', '不限'], ['landscape', '横图'], ['portrait', '竖图'], ['square', '方图']];
+  ui.filterOrientations.replaceChildren(...orientations.map(([value, text]) => {
+    const label = document.createElement('label');
+    label.className = 'checkbox-label';
+    const input = document.createElement('input');
+    input.type = 'radio';
+    input.name = 'orientation';
+    input.value = value;
+    input.checked = filters.orientation === value;
+    const name = document.createElement('span');
+    name.textContent = value ? `${text} ${libraryFacets.orientations?.[value] ?? 0}` : text;
+    label.append(input, name);
+    return label;
+  }));
   const tags = [...libraryFacets.tags];
   for (const name of filters.tags) {
     if (!tags.some(item => item.name === name)) tags.push({ name, count: 0 });
@@ -168,7 +237,7 @@ function applyFilterChange() {
 function clearAllConditions() {
   ui.searchInput.value = '';
   ui.clearSearch.hidden = true;
-  filters = { category: '', uncategorized: false, tags: [] };
+  filters = emptyFilters();
   applyFilterChange();
 }
 
@@ -326,9 +395,7 @@ function selectAsset(asset) {
   }
   selected = asset;
   const tabId = visibleAssets.some(item => item.id === asset?.id) ? asset.id : visibleAssets[0]?.id;
-  for (const card of ui.assetGrid.querySelectorAll('.asset-card')) {
-    card.setAttribute('aria-pressed', String(card.dataset.id === asset?.id));
-  }
+  syncCardStates();
   for (const control of ui.assetGrid.querySelectorAll('.asset-card, .card-add')) {
     control.tabIndex = control.dataset.id === tabId ? 0 : -1;
   }
@@ -382,7 +449,7 @@ function renderAssets(assets) {
     card.className = 'asset-card';
     card.dataset.id = asset.id;
     card.tabIndex = asset.id === tabId ? 0 : -1;
-    card.setAttribute('aria-pressed', String(asset.id === selected?.id));
+    card.setAttribute('aria-pressed', String(multiMode ? multiSelected.has(asset.id) : asset.id === selected?.id));
     const favorited = asset.favorite && libraryView !== 'trash';
     card.setAttribute('aria-label', `选择 ${asset.name}${favorited ? '（已收藏）' : ''}`);
     const thumbnail = document.createElement('span');
@@ -419,7 +486,10 @@ function renderAssets(assets) {
       favorite.append(icon('star'));
       card.append(favorite);
     }
-    card.addEventListener('click', () => selectAsset(visibleAssets.find(item => item.id === asset.id) || null));
+    card.addEventListener('click', () => {
+      if (multiMode) toggleMultiSelected(asset.id);
+      else selectAsset(visibleAssets.find(item => item.id === asset.id) || null);
+    });
     item.append(card);
     if (libraryView !== 'trash') {
       const add = document.createElement('button');
@@ -519,6 +589,7 @@ async function loadLibrary() {
   const parameters = new URLSearchParams({ q: query, view: libraryView });
   if (filters.category) parameters.set('category', filters.category);
   if (filters.uncategorized) parameters.set('uncategorized', '1');
+  if (filters.orientation) parameters.set('orientation', filters.orientation);
   for (const tag of filters.tags) parameters.append('tag', tag);
   ui.assetGrid.setAttribute('aria-busy', 'true');
   ui.resultCount.textContent = '正在检索';
@@ -526,6 +597,7 @@ async function loadLibrary() {
     const data = await request(`/api/library?${parameters}`, { signal: libraryRequest.signal });
     if (version !== requestVersion) return;
     libraryFacets = data.facets;
+    renderCategoryChips();
     ui.openFilters.disabled = false;
     libraryOrder = new Map(data.assets.map((asset, index) => [asset.id, index]));
     renderAssets(orderAssets(data.assets));
@@ -579,9 +651,84 @@ ui.toggleImport.addEventListener('click', () => {
     ui.toggleImport.setAttribute('aria-expanded', 'false');
   }
 });
-createImportController({
+const importer = createImportController({
   ui, request, readableError, refreshLibrary: loadLibrary, clearAction: () => showAction(''),
-  reveal: () => { ui.importPanel.hidden = false; ui.toggleImport.setAttribute('aria-expanded', 'true'); },
+  reveal: () => {
+    boxes?.close();
+    ui.importPanel.hidden = false;
+    ui.toggleImport.setAttribute('aria-expanded', 'true');
+  },
+});
+
+// 拖入图片文件或粘贴截图即导入，复用导入面板的进度与失败重试。
+const hasFiles = event => Array.from(event.dataTransfer?.types ?? []).includes('Files');
+ui.workspace.addEventListener('dragover', event => {
+  if (!hasFiles(event)) return;
+  event.preventDefault();
+  event.dataTransfer.dropEffect = 'copy';
+  ui.workspace.classList.add('drop-active');
+});
+ui.workspace.addEventListener('dragleave', event => {
+  if (!ui.workspace.contains(event.relatedTarget)) ui.workspace.classList.remove('drop-active');
+});
+ui.workspace.addEventListener('drop', event => {
+  if (!hasFiles(event)) return;
+  event.preventDefault();
+  ui.workspace.classList.remove('drop-active');
+  importer.importFiles(Array.from(event.dataTransfer.files));
+});
+document.addEventListener('paste', event => {
+  // 在输入框里粘贴文字时不拦截。
+  if (event.target.closest?.('input, textarea, [contenteditable="true"]')) return;
+  const images = Array.from(event.clipboardData?.files ?? []).filter(file => file.type.startsWith('image/'));
+  if (!images.length) return;
+  event.preventDefault();
+  importer.importFiles(images, { pasted: true });
+});
+
+ui.toggleMulti.addEventListener('click', () => setMultiMode(!multiMode));
+ui.batchSelectAll.addEventListener('click', () => {
+  for (const asset of visibleAssets) multiSelected.add(asset.id);
+  syncCardStates();
+});
+ui.batchEdit.addEventListener('click', () => {
+  if (!multiSelected.size) return;
+  for (const field of [ui.batchAddCategories, ui.batchRemoveCategories, ui.batchAddTags, ui.batchRemoveTags]) field.value = '';
+  ui.batchDialogCount.textContent = `${multiSelected.size} 张`;
+  ui.batchError.hidden = true;
+  ui.batchDialog.showModal();
+  ui.batchAddCategories.focus();
+});
+ui.cancelBatch.addEventListener('click', () => ui.batchDialog.close());
+ui.batchForm.addEventListener('submit', async event => {
+  event.preventDefault();
+  const lines = field => field.value.split(/\r?\n/).map(item => item.trim()).filter(Boolean);
+  const changes = {
+    addCategories: lines(ui.batchAddCategories), removeCategories: lines(ui.batchRemoveCategories),
+    addTags: lines(ui.batchAddTags), removeTags: lines(ui.batchRemoveTags),
+  };
+  const body = { ids: [...multiSelected], ...Object.fromEntries(Object.entries(changes).filter(([, values]) => values.length)) };
+  if (Object.keys(body).length === 1) {
+    ui.batchError.textContent = '请至少填写一项要添加或移除的分类或标签';
+    ui.batchError.hidden = false;
+    return;
+  }
+  ui.applyBatch.disabled = true;
+  try {
+    const { updated } = await request('/api/assets/batch', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+    });
+    ui.batchDialog.close();
+    multiSelected.clear();
+    syncCardStates();
+    const data = await loadLibrary();
+    showAction(data ? `已更新 ${updated} 张素材` : `已更新 ${updated} 张素材，但图库刷新失败，请重新读取`, !data);
+  } catch (error) {
+    ui.batchError.textContent = `未修改任何图片：${readableError(error)}`;
+    ui.batchError.hidden = false;
+  } finally {
+    ui.applyBatch.disabled = false;
+  }
 });
 boxes = createBoxController({
   ui, request, readableError, showAction,
@@ -634,7 +781,8 @@ ui.assetGrid.addEventListener('keydown', (event) => {
   event.preventDefault();
   next = Math.max(0, Math.min(cards.length - 1, next));
   cards[next].focus();
-  selectAsset(visibleAssets[next]);
+  // 多选时方向键只移动焦点，空格或 Enter 勾选。
+  if (!multiMode) selectAsset(visibleAssets[next]);
 });
 ui.favoriteButton.addEventListener('click', async () => {
   if (!selected || changingTrash || libraryView === 'trash' || favoriteRequests.has(selected.id)) return;
@@ -666,22 +814,21 @@ ui.favoriteButton.addEventListener('click', async () => {
 ui.openFilters.addEventListener('click', () => {
   fillFilters();
   ui.filterDialog.showModal();
-  ui.categorySelect.focus();
+  ui.filterOrientations.querySelector('input:checked')?.focus();
 });
 ui.cancelFilters.addEventListener('click', () => ui.filterDialog.close());
 ui.filterForm.addEventListener('submit', (event) => {
   event.preventDefault();
-  const category = ui.categorySelect.value;
   filters = {
-    category: category.startsWith('category:') ? category.slice('category:'.length) : '',
-    uncategorized: category === 'uncategorized',
+    ...filters,
+    orientation: ui.filterOrientations.querySelector('input[name="orientation"]:checked')?.value ?? '',
     tags: Array.from(ui.filterTags.querySelectorAll('input[name="filterTag"]:checked'), input => input.value),
   };
   ui.filterDialog.close();
   applyFilterChange();
 });
 ui.clearFilters.addEventListener('click', () => {
-  filters = { category: '', uncategorized: false, tags: [] };
+  filters = emptyFilters();
   applyFilterChange();
 });
 ui.editMetadata.addEventListener('click', () => {
