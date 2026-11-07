@@ -8,6 +8,7 @@ import { startServer } from '../server/http.js';
 import { verifyImportAndTrash } from './verify-import-ui.mjs';
 import { verifyQuality } from './verify-quality-ui.mjs';
 import { verifyFormat } from './verify-format-ui.mjs';
+import { verifyLibraryManagement } from './verify-library-ui.mjs';
 import { verifyPlaceholders } from './verify-placeholder-ui.mjs';
 
 const temporary = await mkdtemp(path.join(os.tmpdir(), 'ipeitu-ui-'));
@@ -104,8 +105,9 @@ try {
   await page.locator('#searchInput').fill('bridge 室内');
   await visibleText('#resultCount', '1 / 2 张');
   await visibleText('.asset-name', '桥架施工.png');
+  // 分类在窗格上点选，工序标签与比例在筛选对话框中。
+  await page.locator('#categoryChips button', { hasText: '机电/桥架' }).click();
   await page.locator('#openFilters').click();
-  await page.locator('#categorySelect').selectOption('category:机电/桥架');
   await page.locator('#filterTags input[value="室内"]').check();
   await page.locator('#applyFilters').click();
   await visibleText('#resultCount', '1 / 2 张');
@@ -113,8 +115,8 @@ try {
   await visibleText('#stateTitle', '没有找到');
   await page.locator('#clearSearch').click();
   await visibleText('#resultCount', '1 / 2 张');
+  await page.locator('#categoryChips button', { hasText: '未分类' }).click();
   await page.locator('#openFilters').click();
-  await page.locator('#categorySelect').selectOption('uncategorized');
   await page.locator('#filterTags input[value="室内"]').uncheck();
   await page.locator('#applyFilters').click();
   await visibleText('#resultCount', '1 / 2 张');
@@ -473,6 +475,7 @@ try {
   await verifyImportAndTrash({ page, base, temporary, picture, filename });
   await verifyQuality({ base });
   await verifyFormat({ page, base });
+  await verifyLibraryManagement({ page, base });
   assert.deepEqual(failures, []);
   console.log('UI 验收通过：导入/检索/预览、素材信息与组合筛选、收藏重载与写失败恢复、最近成功记录及失败分离、键盘选图不误插入、卡片添加按钮的连击与键盘操作、排版偏好恢复、320/420/1080 布局、模拟 WPS 插图与替换、目标变更拒绝写入、只读与读取失败恢复');
   console.log('WPS 行为使用模拟宿主；真实 WPS 验收另行记录。');

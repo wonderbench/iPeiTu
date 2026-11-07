@@ -39,7 +39,7 @@
         </div>
       </header>
 
-      <main class="workspace">
+      <main id="workspace" class="workspace">
         <section id="importPanel" class="import-panel" aria-labelledby="importTitle" hidden>
           <div class="section-heading">
             <h2 id="importTitle">添加本地图片</h2>
@@ -134,6 +134,7 @@
                 <span>筛选</span>
               </button>
             </div>
+            <div id="categoryChips" class="category-chips" role="group" aria-label="分类" hidden></div>
             <div id="activeFilters" class="active-filters" hidden>
               <span id="filterSummary" class="meta"></span>
               <button id="clearFilters" class="text-button" type="button">清除筛选</button>
@@ -148,7 +149,13 @@
               <div class="library-heading">
                 <h2 id="libraryTitle" class="visually-hidden">本地素材</h2>
                 <span id="resultCount" class="meta figures" aria-live="polite">正在读取</span>
+                <button id="toggleMulti" class="text-button toggle-text" type="button" aria-pressed="false">多选</button>
               </div>
+            </div>
+            <div id="batchBar" class="batch-bar" hidden>
+              <span id="batchCount" class="meta figures" aria-live="polite">已选 0 张</span>
+              <button id="batchSelectAll" class="text-button" type="button">全选当前</button>
+              <button id="batchEdit" class="text-button" type="button" disabled>设置分类与标签</button>
             </div>
           </div>
           <div id="libraryState" class="empty-state" role="status">
@@ -310,12 +317,10 @@
         <div class="dialog-heading">
           <h2 id="filterTitle">筛选素材</h2>
         </div>
-        <div class="field-group">
-          <label for="categorySelect">分类</label>
-          <select id="categorySelect" name="category">
-            <option value="all">全部分类</option>
-          </select>
-        </div>
+        <fieldset class="tag-fieldset orientation-fieldset">
+          <legend>比例</legend>
+          <div id="filterOrientations" class="orientation-options"></div>
+        </fieldset>
         <fieldset class="tag-fieldset">
           <legend>工序标签 · 须同时包含</legend>
           <div id="filterTags" class="tag-options"></div>
@@ -323,6 +328,38 @@
         <div class="dialog-actions">
           <button id="cancelFilters" class="button secondary" type="button">取消</button>
           <button id="applyFilters" class="button primary" type="submit">应用筛选</button>
+        </div>
+      </form>
+    </dialog>
+
+    <dialog id="batchDialog" class="compact-dialog" aria-labelledby="batchTitle">
+      <form id="batchForm" novalidate>
+        <div class="dialog-heading">
+          <h2 id="batchTitle">批量设置分类与标签</h2>
+          <span id="batchDialogCount" class="meta figures"></span>
+        </div>
+        <div class="layout-fields">
+          <div class="field-group">
+            <label for="batchAddCategories">添加分类 · 每行一个</label>
+            <textarea id="batchAddCategories" rows="2"></textarea>
+          </div>
+          <div class="field-group">
+            <label for="batchRemoveCategories">移除分类 · 每行一个</label>
+            <textarea id="batchRemoveCategories" rows="2"></textarea>
+          </div>
+          <div class="field-group">
+            <label for="batchAddTags">添加工序标签 · 每行一个</label>
+            <textarea id="batchAddTags" rows="2"></textarea>
+          </div>
+          <div class="field-group">
+            <label for="batchRemoveTags">移除工序标签 · 每行一个</label>
+            <textarea id="batchRemoveTags" rows="2"></textarea>
+          </div>
+        </div>
+        <p id="batchError" class="form-error" role="alert" hidden></p>
+        <div class="dialog-actions">
+          <button id="cancelBatch" class="button secondary" type="button">取消</button>
+          <button id="applyBatch" class="button primary" type="submit">应用到所选图片</button>
         </div>
       </form>
     </dialog>

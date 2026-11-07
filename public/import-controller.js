@@ -249,4 +249,38 @@ export function createImportController({ ui, request, readableError, refreshLibr
     ui.importProgress.hidden = false;
     poll();
   }
+
+  // 拖入或粘贴的文件：与“选择图片”相同的上传、进度和失败重试；粘贴的截图按时间命名。
+  async function importFiles(files, { pasted = false } = {}) {
+    if (busy || paused) return;
+    reveal();
+    const pad = value => String(value).padStart(2, '0');
+    const now = new Date();
+    const stamp = `${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}-${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}`;
+    const images = files.filter(file => IMAGE_EXTENSION.test(file.name) || file.type.startsWith('image/'));
+    const entries = images.map((file, index) => {
+      const extension = (file.type.split('/')[1] || 'png').replace('jpeg', 'jpg').replace(/\+.*$/, '');
+      const named = pasted
+        ? new File([file], `粘贴图片-${stamp}${images.length > 1 ? `-${index + 1}` : ''}.${extension}`, { type: file.type })
+        : file;
+      return { file: named, relativePath: named.name, category: '' };
+    });
+    begin();
+    if (!entries.length) {
+      ui.importProgress.textContent = '拖入的文件中没有图片';
+      ui.importMeter.hidden = true;
+      setBusy(false);
+      return;
+    }
+    if (entries.length > MAX_FILES) {
+      ui.importProgress.textContent = `一次最多导入 ${MAX_FILES} 张图片，请分批导入`;
+      ui.importMeter.hidden = true;
+      setBusy(false);
+      return;
+    }
+    try { await upload(entries); }
+    finally { setBusy(false); }
+  }
+
+  return { importFiles };
 }

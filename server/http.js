@@ -81,13 +81,16 @@ export async function createServer({ dataDirectory, publicDirectory = defaultPub
       const origin = validateRequest(request, server.address().port);
       const url = new URL(request.url, origin);
       if (request.method === 'GET' && url.pathname === '/api/library') {
-        validateParameters(url.searchParams, ['q', 'category', 'tag', 'uncategorized', 'view'], ['tag']);
+        validateParameters(url.searchParams, ['q', 'category', 'tag', 'uncategorized', 'view', 'orientation'], ['tag']);
         const uncategorized = url.searchParams.get('uncategorized');
         if (uncategorized !== null && !['0', '1'].includes(uncategorized)) throw new LibraryError('uncategorized 仅接受 0 或 1');
         json(response, 200, library.list(url.searchParams.get('q') || '', {
           category: url.searchParams.get('category') || '', tags: url.searchParams.getAll('tag'), uncategorized: uncategorized === '1',
-          view: url.searchParams.get('view') ?? 'all',
+          view: url.searchParams.get('view') ?? 'all', orientation: url.searchParams.get('orientation') ?? '',
         }));
+      } else if (request.method === 'POST' && url.pathname === '/api/assets/batch') {
+        validateParameters(url.searchParams, []);
+        json(response, 200, await library.updateAssets(await jsonBody(request, 256 * 1024)));
       } else if (request.method === 'PATCH' && /^\/api\/assets\/[a-f0-9]{64}$/.test(url.pathname)) {
         validateParameters(url.searchParams, []);
         json(response, 200, { asset: await library.updateAsset(url.pathname.split('/')[3], await jsonBody(request, 128 * 1024)) });

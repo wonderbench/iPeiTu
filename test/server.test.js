@@ -397,3 +397,27 @@ test('HTTP insertion profiles validate all query parameters and expose only real
   await library.setTrash(id, { trashed: true });
   assert.equal((await fetch(`${endpoint}?profile=balanced`)).status, 410);
 });
+
+test('HTTP orientation filter and batch metadata endpoint validate input and reject foreign origins', async t => {
+  const { base, library } = await setup(t);
+  for (const [name, width, height] of [['横.png', 400, 300], ['竖.png', 300, 400]]) {
+    await library.importFile(name, await sharp({ create: { width, height, channels: 3, background: width > height ? '#123456' : '#654321' } }).png().toBuffer());
+  }
+  const portrait = await (await fetch(`${base}/api/library?orientation=portrait`)).json();
+  assert.deepEqual(portrait.assets.map(asset => asset.name), ['竖.png']);
+  assert.deepEqual(portrait.facets.orientations, { landscape: 1, portrait: 1, square: 0 });
+  assert.equal((await fetch(`${base}/api/library?orientation=wide`)).status, 400);
+  assert.equal((await fetch(`${base}/api/library?orientation=portrait&orientation=square`)).status, 400);
+  const ids = library.assets.map(asset => asset.id);
+  const post = (body, headers = {}) => fetch(`${base}/api/assets/batch`, {
+    method: 'POST', headers: { 'content-type': 'application/json', ...headers }, body: JSON.stringify(body),
+  });
+  const response = await post({ ids, addCategories: ['批量'], addTags: ['工序'] });
+  assert.equal(response.status, 200);
+  assert.deepEqual(await response.json(), { updated: 2 });
+  assert.ok(library.assets.every(asset => asset.categories.includes('批量') && asset.tags.includes('工序')));
+  assert.equal((await post({ ids, addTags: ['x'] }, { origin: 'https://example.com' })).status, 403);
+  assert.equal((await post({ ids })).status, 400);
+  assert.equal((await fetch(`${base}/api/assets/batch`, { method: 'POST', headers: { 'content-type': 'text/plain' }, body: '{}' })).status, 415);
+  assert.ok(library.assets.every(asset => !asset.tags.includes('x')));
+});
