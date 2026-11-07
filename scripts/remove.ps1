@@ -1,7 +1,7 @@
 ﻿[CmdletBinding()]
 param(
     [string]$ConfigDirectory = (Join-Path $env:APPDATA 'kingsoft\wps\jsaddons'),
-    [string]$StartupDirectory = [Environment]::GetFolderPath('Startup'),
+    [string]$RunKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run',
     [string]$StateDirectory = (Join-Path $env:LOCALAPPDATA 'iPeiTu'),
     [ValidateRange(1, 65535)]
     [int]$Port = 39831
@@ -11,7 +11,6 @@ param(
 $ErrorActionPreference = 'Stop'
 try { [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding($false) } catch { }
 $service = Join-Path $PSScriptRoot 'service.ps1'
-$shortcutPath = Join-Path $StartupDirectory 'iPeiTu 本地图库.lnk'
 $libraryPath = if ($env:IPEITU_DATA_DIR) { $env:IPEITU_DATA_DIR } else { Join-Path $env:LOCALAPPDATA 'iPeiTu\library' }
 $code = 0
 
@@ -20,17 +19,15 @@ Write-Host '[1/3] 停止本地图库'
 if ($LASTEXITCODE -ne 0) { $code = $LASTEXITCODE }
 
 Write-Host '[2/3] 移除登录后自动启动'
-if (Test-Path -LiteralPath $shortcutPath) {
-    $shell = New-Object -ComObject WScript.Shell
-    $shortcut = $shell.CreateShortcut($shortcutPath)
-    if ($shortcut.Arguments.IndexOf($service, [StringComparison]::OrdinalIgnoreCase) -ge 0) {
-        Remove-Item -LiteralPath $shortcutPath
-        Write-Host '  已移除'
-    } else {
-        Write-Host '  启动文件夹中的同名快捷方式不是本目录创建的，未删除'
-    }
-} else {
+$current = $null
+if (Test-Path -LiteralPath $RunKey) { $current = (Get-ItemProperty -LiteralPath $RunKey -Name 'iPeiTu' -ErrorAction SilentlyContinue).iPeiTu }
+if (!$current) {
     Write-Host '  未设置'
+} elseif ($current.IndexOf($service, [StringComparison]::OrdinalIgnoreCase) -ge 0) {
+    Remove-ItemProperty -LiteralPath $RunKey -Name 'iPeiTu'
+    Write-Host '  已移除'
+} else {
+    Write-Host '  注册表中的 iPeiTu 自动启动不是本目录设置的，未删除'
 }
 
 Write-Host '[3/3] 移除 WPS 加载项注册'

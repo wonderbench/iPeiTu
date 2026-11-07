@@ -64,7 +64,9 @@ async function workspace(t) {
   const paths = {
     directory, port,
     state: path.join(directory, 'state'), data: path.join(directory, 'library'),
-    config: path.join(directory, 'jsaddons'), startup: path.join(directory, 'startup'),
+    config: path.join(directory, 'jsaddons'),
+    // 临时注册表键代替真实的 HKCU Run，测试结束删除。
+    runKey: `HKCU:\\Software\\iPeiTu-test\\${path.basename(directory)}`,
   };
   // 每次调用都记录耗时，CI 日志里能看出慢在哪一步。
   paths.run = async (script, args, env = {}) => {
@@ -80,10 +82,18 @@ async function workspace(t) {
       t.diagnostic(`清理残留服务进程 ${leftover.pid}`);
       try { process.kill(leftover.pid); } catch { /* 已退出 */ }
     }
+    spawnSync('powershell.exe', ['-NoProfile', '-Command', `Remove-Item -LiteralPath '${paths.runKey}' -Recurse -ErrorAction SilentlyContinue`], { windowsHide: true });
     assert.equal(path.dirname(directory), path.resolve(tmpdir()));
     await rm(directory, { recursive: true, force: true });
   });
   return paths;
+}
+
+function readRunValue(runKey) {
+  const result = spawnSync('powershell.exe', ['-NoProfile', '-Command',
+    `[Console]::OutputEncoding = [Text.Encoding]::UTF8; (Get-ItemProperty -LiteralPath '${runKey}' -Name iPeiTu -ErrorAction SilentlyContinue).iPeiTu`,
+  ], { encoding: 'utf8', windowsHide: true });
+  return result.stdout.trim();
 }
 
 test('服务脚本：启动、重复启动、查看与停止只作用于本目录的服务', { skip }, async t => {
@@ -141,15 +151,16 @@ test('状态文件指向无关进程时拒绝停止，并清除过期的状态�
 });
 
 test('一键安装与卸载：注册加载项、设置自动启动并启动服务；卸载后全部还原，素材图库保留', { skip }, async t => {
-  const { port, state, data, config, startup, run } = await workspace(t);
-  const common = ['-ConfigDirectory', config, '-StartupDirectory', startup, '-StateDirectory', state, '-Port', String(port)];
+  const { port, state, data, config, runKey, run } = await workspace(t);
+  const common = ['-ConfigDirectory', config, '-RunKey', runKey, '-StateDirectory', state, '-Port', String(port)];
   const env = { IPEITU_DATA_DIR: data };
   let result = await run('setup', [...common, '-SkipDependencies'], env);
   assert.equal(result.status, 0, result.output);
   assert.match(result.output, /安装完成/);
   assert.match(await readFile(path.join(config, 'publish.xml'), 'utf8'), /name="iPeiTu"/);
-  const shortcut = path.join(startup, 'iPeiTu 本地图库.lnk');
-  await access(shortcut);
+  const autostart = readRunValue(runKey);
+  assert.ok(autostart.toLowerCase().includes(path.join(scripts, 'service.ps1').toLowerCase()), `自动启动指向本目录脚本：${autostart}`);
+  assert.match(autostart, new RegExp(`-Action start -Port ${port} -StateDirectory`));
   assert.equal((await health(port))?.service, 'iPeiTu');
 
   result = await run('setup', [...common, '-SkipDependencies'], env);
@@ -159,7 +170,7 @@ test('一键安装与卸载：注册加载项、设置自动启动并启动服�
   result = await run('remove', common, env);
   assert.equal(result.status, 0, result.output);
   assert.equal(await health(port), null);
-  await assert.rejects(access(shortcut), '自动启动已移除');
+  assert.equal(readRunValue(runKey), '', '自动启动已移除');
   assert.doesNotMatch(await readFile(path.join(config, 'publish.xml'), 'utf8'), /name="iPeiTu"/);
   await access(path.join(data, 'images'));
   assert.match(result.output, /素材图库保留/);
