@@ -122,6 +122,7 @@ h1 { min-width: 0; overflow: hidden; color: var(--text-muted); font-size: 13px; 
 .box-index { flex: none; min-width: 16px; color: var(--text-muted); font-size: 12px; line-height: 20px; }
 .box-name { flex: 1; min-width: 0; overflow: hidden; font-size: 13px; line-height: 20px; white-space: nowrap; text-overflow: ellipsis; }
 .box-size { flex: none; color: var(--text-muted); font-size: 12px; line-height: 20px; }
+.box-filled { flex: none; color: var(--accent); font-size: 12px; line-height: 20px; }
 
 /* 检索与视图：滚动时留在图库上方 */
 .library-tools {
@@ -246,6 +247,12 @@ h1 { min-width: 0; overflow: hidden; color: var(--text-muted); font-size: 13px; 
 .cell-label { flex: none; color: var(--text); }
 .cell-value { min-width: 0; overflow-wrap: anywhere; }
 #editMetadata { border-left: 1px solid var(--line); white-space: nowrap; }
+/* 选中占位框时：目标框与适配方式，“+”改为填入 */
+.fill-bar { display: grid; gap: 8px; padding: 8px; border: 1px solid var(--accent); border-radius: 8px; background: var(--card); }
+.fill-target { min-width: 0; overflow: hidden; color: var(--text); font-size: 13px; line-height: 20px; white-space: nowrap; text-overflow: ellipsis; }
+.fill-options { display: flex; align-items: center; gap: 8px; }
+.fill-options select { flex: 1; min-height: 32px; padding: 4px 8px; }
+.fill-options .text-button { flex: none; font-size: 12px; line-height: 20px; }
 .document-actions { display: grid; grid-template-columns: minmax(0, 1fr); gap: 8px; }
 .document-actions .button, #restoreButton { min-width: 0; min-height: 40px; }
 .host-status, .action-status { color: var(--text-secondary); font-size: 12px; line-height: 16px; overflow-wrap: anywhere; }

@@ -9,6 +9,7 @@ import vm from 'node:vm';
 import {
   captureInsertionTarget, getHostStatus, insertPicture, captureReplacementTarget, getReplacementStatus, replacePicture,
   capturePlaceholderTarget, insertPlaceholder, scanPlaceholders, selectPlaceholder, placeholderMarker, parsePlaceholderMarker,
+  getFillStatus, captureFillTarget, fillPlaceholder,
 } from '../public/wps-bridge.js';
 import { normalizeLayoutOptions } from '../public/layout-options.js';
 
@@ -40,7 +41,7 @@ function createHost(options = {}) {
         height = value;
       },
       altText: '',
-      get AlternativeText() { return options.altTextDropped ? '' : this.altText; },
+      get AlternativeText() { return options.altTextDropped || (options.newAltTextDropped && !this.original) ? '' : this.altText; },
       set AlternativeText(value) { this.altText = value; },
       get Range() {
         if (this.deleted) throw new Error('original object deleted');
@@ -911,7 +912,7 @@ test('扫描只列出带有效标记的框，读不出替代文字的对象单�
   Object.defineProperty(state.pictures[3], 'AlternativeText', { get() { throw new Error('OLE 对象不支持'); } });
   assert.deepEqual(scanPlaceholders(), {
     document: 'C:\\文档\\标书.docx', unreadable: 1,
-    boxes: [{ index: 1, name: '甲框', start: 1, widthPt: 240, heightPt: 120 }],
+    boxes: [{ index: 1, name: '甲框', start: 1, widthPt: 240, heightPt: 120, filled: false }],
   });
 });
 
@@ -931,4 +932,93 @@ test('定位选中对应的框；框移动、标记变化或切换文档时要�
   app.ActiveDocument.FullName = 'C:\\其他.docx';
   assert.throws(() => selectPlaceholder(scan, scan.boxes[0]), stale);
   assert.throws(() => selectPlaceholder(scan, { ...scan.boxes[0], index: 9 }), stale);
+});
+
+const fittedImage = { path: 'C:\\图库\\fitted\\沟槽.jpg', name: '沟槽.jpg' };
+const assetId = 'a'.repeat(64);
+function boxHost(options = {}) {
+  const host = createHost({ text: '前文\uFFFC后文\r', start: 2, end: 3, originalPictures: [{ position: 2, width: 300, height: 200 }], ...options });
+  host.state.pictures[0].altText = placeholderMarker('脚手架搭设');
+  return host;
+}
+
+test('已填标记记录素材与适配方式，无效的已填信息仍按未填框识别', () => {
+  assert.deepEqual(parsePlaceholderMarker(placeholderMarker('框', { asset: assetId, fit: 'contain' })), { name: '框', asset: assetId, fit: 'contain' });
+  assert.deepEqual(parsePlaceholderMarker('iPeiTu-box:1:{"name":"框","asset":"短","fit":"cover"}'), { name: '框' });
+  assert.deepEqual(parsePlaceholderMarker(`iPeiTu-box:1:{"name":"框","asset":"${assetId}","fit":"stretch"}`), { name: '框' });
+});
+
+test('只有完整选中一个占位框时才可填入，普通图片和浏览器不可填入', () => {
+  assert.equal(getFillStatus().available, false);
+  createHost({ text: '前文\uFFFC后文\r', start: 2, end: 3, originalPictures: [{ position: 2 }] });
+  assert.equal(getFillStatus().available, false);
+  assert.throws(() => captureFillTarget(), /不是占位框/);
+  boxHost();
+  assert.deepEqual(getFillStatus(), { available: true, name: '脚手架搭设', widthPt: 300, heightPt: 200 });
+  boxHost({ document: { ReadOnly: true } });
+  assert.equal(getFillStatus().available, false, '只读文档不可填入');
+});
+
+test('填入按框的宽高精确设定新图，保留字体并写入已填标记，只删除原框', () => {
+  const { state } = boxHost();
+  const originalFont = { ...state.pictures[0].font };
+  const result = fillPlaceholder(fittedImage, captureFillTarget(), { asset: assetId, fit: 'cover' });
+  assert.equal(state.text, '前文\uFFFC后文\r');
+  assert.equal(state.pictures.length, 1);
+  const [picture] = state.pictures;
+  assert.equal(picture.original, false);
+  assert.deepEqual([picture.Width, picture.Height, picture.LockAspectRatio], [300, 200, -1]);
+  assert.deepEqual(parsePlaceholderMarker(picture.altText), { name: '脚手架搭设', asset: assetId, fit: 'cover' });
+  assert.deepEqual(picture.font, originalFont);
+  assert.deepEqual(result, { name: '脚手架搭设', asset: '沟槽.jpg', widthPt: 300, heightPt: 200 });
+  assert.deepEqual(state.calls.filter(call => call.delete).map(call => call.delete), ['original']);
+  assert.deepEqual([state.start, state.end], [3, 3], '光标移到新图之后');
+  assert.deepEqual([state.undoStarted, state.undoEnded], [1, 1]);
+  assert.equal(scanPlaceholders().boxes[0].filled, true);
+});
+
+test('已填的框可以再次换图，框名和尺寸不变', () => {
+  const { state } = boxHost();
+  fillPlaceholder(fittedImage, captureFillTarget(), { asset: assetId, fit: 'cover' });
+  state.start = 2;
+  state.end = 3;
+  assert.equal(getFillStatus().available, true);
+  fillPlaceholder({ ...fittedImage, path: 'C:\\图库\\fitted\\另一张.png' }, captureFillTarget(), { asset: 'b'.repeat(64), fit: 'contain' });
+  assert.equal(state.pictures.length, 1);
+  assert.deepEqual([state.pictures[0].Width, state.pictures[0].Height], [300, 200]);
+  assert.deepEqual(parsePlaceholderMarker(state.pictures[0].altText), { name: '脚手架搭设', asset: 'b'.repeat(64), fit: 'contain' });
+});
+
+test('新图标记未保存时移除新图并保留原框', () => {
+  const { state } = boxHost({ newAltTextDropped: true });
+  assert.throws(() => fillPlaceholder(fittedImage, captureFillTarget(), { asset: assetId, fit: 'fill' }), error => {
+    assert.match(error.message, /填入未完成，占位框已保留，新增图片已移除.*未能保存占位框标记/);
+    assert.deepEqual([error.inserted, error.filled, error.resultUncertain], [false, false, false]);
+    return true;
+  });
+  assert.equal(state.text, '前文\uFFFC后文\r');
+  assert.equal(state.pictures.length, 1);
+  assert.equal(state.pictures[0].original, true);
+  assert.deepEqual(parsePlaceholderMarker(state.pictures[0].altText), { name: '脚手架搭设' });
+});
+
+test('等待适配图期间选区、框名变化或目标重复使用时在写入前中止', () => {
+  let { state } = boxHost();
+  let target = captureFillTarget();
+  state.start = state.end = 2;
+  assert.throws(() => fillPlaceholder(fittedImage, target, { asset: assetId, fit: 'cover' }), /填入已中止/);
+  ({ state } = boxHost());
+  target = captureFillTarget();
+  state.pictures[0].altText = placeholderMarker('另一个框');
+  assert.throws(() => fillPlaceholder(fittedImage, target, { asset: assetId, fit: 'cover' }), /已改变/);
+  ({ state } = boxHost());
+  target = captureFillTarget();
+  for (const [image, filled] of [[{ path: 'box.jpg' }, { asset: assetId, fit: 'cover' }], [fittedImage, { asset: 'x', fit: 'cover' }], [fittedImage, { asset: assetId, fit: 'stretch' }]]) {
+    assert.throws(() => fillPlaceholder(image, target, filled), /填入已中止/);
+  }
+  fillPlaceholder(fittedImage, target, { asset: assetId, fit: 'cover' });
+  state.start = 2;
+  state.end = 3;
+  assert.throws(() => fillPlaceholder(fittedImage, target, { asset: assetId, fit: 'cover' }), /目标已失效/);
+  assert.equal(state.calls.filter(call => call.path).length, 1, '中止的填入都没有调用 AddPicture');
 });
