@@ -46,7 +46,7 @@ npm run wps:uninstall
 
 - 功能区新增“标书排版 › 排版工具”，以独立任务窗格打开 `format.html`，窗格 ID 单独记在 `ipeitu_layout_pane_id`，与素材库窗格互不复用。
 - 操作集中在 `public/layout-tools.js`，每项操作包在一个 `UndoRecord` 自定义记录中；只读、受保护和非正文位置在开始撤销记录前拒绝。
-- 用到的成员均已对照官方文档：`ParagraphFormat.Reset`、`Font.Reset`、`CharacterUnitFirstLineIndent`、`Table.PreferredWidthType`/`PreferredWidth`/`AllowAutoFit`/四边 `Padding`、`Cell` 四边 `Padding`、`Shading`、`Borders.Enable`、`PictureFormat.ColorType`、`Shape.Fill`/`Line` 的 `ForeColor.RGB`、`Document.Range`。实际效果待实机核对，清单见 [V03-PLAN.md](V03-PLAN.md) 的排版工具部分。
+- 用到的成员均已对照官方文档：`ParagraphFormat.Reset`、`Font.Reset`、`CharacterUnitFirstLineIndent`、`Table.PreferredWidthType`/`PreferredWidth`/`AllowAutoFit`/四边 `Padding`、`Cell` 四边 `Padding`、`Shading`、`Borders.Enable`、`PictureFormat.ColorType`、`Shape.Fill`/`Line` 的 `ForeColor.RGB`、`Document.Range`；表格宽度另用 `PageSetup.TextColumns.Count`、`Cell.Width`/`RowIndex`/`NestingLevel`、`Rows.Alignment`/`LeftIndent`、`Application.CentimetersToPoints`。实际效果待实机核对，清单见 [V03-PLAN.md](V03-PLAN.md) 的排版工具部分。
 
 ## 占位框
 

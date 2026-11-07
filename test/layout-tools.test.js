@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { afterEach, test } from 'node:test';
 import { readFile } from 'node:fs/promises';
 import vm from 'node:vm';
-import { getLayoutScope, runLayoutOperation, spaceDeletions, LAYOUT_OPERATIONS } from '../public/layout-tools.js';
+import { getLayoutScope, runLayoutOperation, spaceDeletions, readTableWidth, LAYOUT_OPERATIONS } from '../public/layout-tools.js';
 
 const FULL_WIDTH_SPACE = String.fromCharCode(0x3000);
 afterEach(() => { delete globalThis.Application; });
@@ -79,9 +79,11 @@ function createHost(options = {}) {
     : {
       Start: 3, End: 3, StoryType: options.story ?? 1,
       Paragraphs: { Count: 1, Item: () => ({ Range: { ParagraphFormat: state.current, Paragraphs: { Count: 1 } } }) },
+      get Tables() { return collection(state.cursorTables ?? []); },
     };
   globalThis.Application = {
     Documents: { Count: options.noDocument ? 0 : 1 },
+    CentimetersToPoints: value => value * 72 / 2.54,
     ActiveDocument: doc,
     Selection: { Range: selectionRange },
     UndoRecord: {
@@ -106,7 +108,7 @@ test('作用范围：未选中内容为全文，选中时只作用于所选内�
     assert.equal(state.undo.length, 0, '不可编辑时不开始撤销记录');
   }
   assert.throws(() => runLayoutOperation('unknown'), /未知/);
-  assert.equal(LAYOUT_OPERATIONS.length, 10);
+  assert.equal(LAYOUT_OPERATIONS.length, 14, '一键排版 10 项、表格宽度与 3 种表格对齐');
 });
 
 test('清除空格：删除全角与首尾空格，英文或数字之间保留一个半角空格', () => {
@@ -235,4 +237,73 @@ test('功能区排版工具打开独立任务窗格并复用，不影响素材�
   context.OpenLayoutTools();
   assert.deepEqual(panes.map(pane => pane.url), ['http://127.0.0.1:39831/format.html', 'http://127.0.0.1:39831/taskpane.html']);
   assert.ok(panes.every(pane => pane.Visible && pane.DockPosition === 2));
+});
+
+function widthTable({ rows, columns = 1, nested = [] }) {
+  const cells = [];
+  rows.forEach((widths, index) => widths.forEach(width => cells.push({ Width: width, RowIndex: index + 1, NestingLevel: 1 })));
+  for (const width of nested) cells.push({ Width: width, RowIndex: 1, NestingLevel: 2 });
+  return {
+    NestingLevel: 1, PreferredWidthType: 1, PreferredWidth: 0, Rows: { Alignment: 0, LeftIndent: 12 },
+    Range: { Cells: collection(cells), PageSetup: { TextColumns: { Count: columns } } }, cells,
+  };
+}
+const rowSum = (table, row) => table.cells.filter(cell => cell.RowIndex === row && cell.NestingLevel === 1).reduce((sum, cell) => sum + cell.Width, 0);
+const near = (actual, expected, message) => assert.ok(Math.abs(actual - expected) < 0.05, `${message}：${actual} ≈ ${expected}`);
+
+test('表格宽度：按一栏或多栏的目标宽度逐行等比缩放，已符合与读不出宽度的表格不动', () => {
+  const state = createHost();
+  const single = widthTable({ rows: [[100, 200], [150, 150]], nested: [50] });
+  const multi = widthTable({ rows: [[120, 120]], columns: 2 });
+  const fitted = widthTable({ rows: [[425.2]] });
+  const unknown = widthTable({ rows: [[9999999, 100]] });
+  state.tables.push(single, multi, fitted, unknown);
+  const result = runLayoutOperation('standardizeWidths', { singleCm: 15, multiCm: 7 });
+  const singleTarget = 15 * 72 / 2.54;
+  const multiTarget = 7 * 72 / 2.54;
+  near(rowSum(single, 1), singleTarget, '一栏表格第 1 行');
+  near(rowSum(single, 2), singleTarget, '一栏表格第 2 行');
+  near(single.cells[1].Width / single.cells[0].Width, 2, '列宽比例保持');
+  assert.equal(single.cells[4].Width, 50, '嵌套表格的单元格不动');
+  assert.equal(single.PreferredWidthType, 3);
+  near(single.PreferredWidth, singleTarget, '首选宽度');
+  near(rowSum(multi, 1), multiTarget, '多栏表格');
+  assert.deepEqual([fitted.cells[0].Width, fitted.PreferredWidthType], [425.2, 1], '已符合目标宽度的表格不改');
+  assert.deepEqual(unknown.cells.map(cell => cell.Width), [9999999, 100], '读不出宽度的表格不改');
+  assert.equal(result.message, '表格宽度：已调整 2 个表格（一栏 1、多栏 1）；已符合 1 个；无法读取宽度 1 个');
+  assert.deepEqual(state.undo, [['start', 'iPeiTu 排版：表格宽度'], ['end']]);
+});
+
+test('目标宽度无效时在开始撤销记录前拒绝', () => {
+  const state = createHost();
+  for (const options of [undefined, {}, { singleCm: 0.5, multiCm: 7 }, { singleCm: 15, multiCm: 61 }, { singleCm: '15', multiCm: 7 }, { singleCm: NaN, multiCm: 7 }]) {
+    assert.throws(() => runLayoutOperation('standardizeWidths', options), /1–60 厘米/);
+  }
+  assert.equal(state.undo.length, 0);
+});
+
+test('表格对齐通过行集合整体设置，左对齐时清零左缩进', () => {
+  let state = createHost();
+  const tables = [widthTable({ rows: [[100]] }), widthTable({ rows: [[100]] })];
+  state.tables.push(...tables);
+  assert.equal(runLayoutOperation('alignTablesCenter').message, '表格居中：已处理 2 个表格');
+  assert.deepEqual(tables.map(table => [table.Rows.Alignment, table.Rows.LeftIndent]), [[1, 12], [1, 12]]);
+  runLayoutOperation('alignTablesLeft');
+  assert.deepEqual(tables.map(table => [table.Rows.Alignment, table.Rows.LeftIndent]), [[0, 0], [0, 0]]);
+  runLayoutOperation('alignTablesRight');
+  assert.deepEqual(tables.map(table => table.Rows.Alignment), [2, 2]);
+  state = createHost();
+  assert.equal(runLayoutOperation('alignTablesRight').message, '表格右对齐：没有需要处理的内容');
+});
+
+test('读取当前表格：返回最宽一行的厘米数和是否多栏，不在表格或宽度不确定时说明原因', () => {
+  assert.throws(() => readTableWidth(), /WPS 文字/);
+  const state = createHost();
+  assert.throws(() => readTableWidth(), /光标放在/);
+  state.cursorTables = [widthTable({ rows: [[100, 200], [150, 160]] })];
+  assert.deepEqual(readTableWidth(), { widthCm: 10.9, multiColumn: false });
+  state.cursorTables = [widthTable({ rows: [[198.4]], columns: 2 })];
+  assert.deepEqual(readTableWidth(), { widthCm: 7, multiColumn: true });
+  state.cursorTables = [widthTable({ rows: [[9999999]] })];
+  assert.throws(() => readTableWidth(), /无法读取/);
 });
