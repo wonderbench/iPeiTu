@@ -4,7 +4,7 @@
 
 ## 启动与注册
 
-日常使用双击项目目录中的“安装.cmd”，它依次检查 Node.js、安装依赖、调用 `scripts/install-wps.ps1` 注册加载项、在当前用户注册表的自动启动项（`HKCUSoftwareMicrosoftWindowsCurrentVersionRun` 下的 `iPeiTu`）中写入启动命令，并启动服务。服务由 `scripts/service.ps1` 管理：
+日常使用双击项目目录中的“安装.cmd”，它依次检查 Node.js、安装依赖、调用 `scripts/install-wps.ps1` 注册加载项、在当前用户注册表的自动启动项（`HKCU\Software\Microsoft\Windows\CurrentVersion\Run` 下的 `iPeiTu`）中写入启动命令，并启动服务。服务由 `scripts/service.ps1` 管理：
 
 - 启动：先请求 `/api/health`，已是 iPeiTu 时不再启动；端口被其他程序监听时报告进程名并退出（退出码 2）；否则经 WMI（`Win32_Process.Create`，隐藏窗口）启动 `node server\index.js --port … --data-dir … --log …`，进程与安装窗口及调用方没有句柄继承关系；服务自己把日志追加到 `%LOCALAPPDATA%\iPeiTu\logs\service-端口.log`，健康检查通过后把进程号写入 `service-端口.json`。
 - 停止：候选进程来自健康检查和状态文件，只有命令行包含本目录 `server\index.js` 的进程才会结束；其他进程报告“不是本目录启动的 iPeiTu 服务”并保留。
