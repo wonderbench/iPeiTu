@@ -4,7 +4,14 @@
 
 ## 启动与注册
 
-在项目目录先安装依赖并启动本地服务：
+日常使用双击项目目录中的“安装.cmd”，它依次检查 Node.js、安装依赖、调用 `scripts/install-wps.ps1` 注册加载项、在当前用户的启动文件夹放入“iPeiTu 本地图库”快捷方式，并启动服务。服务由 `scripts/service.ps1` 管理：
+
+- 启动：先请求 `/api/health`，已是 iPeiTu 时不再启动；端口被其他程序监听时报告进程名并退出（退出码 2）；否则经 `Start-Process` 隐藏启动 `node server\index.js`，输出追加到 `%LOCALAPPDATA%\iPeiTu\logs\service-端口.log`，健康检查通过后把进程号写入 `service-端口.json`。
+- 停止：候选进程来自健康检查和状态文件，只有命令行包含本目录 `server\index.js` 的进程才会结束；其他进程报告“不是本目录启动的 iPeiTu 服务”并保留。
+- 卸载（`scripts/remove.ps1`）：停止服务，只删除参数指向本目录 `service.ps1` 的自动启动快捷方式，再调用 `scripts/uninstall-wps.ps1`；图库目录不动。
+- 三个脚本都支持 `-ConfigDirectory`、`-StartupDirectory`、`-StateDirectory`、`-Port`，自动化测试用临时目录和临时端口运行，不触碰真实配置。
+
+开发时也可以手动启动。在项目目录先安装依赖并启动本地服务：
 
 ```powershell
 npm ci

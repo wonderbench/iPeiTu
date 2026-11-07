@@ -13,6 +13,11 @@
     "test": "node --test test/*.test.js",
     "test:ui": "node scripts/verify-ui.mjs",
     "check": "node --check server/index.js && node --check server/library.js && node --check server/import-jobs.js && node --check server/image-density.js && node --check server/insertion-quality.js && node --check server/placeholder.js && node --check server/fit.js && node --check server/http.js && node --check public/main.js && node --check public/app.js && node --check public/import-controller.js && node --check public/box-controller.js && node --check public/wps-bridge.js && node --check public/layout-options.js && node --check public/layout-preferences.js && node --check public/layout-tools.js && node --check public/format.js && node --check public/placeholder-options.js",
+    "setup": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/setup.ps1",
+    "remove": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/remove.ps1",
+    "service:start": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/service.ps1 -Action start",
+    "service:stop": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/service.ps1 -Action stop",
+    "service:status": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/service.ps1 -Action status",
     "wps:install": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/install-wps.ps1",
     "wps:uninstall": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/uninstall-wps.ps1"
   },
