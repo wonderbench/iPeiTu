@@ -8,6 +8,9 @@ import { Placeholders } from './placeholder.js';
 import { Fitter } from './fit.js';
 
 const defaultPublicDirectory = fileURLToPath(new URL('../public/', import.meta.url));
+// 健康检查用于识别端口上是不是 iPeiTu，以及是不是本目录启动的服务。
+const appRoot = fileURLToPath(new URL('..', import.meta.url)).replace(/[\\/]$/, '');
+const { version } = JSON.parse(await readFile(new URL('../package.json', import.meta.url), 'utf8'));
 const contentTypes = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8',
   '.css': 'text/css; charset=utf-8', '.xml': 'application/xml; charset=utf-8', '.json': 'application/json; charset=utf-8',
   '.png': 'image/png', '.svg': 'image/svg+xml', '.ico': 'image/x-icon', '.jpeg': 'image/jpeg', '.jpg': 'image/jpeg' };
@@ -141,6 +144,9 @@ export async function createServer({ dataDirectory, publicDirectory = defaultPub
         const image = await readFile(file.path);
         response.writeHead(200, { 'Content-Type': file.type, 'Content-Length': image.length });
         response.end(image);
+      } else if (request.method === 'GET' && url.pathname === '/api/health') {
+        validateParameters(url.searchParams, []);
+        json(response, 200, { service: 'iPeiTu', version, pid: process.pid, root: appRoot });
       } else if (url.pathname.startsWith('/api/')) {
         throw new LibraryError('接口不存在', 404);
       } else if (request.method === 'GET' || request.method === 'HEAD') {
@@ -179,4 +185,16 @@ export async function startServer({ port = 39831, ...options } = {}) {
     result.server.listen(port, '127.0.0.1', resolve);
   });
   return result;
+}
+
+// 端口被占用时判断占用者是否为 iPeiTu；无法连接或不是 iPeiTu 时返回 null。
+export async function probeService(port, timeoutMs = 1500) {
+  try {
+    const response = await fetch(`http://127.0.0.1:${port}/api/health`, { signal: AbortSignal.timeout(timeoutMs) });
+    if (!response.ok) return null;
+    const data = await response.json();
+    return data?.service === 'iPeiTu' ? data : null;
+  } catch {
+    return null;
+  }
 }
