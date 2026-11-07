@@ -52,6 +52,8 @@ function Start-IPeiTu {
     $owner = Get-PortOwner
     if ($owner) {
         Write-Host "端口 $Port 已被 $($owner)占用，iPeiTu 未启动。请关闭该程序后重试。"
+        # 旧版本没有健康检查接口，会被识别为其他程序；最常见的是以前手动运行 npm start 的窗口。
+        if ($owner -like 'node*') { Write-Host '如果这是以前手动运行 npm start 的窗口，请在该窗口按 Ctrl+C 关闭后再运行。' }
         return 2
     }
     $node = Get-Command node -ErrorAction SilentlyContinue
@@ -113,7 +115,7 @@ function Stop-IPeiTu {
             Stop-Process -Id $id -Force
             $stopped++
         } else {
-            Write-Host "进程 $id 不是本目录启动的 iPeiTu 服务，未停止。"
+            Write-Host "进程 $id 不是本目录启动的 iPeiTu 服务，未停止。如果是手动运行 npm start 的窗口，请在该窗口按 Ctrl+C 关闭。"
             $refused++
         }
     }
