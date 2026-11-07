@@ -1,7 +1,7 @@
 import {
   captureInsertionTarget, getHostStatus, insertPicture,
   getReplacementStatus, captureReplacementTarget, replacePicture,
-  getFillStatus, captureFillTarget, fillPlaceholder, FIT_MODES,
+  getFillStatus, captureFillTarget, fillPlaceholder, FIT_MODES, selectNextEmptyPlaceholder,
 } from './wps-bridge.js';
 import { normalizeLayoutOptions, normalizeQualityProfile } from './layout-options.js';
 import { loadLayoutPreferences, saveLayoutPreferences } from './layout-preferences.js';
@@ -31,7 +31,9 @@ const ui = Object.fromEntries([
   'selectedSpec', 'selectedCategories', 'selectedTags',
   'toggleBoxes', 'boxPanel', 'boxForm', 'boxName', 'boxSize', 'boxCustomSize', 'boxWidthCm',
   'boxHeightCm', 'boxError', 'insertBox', 'boxCount', 'scanBoxes', 'boxList',
-  'fillBar', 'fillTarget', 'fitMode', 'searchBoxName',
+  'fillBar', 'fillTarget', 'fitMode', 'searchBoxName', 'ratioSort',
+  'unfilledOnly', 'findMarkers', 'clearMarkers', 'markerResult', 'markerSummary', 'markerList',
+  'convertMarkers', 'clearMarkersDialog', 'clearMarkersText',
 ].map((id) => [id, element(id)]));
 
 function icon(name) {
@@ -51,6 +53,18 @@ let inserting = false;
 let replacing = false;
 let replacementAvailable = false;
 let fillTarget = { available: false };
+// 比例接近优先：手动开启，只在选中占位框时生效；关闭时恢复图库原顺序。
+let ratioSort = false;
+let sortKey = '';
+let libraryOrder = new Map();
+
+function orderAssets(assets) {
+  const ordered = [...assets].sort((a, b) => (libraryOrder.get(a.id) ?? 0) - (libraryOrder.get(b.id) ?? 0));
+  if (!ratioSort || !fillTarget.available) return ordered;
+  const target = Math.log(fillTarget.widthPt / fillTarget.heightPt);
+  const distance = asset => Math.abs(Math.log(asset.width / asset.height) - target);
+  return ordered.sort((a, b) => distance(a) - distance(b)); // 稳定排序，比例相同时保持原顺序
+}
 const FIT_STORAGE_KEY = 'ipeitu.fit.v1';
 const centimeters = points => (points * 2.54 / 72).toFixed(1);
 let requestVersion = 0;
@@ -281,6 +295,13 @@ function refreshHost() {
   ui.replaceButton.disabled = !selected || !replacementAvailable || inserting || replacing || changingTrash || trashed;
   refreshAddButtons();
   boxes?.refresh({ available: hostAvailable, busy: inserting || replacing || changingTrash, inWps });
+  ui.ratioSort.setAttribute('aria-pressed', String(ratioSort));
+  // 只在开关或目标框比例变化时重排，避免窗格刷新时卡片跳动。
+  const key = ratioSort && fillTarget.available ? (fillTarget.widthPt / fillTarget.heightPt).toFixed(3) : '';
+  if (key !== sortKey) {
+    sortKey = key;
+    renderAssets(orderAssets(visibleAssets));
+  }
 }
 
 async function recordSuccessfulUse(asset, action) {
@@ -292,10 +313,11 @@ async function recordSuccessfulUse(asset, action) {
     if (selected?.id === asset.id) selected = { ...selected, lastInsertedAt: updated.lastInsertedAt };
   } catch {
     showAction(`图片已${action}，但最近记录未保存`, true);
-    return;
+    return false;
   }
   if (libraryView === 'recent') await loadLibrary();
   showAction(`已${action}「${asset.name}」`);
+  return true;
 }
 
 function selectAsset(asset) {
@@ -460,7 +482,16 @@ async function insertAsset(candidate) {
       const image = await request(`/api/assets/${encodeURIComponent(asset.id)}/fit?${parameters}`);
       fillPlaceholder(image, target, { asset: asset.id, fit });
       showAction(`已填入占位框「${target.name}」`);
-      await recordSuccessfulUse(asset, '填入');
+      const recorded = await recordSuccessfulUse(asset, '填入');
+      // 连续配图：选中下一个空框，“+”继续填入。定位失败不影响已完成的填入。
+      let next;
+      let nextError = '';
+      try { next = selectNextEmptyPlaceholder(target.start); } catch (error) { nextError = error.message; }
+      if (recorded) {
+        showAction(next ? `已填入「${target.name}」，下一个空框「${next.name}」`
+          : next === null ? `已填入「${target.name}」，文档中的占位框已全部填入`
+            : `已填入「${target.name}」；未能定位下一个空框：${nextError}`, !next && next !== null);
+      }
       boxes?.refreshList();
     } else {
       const options = insertionOptions();
@@ -496,7 +527,8 @@ async function loadLibrary() {
     if (version !== requestVersion) return;
     libraryFacets = data.facets;
     ui.openFilters.disabled = false;
-    renderAssets(data.assets);
+    libraryOrder = new Map(data.assets.map((asset, index) => [asset.id, index]));
+    renderAssets(orderAssets(data.assets));
     ui.resultCount.textContent = query || hasFilters() ? `${data.assets.length} / ${data.viewTotal} 张` : `${data.viewTotal} 张`;
     ui.libraryState.hidden = data.assets.length > 0;
     if (!data.assets.length) {
@@ -859,6 +891,10 @@ ui.searchBoxName.addEventListener('click', () => {
   if (!fillTarget.available) return;
   ui.searchInput.value = fillTarget.name;
   scheduleSearch();
+});
+ui.ratioSort.addEventListener('click', () => {
+  ratioSort = !ratioSort;
+  refreshHost();
 });
 try {
   const savedFit = localStorage.getItem(FIT_STORAGE_KEY);

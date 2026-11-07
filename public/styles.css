@@ -123,6 +123,14 @@ h1 { min-width: 0; overflow: hidden; color: var(--text-muted); font-size: 13px; 
 .box-name { flex: 1; min-width: 0; overflow: hidden; font-size: 13px; line-height: 20px; white-space: nowrap; text-overflow: ellipsis; }
 .box-size { flex: none; color: var(--text-muted); font-size: 12px; line-height: 20px; }
 .box-filled { flex: none; color: var(--accent); font-size: 12px; line-height: 20px; }
+.box-list-actions { display: flex; flex: none; gap: 4px; }
+.toggle-text[aria-pressed="true"] { background: var(--raised-strong); color: var(--accent); font-weight: 500; }
+.box-tools { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
+.box-tools .button { min-height: 32px; padding: 4px 12px; }
+.marker-result { display: grid; gap: 8px; margin-top: 12px; padding-top: 8px; border-top: 1px solid var(--line); }
+.marker-result .button { justify-self: start; }
+.marker-list { display: grid; gap: 4px; max-height: 160px; margin: 0; padding-left: 20px; overflow: auto; font-size: 13px; line-height: 20px; }
+.marker-list:empty { display: none; }
 
 /* 检索与视图：滚动时留在图库上方 */
 .library-tools {
@@ -250,8 +258,8 @@ h1 { min-width: 0; overflow: hidden; color: var(--text-muted); font-size: 13px; 
 /* 选中占位框时：目标框与适配方式，“+”改为填入 */
 .fill-bar { display: grid; gap: 8px; padding: 8px; border: 1px solid var(--accent); border-radius: 8px; background: var(--card); }
 .fill-target { min-width: 0; overflow: hidden; color: var(--text); font-size: 13px; line-height: 20px; white-space: nowrap; text-overflow: ellipsis; }
-.fill-options { display: flex; align-items: center; gap: 8px; }
-.fill-options select { flex: 1; min-height: 32px; padding: 4px 8px; }
+.fill-options { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; }
+.fill-options select { flex: 1 1 100%; min-height: 32px; padding: 4px 8px; }
 .fill-options .text-button { flex: none; font-size: 12px; line-height: 20px; }
 .document-actions { display: grid; grid-template-columns: minmax(0, 1fr); gap: 8px; }
 .document-actions .button, #restoreButton { min-width: 0; min-height: 40px; }
