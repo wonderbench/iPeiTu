@@ -12,7 +12,10 @@ const MIN_BOX_PT = 14;
 const MAX_BOX_PT = 1440;
 const PLACEHOLDER_PREFIX = 'iPeiTu-box:1:';
 const LOCAL_PATH = /^(?:[a-z]:[\\/]|\\\\[^\\]+\\[^\\]+)/i;
+const ASSET_ID = /^[a-f0-9]{64}$/;
+export const FIT_MODES = ['cover', 'fill', 'contain'];
 const replacementTargets = new WeakMap();
+const fillTargets = new WeakMap();
 
 function editableDocument(app, action = '插入') {
   if (!app) throw new Error('请在 WPS 文字中打开 iPeiTu 素材库');
@@ -359,8 +362,9 @@ export function replacePicture(asset, expectedTarget) {
 }
 
 // 占位框：一张内嵌占位图，AlternativeText 中写入带版本的标记，便于扫描和后续填入。
-export function placeholderMarker(name) {
-  return `${PLACEHOLDER_PREFIX}${JSON.stringify({ name })}`;
+// 已填的框额外记录素材 ID 与适配方式，框名不变，可以再次换图。
+export function placeholderMarker(name, filled) {
+  return `${PLACEHOLDER_PREFIX}${JSON.stringify(filled ? { name, asset: filled.asset, fit: filled.fit } : { name })}`;
 }
 
 export function parsePlaceholderMarker(text) {
@@ -368,6 +372,9 @@ export function parsePlaceholderMarker(text) {
   let value;
   try { value = JSON.parse(text.slice(PLACEHOLDER_PREFIX.length)); } catch { return null; }
   if (!value || typeof value !== 'object' || Array.isArray(value) || typeof value.name !== 'string' || !value.name) return null;
+  if (typeof value.asset === 'string' && ASSET_ID.test(value.asset) && FIT_MODES.includes(value.fit)) {
+    return { name: value.name, asset: value.asset, fit: value.fit };
+  }
   return { name: value.name };
 }
 
@@ -538,7 +545,7 @@ export function scanPlaceholders() {
       continue;
     }
     if (!marker) continue;
-    boxes.push({ index, name: marker.name, start: shape.Range.Start, widthPt: shape.Width, heightPt: shape.Height });
+    boxes.push({ index, name: marker.name, start: shape.Range.Start, widthPt: shape.Width, heightPt: shape.Height, filled: Boolean(marker.asset) });
   }
   return { document: doc.FullName, boxes, unreadable };
 }
@@ -554,4 +561,137 @@ export function selectPlaceholder(scan, box) {
   const marker = parsePlaceholderMarker(shape.AlternativeText);
   if (!marker || marker.name !== box.name || range.Start !== box.start) throw stale('文档已变化，已重新扫描');
   range.Select();
+}
+
+// 填入占位框：沿用替换的安全顺序（先插入新图并核对，再删除原框），但按框的宽高精确设定并保留标记。
+// 替换流程已有实机验收，这里不改动它。
+function fillSelection() {
+  const selected = replacementSelection();
+  let marker;
+  try { marker = parsePlaceholderMarker(selected.picture.AlternativeText); } catch { marker = null; }
+  if (!marker) throw new Error('选中的图片不是占位框');
+  return { ...selected, snapshot: { ...selected.snapshot, name: marker.name } };
+}
+
+export function getFillStatus() {
+  try {
+    const { snapshot } = fillSelection();
+    return { available: true, name: snapshot.name, widthPt: snapshot.width, heightPt: snapshot.height };
+  } catch {
+    return { available: false };
+  }
+}
+
+export function captureFillTarget() {
+  try {
+    const { picture, snapshot } = fillSelection();
+    const target = Object.freeze({ ...snapshot });
+    fillTargets.set(target, { picture, snapshot });
+    return target;
+  } catch (cause) {
+    throw new Error(`无法记录占位框：${cause.message || '请重新选中占位框'}`);
+  }
+}
+
+export function fillPlaceholder(image, expectedTarget, filled) {
+  let picture;
+  let adding = false;
+  let removedNewPicture = false;
+  let deleteAttempted = false;
+  let done = false;
+  let resultUncertain = false;
+  let undoRecord;
+  let failure;
+  let result;
+  try {
+    if (!image || typeof image.path !== 'string' || !LOCAL_PATH.test(image.path)) {
+      throw new Error('图片路径无效，请从本地素材库重新选择图片');
+    }
+    if (!filled || typeof filled.asset !== 'string' || !ASSET_ID.test(filled.asset) || !FIT_MODES.includes(filled.fit)) {
+      throw new Error('填入的素材或适配方式无效');
+    }
+    const captured = expectedTarget && fillTargets.get(expectedTarget);
+    if (!captured) throw new Error('占位框目标已失效，请重新选中占位框');
+    fillTargets.delete(expectedTarget);
+    const { app, snapshot } = fillSelection();
+    if (Object.keys(snapshot).some(key => snapshot[key] !== captured.snapshot[key])) {
+      throw new Error('当前文档、选区或占位框已改变，请重新选中占位框');
+    }
+    const original = captured.picture;
+    const originalRange = original.Range;
+    if (originalRange.Start !== snapshot.start || originalRange.End !== snapshot.end || originalRange.StoryType !== snapshot.story
+      || original.Type !== snapshot.type || original.Width !== snapshot.width || original.Height !== snapshot.height) {
+      throw new Error('占位框已改变，请重新选中');
+    }
+    const font = originalRange.Font.Duplicate;
+    const range = originalRange.Duplicate;
+    range.Collapse(COLLAPSE_START);
+    app.UndoRecord.StartCustomRecord('iPeiTu 填入占位框');
+    undoRecord = app.UndoRecord;
+    adding = true;
+    picture = range.InlineShapes.AddPicture(image.path, false, true, range);
+    if (!(Number.isFinite(picture.Width) && picture.Width > 0 && Number.isFinite(picture.Height) && picture.Height > 0)) {
+      throw new Error('WPS 返回的图片尺寸无效');
+    }
+    picture.LockAspectRatio = UNLOCK_ASPECT_RATIO;
+    picture.Width = snapshot.width;
+    picture.Height = snapshot.height;
+    picture.LockAspectRatio = LOCK_ASPECT_RATIO;
+    if (!(Math.abs(picture.Width - snapshot.width) <= 0.1 && Math.abs(picture.Height - snapshot.height) <= 0.1)) {
+      throw new Error('WPS 未能按占位框尺寸设置图片');
+    }
+    const marker = placeholderMarker(snapshot.name, filled);
+    picture.AlternativeText = marker;
+    if (picture.AlternativeText !== marker) throw new Error('WPS 未能保存占位框标记');
+    picture.Range.Font = font;
+    // 此时原框已经向后移动。只删除原 COM 对象，绝不删除捕获时的数值范围。
+    const shiftedOriginal = original.Range;
+    const insertedRange = picture.Range;
+    if (insertedRange.Start !== snapshot.start || shiftedOriginal.Start !== insertedRange.End
+      || shiftedOriginal.End - shiftedOriginal.Start !== snapshot.end - snapshot.start
+      || shiftedOriginal.StoryType !== snapshot.story) {
+      throw new Error('无法确认占位框在插入后的准确位置，已停止填入');
+    }
+    deleteAttempted = true;
+    original.Delete();
+    done = true;
+    const after = picture.Range.Duplicate;
+    after.Collapse(COLLAPSE_END);
+    after.Select();
+    result = { name: snapshot.name, asset: image.name, widthPt: picture.Width, heightPt: picture.Height };
+  } catch (cause) {
+    failure = cause;
+    if (picture && !deleteAttempted) {
+      try {
+        picture.Delete();
+        removedNewPicture = true;
+      } catch (cleanupError) {
+        resultUncertain = true;
+        failure = new Error(`${cause.message}；无法确认新增图片已移除：${cleanupError.message}`);
+      }
+    } else if ((adding && !picture) || (deleteAttempted && !done)) {
+      resultUncertain = true;
+    }
+  }
+  if (undoRecord) {
+    try { undoRecord.EndCustomRecord(); } catch (cause) {
+      failure = new Error(`${failure ? `${failure.message}；` : ''}无法完成本次撤销记录：${cause.message}`);
+    }
+  }
+  if (failure) {
+    const detail = failure.message ? `（${failure.message}）` : '';
+    let message;
+    if (done) message = `图片已填入，但光标定位或撤销记录未完成${detail}。请检查文档，不要重复填入`;
+    else if (deleteAttempted) message = `新图已插入，但无法确认原占位框是否已删除${detail}。请检查文档，不要重复填入；需要时撤销本次操作`;
+    else if (removedNewPicture) message = `填入未完成，占位框已保留，新增图片已移除${detail}`;
+    else if (adding) message = `占位框尚未删除，但无法确认新增图片的最终状态${detail}。请检查文档，不要重复填入；需要时撤销本次操作`;
+    else message = `填入已中止${detail}`;
+    const error = new Error(message);
+    error.inserted = Boolean(picture) && !removedNewPicture;
+    error.filled = done;
+    error.resultUncertain = resultUncertain;
+    error.cause = failure;
+    throw error;
+  }
+  return result;
 }

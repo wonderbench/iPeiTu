@@ -5,6 +5,7 @@ import { fileURLToPath } from 'node:url';
 import { Library, LibraryError, MAX_IMAGE_BYTES } from './library.js';
 import { ImportJobs } from './import-jobs.js';
 import { Placeholders } from './placeholder.js';
+import { Fitter } from './fit.js';
 
 const defaultPublicDirectory = fileURLToPath(new URL('../public/', import.meta.url));
 const contentTypes = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8',
@@ -69,6 +70,7 @@ export async function createServer({ dataDirectory, publicDirectory = defaultPub
   const library = await Library.open(dataDirectory);
   const jobs = new ImportJobs(library);
   const placeholders = new Placeholders(library.directory);
+  const fitter = new Fitter(library);
   const publicRoot = path.resolve(publicDirectory);
   const server = http.createServer(async (request, response) => {
     response.setHeader('X-Content-Type-Options', 'nosniff');
@@ -124,6 +126,9 @@ export async function createServer({ dataDirectory, publicDirectory = defaultPub
         if (request.headers['content-type']?.split(';')[0] !== 'application/octet-stream') throw new LibraryError('图片上传需要 application/octet-stream', 415);
         validateParameters(url.searchParams, ['name', 'category']);
         json(response, 200, await library.importFile(url.searchParams.get('name'), await body(request, MAX_IMAGE_BYTES), url.searchParams.get('category') ?? undefined));
+      } else if (request.method === 'GET' && /^\/api\/assets\/[a-f0-9]{64}\/fit$/.test(url.pathname)) {
+        validateParameters(url.searchParams, ['mode', 'widthPt', 'heightPt', 'profile']);
+        json(response, 200, await fitter.create(url.pathname.split('/')[3], Object.fromEntries(url.searchParams)));
       } else if (request.method === 'GET' && /^\/api\/assets\/[a-f0-9]{64}\/insertion$/.test(url.pathname)) {
         validateParameters(url.searchParams, ['profile']);
         json(response, 200, await library.insertion(url.pathname.split('/')[3], url.searchParams.get('profile') ?? 'original'));

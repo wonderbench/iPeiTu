@@ -183,6 +183,18 @@
             </button>
           </div>
         </div>
+        <div id="fillBar" class="fill-bar" hidden>
+          <p id="fillTarget" class="fill-target"></p>
+          <div class="fill-options">
+            <label class="visually-hidden" for="fitMode">适配方式</label>
+            <select id="fitMode">
+              <option value="cover">裁切填满</option>
+              <option value="fill">拉伸填满</option>
+              <option value="contain">完整显示</option>
+            </select>
+            <button id="searchBoxName" class="text-button" type="button">按框名检索</button>
+          </div>
+        </div>
         <div id="documentActions" class="document-actions" hidden>
           <button id="replaceButton" class="button secondary" type="button" disabled>替换选中图</button>
         </div>
