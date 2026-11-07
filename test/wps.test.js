@@ -6,7 +6,10 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import vm from 'node:vm';
-import { captureInsertionTarget, getHostStatus, insertPicture, captureReplacementTarget, getReplacementStatus, replacePicture } from '../public/wps-bridge.js';
+import {
+  captureInsertionTarget, getHostStatus, insertPicture, captureReplacementTarget, getReplacementStatus, replacePicture,
+  capturePlaceholderTarget, insertPlaceholder, scanPlaceholders, selectPlaceholder, placeholderMarker, parsePlaceholderMarker,
+} from '../public/wps-bridge.js';
 import { normalizeLayoutOptions } from '../public/layout-options.js';
 
 const asset = { path: 'C:\\素材库\\沟槽 开挖.png', name: '沟槽 开挖.png', width: 1600, height: 900 };
@@ -16,8 +19,8 @@ function createHost(options = {}) {
   const state = { text: options.text ?? '开头需要保留的文字结尾', start: options.start ?? 2, end: options.end ?? 9, story: 1, pictures: [], calls: [], undoStarted: 0, undoEnded: 0 };
   const originalFormat = { Alignment: 3, LeftIndent: 12, RightIndent: 8, FirstLineIndent: 24, LineSpacingRule: 4, KeepWithNext: 0, ...options.format };
   state.paragraphs = state.text.split('\r').map(() => ({ style: options.style ?? '标书正文', format: { ...originalFormat }, numbered: Boolean(options.numbered) }));
-  const page = { PageWidth: 600, LeftMargin: 60, RightMargin: 60, ...options.page };
-  const cell = { Width: 220, LeftPadding: 10, RightPadding: 10, ...options.cell };
+  const page = { PageWidth: 600, LeftMargin: 60, RightMargin: 60, PageHeight: 800, TopMargin: 72, BottomMargin: 72, ...options.page };
+  const cell = { Width: 220, LeftPadding: 10, RightPadding: 10, Height: 180, HeightRule: 2, TopPadding: 5, BottomPadding: 5, ...options.cell };
   function makePicture(position, initialWidth, initialHeight, original = false, type = 3) {
     let width = initialWidth;
     let height = initialHeight;
@@ -32,6 +35,13 @@ function createHost(options = {}) {
         width = value;
       },
       get Height() { return height; },
+      set Height(value) {
+        if (this.LockAspectRatio === -1 && !options.ignoreAspectRatio) width *= value / height;
+        height = value;
+      },
+      altText: '',
+      get AlternativeText() { return options.altTextDropped ? '' : this.altText; },
+      set AlternativeText(value) { this.altText = value; },
       get Range() {
         if (this.deleted) throw new Error('original object deleted');
         const at = this.original && options.staleOriginalRange ? options.originalPictures[0].position : this.position;
@@ -156,6 +166,12 @@ function createHost(options = {}) {
   for (const original of options.originalPictures || []) {
     state.pictures.push(makePicture(original.position, original.width ?? 240, original.height ?? 120, true, original.type ?? 3));
   }
+  Object.defineProperty(app.ActiveDocument, 'InlineShapes', {
+    get() {
+      const ordered = [...state.pictures].sort((a, b) => a.position - b.position);
+      return { Count: ordered.length, Item: index => ordered[index - 1] };
+    },
+  });
   globalThis.Application = app;
   return { app, state };
 }
@@ -779,4 +795,140 @@ test('注册与重复卸载只还原本次插件，保留旧注册和其他插�
   run('install', fresh);
   run('uninstall', fresh);
   assert.doesNotMatch(await readFile(path.join(fresh, 'publish.xml'), 'utf8'), /name="iPeiTu"/);
+});
+
+const boxImage = { path: 'C:\\图库\\placeholders\\box.png' };
+const box = (overrides = {}) => ({ name: '脚手架搭设', size: 'fixed', widthCm: 12, heightCm: 9, ...overrides });
+
+test('占位框标记带版本，可往返解析，非标记和损坏内容不被当作框', () => {
+  assert.deepEqual(parsePlaceholderMarker(placeholderMarker('含"引号\\与斜杠')), { name: '含"引号\\与斜杠' });
+  for (const text of [undefined, '', '普通图片说明', 'iPeiTu-box:1:{broken', 'iPeiTu-box:1:[]', 'iPeiTu-box:1:{"name":""}', 'iPeiTu-box:2:{"name":"a"}']) {
+    assert.equal(parsePlaceholderMarker(text), null, String(text));
+  }
+});
+
+test('占位框尺寸：固定厘米、整行 4:3、超出版面时等比缩小', () => {
+  createHost();
+  const size = target => [target.widthPt, target.heightPt];
+  assert.deepEqual(size(capturePlaceholderTarget(box())), [340.1, 255.1]);
+  assert.deepEqual(size(capturePlaceholderTarget(box({ size: 'line' }))), [480, 360]);
+  assert.deepEqual(size(capturePlaceholderTarget(box({ widthCm: 30, heightCm: 20 }))), [480, 320], '超宽按页面内宽等比缩小');
+  assert.deepEqual(size(capturePlaceholderTarget(box({ widthCm: 10, heightCm: 40 }))), [164, 656], '超高按版面高度等比缩小');
+});
+
+test('填满单元格取单元格内部宽高，自动行高按 4:3，表格外明确拒绝', () => {
+  createHost({ inTable: true });
+  const cell = capturePlaceholderTarget(box({ size: 'cell' }));
+  assert.deepEqual([cell.widthPt, cell.heightPt], [200, 170]);
+  createHost({ inTable: true, cell: { HeightRule: 0 } });
+  const auto = capturePlaceholderTarget(box({ size: 'cell' }));
+  assert.deepEqual([auto.widthPt, auto.heightPt], [200, 150]);
+  createHost();
+  assert.throws(() => capturePlaceholderTarget(box({ size: 'cell' })), /不在表格单元格内/);
+});
+
+test('无效框名或尺寸在读取和写入文档前拒绝', () => {
+  const { state } = createHost();
+  for (const input of [null, {}, box({ name: '  ' }), box({ name: '换\n行' }), box({ name: '框'.repeat(101) }), box({ size: 'huge' }),
+    box({ widthCm: 0.4 }), box({ heightCm: 50.1 }), box({ widthCm: '12' }), box({ heightCm: NaN })]) {
+    assert.throws(() => capturePlaceholderTarget(input));
+  }
+  assert.equal(state.calls.length, 0);
+  assert.equal(state.undoStarted, 0);
+});
+
+test('正文中间插入占位框：独立成段、单倍行距、尺寸准确并写入标记，前后文字和样式保留', () => {
+  const { state } = createHost({ text: '前文后文\r', start: 2, end: 2 });
+  const result = insertPlaceholder(boxImage, capturePlaceholderTarget(box()));
+  assert.equal(state.text, '前文\r\uFFFC\r后文\r');
+  assert.deepEqual(state.calls, [{ path: boxImage.path, link: false, save: true, start: 2, end: 2 }]);
+  const [picture] = state.pictures;
+  assert.equal(picture.Width, 340.1);
+  assert.equal(picture.Height, 255.1);
+  assert.equal(picture.LockAspectRatio, -1);
+  assert.deepEqual(parsePlaceholderMarker(picture.altText), { name: '脚手架搭设' });
+  assert.deepEqual(result, { name: '脚手架搭设', widthPt: 340.1, heightPt: 255.1 });
+  const boxFormat = state.paragraphs[1].format;
+  assert.deepEqual([boxFormat.Alignment, boxFormat.LineSpacingRule, boxFormat.SpaceBefore, boxFormat.SpaceAfter], [1, 0, 0, 0]);
+  for (const index of [0, 2]) {
+    assert.equal(state.paragraphs[index].style, '标书正文');
+    assert.equal(state.paragraphs[index].format.LineSpacingRule, 4, '相邻正文保留固定行距');
+  }
+  assert.ok(state.text.slice(state.start).startsWith('后文'), '光标移到框后的正文');
+  assert.deepEqual([state.undoStarted, state.undoEnded], [1, 1]);
+  assert.deepEqual(scanPlaceholders().boxes.map(item => item.name), ['脚手架搭设']);
+});
+
+test('空单元格直接作为框所在段落，不多拆一段撑高表格行', () => {
+  const { state } = createHost({ text: '\r\u0007', start: 0, end: 0, inTable: true });
+  const paragraphsBefore = state.paragraphs.length;
+  insertPlaceholder(boxImage, capturePlaceholderTarget(box({ size: 'cell' })));
+  assert.equal(state.text, '\uFFFC\r\u0007');
+  assert.equal(state.paragraphs.length, paragraphsBefore, '没有新增段落');
+  assert.deepEqual([state.pictures[0].Width, state.pictures[0].Height], [200, 170]);
+  const format = state.paragraphs[0].format;
+  assert.deepEqual([format.Alignment, format.LineSpacingRule, format.SpaceBefore, format.SpaceAfter, format.FirstLineIndent], [1, 0, 0, 0, 0]);
+  assert.equal(state.start, 1);
+});
+
+test('WPS 未保存标记时移除新图并如实报告，不留下无法识别的框', () => {
+  const { state } = createHost({ text: '前文后文\r', start: 2, end: 2, altTextDropped: true });
+  assert.throws(() => insertPlaceholder(boxImage, capturePlaceholderTarget(box())), error => {
+    assert.match(error.message, /未插入.*已移除.*未能保存占位框标记/);
+    assert.equal(error.inserted, false);
+    return true;
+  });
+  assert.equal(state.text, '前文后文\r');
+  assert.equal(state.pictures.length, 0);
+  assert.deepEqual([state.undoStarted, state.undoEnded], [1, 1]);
+});
+
+test('等待占位图期间光标或文档变化时在写入前中止；无效路径与目标不交给 WPS', () => {
+  let { state } = createHost({ text: '前文后文\r', start: 2, end: 2 });
+  const target = capturePlaceholderTarget(box());
+  state.start = state.end = 3;
+  assert.throws(() => insertPlaceholder(boxImage, target), /已改变/);
+  ({ state } = createHost({ text: '前文后文\r', start: 2, end: 2 }));
+  const captured = capturePlaceholderTarget(box());
+  globalThis.Application.ActiveDocument.FullName = 'C:\\其他\\标书.docx';
+  assert.throws(() => insertPlaceholder(boxImage, captured), /已改变/);
+  for (const image of [null, { path: 'box.png' }, { path: 'https://example.com/box.png' }]) {
+    assert.throws(() => insertPlaceholder(image, captured), /路径无效/);
+  }
+  assert.throws(() => insertPlaceholder(boxImage, { ...captured, name: '' }), /目标无效/);
+  assert.throws(() => insertPlaceholder(boxImage, { ...captured, widthPt: 5 }), /目标无效/);
+  assert.equal(state.calls.length, 0);
+});
+
+test('扫描只列出带有效标记的框，读不出替代文字的对象单独计数，只读文档也能扫描', () => {
+  const { state } = createHost({
+    text: '甲\uFFFC乙\uFFFC丙\uFFFC丁\uFFFC\r', document: { ReadOnly: true },
+    originalPictures: [{ position: 1 }, { position: 3 }, { position: 5 }, { position: 7 }],
+  });
+  state.pictures[0].altText = placeholderMarker('甲框');
+  state.pictures[1].altText = '普通图片说明';
+  state.pictures[2].altText = 'iPeiTu-box:1:{broken';
+  Object.defineProperty(state.pictures[3], 'AlternativeText', { get() { throw new Error('OLE 对象不支持'); } });
+  assert.deepEqual(scanPlaceholders(), {
+    document: 'C:\\文档\\标书.docx', unreadable: 1,
+    boxes: [{ index: 1, name: '甲框', start: 1, widthPt: 240, heightPt: 120 }],
+  });
+});
+
+test('定位选中对应的框；框移动、标记变化或切换文档时要求重新扫描', () => {
+  const { app, state } = createHost({ text: '甲\uFFFC乙\r', originalPictures: [{ position: 1 }] });
+  state.pictures[0].altText = placeholderMarker('甲框');
+  let scan = scanPlaceholders();
+  selectPlaceholder(scan, scan.boxes[0]);
+  assert.deepEqual([state.start, state.end], [1, 2]);
+  const stale = error => error.stale === true && /重新扫描/.test(error.message);
+  state.pictures[0].position = 2;
+  assert.throws(() => selectPlaceholder(scan, scan.boxes[0]), stale);
+  scan = scanPlaceholders();
+  state.pictures[0].altText = placeholderMarker('改名');
+  assert.throws(() => selectPlaceholder(scan, scan.boxes[0]), stale);
+  scan = scanPlaceholders();
+  app.ActiveDocument.FullName = 'C:\\其他.docx';
+  assert.throws(() => selectPlaceholder(scan, scan.boxes[0]), stale);
+  assert.throws(() => selectPlaceholder(scan, { ...scan.boxes[0], index: 9 }), stale);
 });

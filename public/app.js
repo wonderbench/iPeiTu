@@ -5,6 +5,7 @@ import {
 import { normalizeLayoutOptions, normalizeQualityProfile } from './layout-options.js';
 import { loadLayoutPreferences, saveLayoutPreferences } from './layout-preferences.js';
 import { createImportController } from './import-controller.js';
+import { createBoxController } from './box-controller.js';
 
 const element = (id) => document.getElementById(id);
 const ui = Object.fromEntries([
@@ -27,6 +28,8 @@ const ui = Object.fromEntries([
   'chooseFolder', 'folderInput', 'retryImport', 'resumeImport', 'importMeter',
   'trashButton', 'restoreButton', 'activeFilters', 'favoriteLabel', 'layoutSummary',
   'selectedSpec', 'selectedCategories', 'selectedTags',
+  'toggleBoxes', 'boxPanel', 'boxForm', 'boxName', 'boxSize', 'boxCustomSize', 'boxWidthCm',
+  'boxHeightCm', 'boxError', 'insertBox', 'boxCount', 'scanBoxes', 'boxList',
 ].map((id) => [id, element(id)]));
 
 function icon(name) {
@@ -59,6 +62,7 @@ let changingTrash = false;
 let libraryView = 'all';
 let visibleAssets = [];
 const favoriteRequests = new Set();
+let boxes = null;
 
 function refreshFavoriteButton() {
   const pending = selected && favoriteRequests.has(selected.id);
@@ -262,6 +266,7 @@ function refreshHost() {
   ui.documentActions.hidden = trashed || !replacementAvailable;
   ui.replaceButton.disabled = !selected || !replacementAvailable || inserting || replacing || changingTrash || trashed;
   refreshAddButtons();
+  boxes?.refresh({ available: hostAvailable, busy: inserting || replacing || changingTrash, inWps });
 }
 
 async function recordSuccessfulUse(asset, action) {
@@ -320,6 +325,7 @@ function showLibraryState(title, description, actionLabel = '', action = null) {
 }
 
 function openImport() {
+  boxes?.close();
   ui.importPanel.hidden = false;
   ui.toggleImport.setAttribute('aria-expanded', 'true');
   ui.chooseFiles.focus();
@@ -516,6 +522,30 @@ ui.toggleImport.addEventListener('click', () => {
 createImportController({
   ui, request, readableError, refreshLibrary: loadLibrary, clearAction: () => showAction(''),
   reveal: () => { ui.importPanel.hidden = false; ui.toggleImport.setAttribute('aria-expanded', 'true'); },
+});
+boxes = createBoxController({
+  ui, request, readableError, showAction,
+  beginWrite() {
+    if (inserting || replacing || changingTrash) return '';
+    refreshHost();
+    if (!hostAvailable) return ui.hostStatus.textContent;
+    inserting = true;
+    refreshHost();
+    return true;
+  },
+  endWrite() {
+    inserting = false;
+    refreshHost();
+  },
+});
+ui.toggleBoxes.addEventListener('click', () => {
+  if (!ui.boxPanel.hidden) {
+    boxes.close();
+    return;
+  }
+  ui.importPanel.hidden = true;
+  ui.toggleImport.setAttribute('aria-expanded', 'false');
+  boxes.open();
 });
 ui.searchInput.addEventListener('input', scheduleSearch);
 ui.clearSearch.addEventListener('click', clearSearch);

@@ -18,6 +18,7 @@
       <symbol id="i-image" viewBox="0 0 24 24"><rect width="18" height="18" x="3" y="3" rx="2" ry="2"/><circle cx="9" cy="9" r="2"/><path d="m21 15-3.086-3.086a2 2 0 0 0-2.828 0L6 21"/></symbol>
       <symbol id="i-expand" viewBox="0 0 24 24"><path d="M15 3h6v6"/><path d="m21 3-7 7"/><path d="m3 21 7-7"/><path d="M9 21H3v-6"/></symbol>
       <symbol id="i-chevron" viewBox="0 0 24 24"><path d="m9 18 6-6-6-6"/></symbol>
+      <symbol id="i-square-dashed" viewBox="0 0 24 24"><path d="M5 3a2 2 0 0 0-2 2"/><path d="M19 3a2 2 0 0 1 2 2"/><path d="M21 19a2 2 0 0 1-2 2"/><path d="M5 21a2 2 0 0 1-2-2"/><path d="M9 3h1"/><path d="M9 21h1"/><path d="M14 3h1"/><path d="M14 21h1"/><path d="M3 9v1"/><path d="M21 9v1"/><path d="M3 14v1"/><path d="M21 14v1"/></symbol>
     </svg>
 
     <div class="app">
@@ -26,10 +27,16 @@
           <span class="wordmark">iPeiTu</span>
           <h1>标书配图库</h1>
         </div>
-        <button id="toggleImport" class="button secondary" type="button" aria-expanded="false" aria-controls="importPanel">
-          <svg class="icon" aria-hidden="true"><use href="#i-plus"/></svg>
-          <span>导入素材</span>
-        </button>
+        <div class="topbar-actions">
+          <button id="toggleBoxes" class="button secondary" type="button" aria-expanded="false" aria-controls="boxPanel">
+            <svg class="icon" aria-hidden="true"><use href="#i-square-dashed"/></svg>
+            <span>占位框</span>
+          </button>
+          <button id="toggleImport" class="button secondary" type="button" aria-expanded="false" aria-controls="importPanel">
+            <svg class="icon" aria-hidden="true"><use href="#i-plus"/></svg>
+            <span>导入素材</span>
+          </button>
+        </div>
       </header>
 
       <main class="workspace">
@@ -62,6 +69,43 @@
             <summary id="failureSummary">查看未导入的图片</summary>
             <ul id="failureList"></ul>
           </details>
+        </section>
+
+        <section id="boxPanel" class="import-panel box-panel" aria-labelledby="boxTitle" hidden>
+          <h2 id="boxTitle">插入占位框</h2>
+          <form id="boxForm" class="box-form" novalidate>
+            <div class="field-group">
+              <label for="boxName">框名</label>
+              <input id="boxName" name="name" type="text" maxlength="100" autocomplete="off" placeholder="例如：脚手架搭设" required>
+            </div>
+            <div class="field-group">
+              <label for="boxSize">尺寸</label>
+              <select id="boxSize" name="size">
+                <option value="line">整行宽 · 4:3</option>
+                <option value="landscape">横向 12 × 9 厘米</option>
+                <option value="portrait">竖向 9 × 12 厘米</option>
+                <option value="cell">填满单元格</option>
+                <option value="custom">自定义</option>
+              </select>
+            </div>
+            <div id="boxCustomSize" class="size-fields" hidden>
+              <div class="field-group">
+                <label for="boxWidthCm">宽（厘米）</label>
+                <input id="boxWidthCm" name="widthCm" type="number" min="0.5" max="50" step="0.1" value="12" inputmode="decimal">
+              </div>
+              <div class="field-group">
+                <label for="boxHeightCm">高（厘米）</label>
+                <input id="boxHeightCm" name="heightCm" type="number" min="0.5" max="50" step="0.1" value="9" inputmode="decimal">
+              </div>
+            </div>
+            <p id="boxError" class="form-error" role="alert" hidden></p>
+            <button id="insertBox" class="button primary" type="submit" disabled>插入光标处</button>
+          </form>
+          <div class="box-list-heading">
+            <span id="boxCount" class="meta" aria-live="polite">尚未扫描文档</span>
+            <button id="scanBoxes" class="text-button" type="button" disabled>重新扫描</button>
+          </div>
+          <ol id="boxList" class="box-list" aria-label="文档中的占位框"></ol>
         </section>
 
         <section class="library" aria-labelledby="libraryTitle">
