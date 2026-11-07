@@ -23,7 +23,7 @@ async function add(library, name, buffer) {
 // 左半红、右半蓝的 3:1 横图，用于判断裁切、补白和拉伸的结果。
 const halves = () => sharp({ create: { width: 1200, height: 400, channels: 3, background: '#ff0000' } })
   .composite([{ input: { create: { width: 600, height: 400, channels: 3, background: '#0000ff' } }, left: 600, top: 0 }])
-  .png().toBuffer();
+  .removeAlpha().png().toBuffer(); // composite 会附加透明通道，去掉后才是普通不透明图
 
 async function pixel(file, x, y) {
   const { data, info } = await sharp(file).raw().toBuffer({ resolveWithObject: true });
