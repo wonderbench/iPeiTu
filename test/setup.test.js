@@ -11,13 +11,34 @@ import { fileURLToPath } from 'node:url';
 const skip = process.platform !== 'win32';
 const scripts = fileURLToPath(new URL('../scripts/', import.meta.url));
 const root = fileURLToPath(new URL('..', import.meta.url)).replace(/[\\/]$/, '');
+const SCRIPT_TIMEOUT_MS = 120_000;
 
-function run(script, args, env) {
-  const result = spawnSync('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', path.join(scripts, `${script}.ps1`), ...args], {
-    encoding: 'utf8', windowsHide: true, timeout: 120_000, env: { ...process.env, ...env },
+// 只等脚本进程退出，不等输出管道关闭：即使后台服务意外继承了管道，也不会让测试一直等待。
+function runScript(script, args, env) {
+  return new Promise((resolve, reject) => {
+    const started = Date.now();
+    const child = spawn('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', path.join(scripts, `${script}.ps1`), ...args], {
+      windowsHide: true, env: { ...process.env, ...env },
+    });
+    let output = '';
+    child.stdout.setEncoding('utf8');
+    child.stderr.setEncoding('utf8');
+    child.stdout.on('data', chunk => { output += chunk; });
+    child.stderr.on('data', chunk => { output += chunk; });
+    const timer = setTimeout(() => {
+      spawnSync('taskkill', ['/pid', String(child.pid), '/t', '/f'], { windowsHide: true });
+      reject(new Error(`${script} ${args.join(' ')} 超过 ${SCRIPT_TIMEOUT_MS / 1000} 秒未结束，已有输出：\n${output}`));
+    }, SCRIPT_TIMEOUT_MS);
+    child.on('error', error => { clearTimeout(timer); reject(error); });
+    child.on('exit', status => {
+      clearTimeout(timer);
+      setTimeout(() => {
+        child.stdout.destroy();
+        child.stderr.destroy();
+        resolve({ status, output, ms: Date.now() - started });
+      }, 200);
+    });
   });
-  assert.ok(!result.error, `${script} 未在时限内结束：${result.error?.message}`);
-  return { status: result.status, output: `${result.stdout}${result.stderr}` };
 }
 
 async function freePort() {
@@ -45,8 +66,20 @@ async function workspace(t) {
     state: path.join(directory, 'state'), data: path.join(directory, 'library'),
     config: path.join(directory, 'jsaddons'), startup: path.join(directory, 'startup'),
   };
+  // 每次调用都记录耗时，CI 日志里能看出慢在哪一步。
+  paths.run = async (script, args, env = {}) => {
+    const result = await runScript(script, args, env);
+    t.diagnostic(`${script} ${args.join(' ')} → ${result.status}（${result.ms} ms）`);
+    return result;
+  };
   t.after(async () => {
-    run('service', ['-Action', 'stop', '-Port', String(port), '-StateDirectory', paths.state], {});
+    await paths.run('service', ['-Action', 'stop', '-Port', String(port), '-StateDirectory', paths.state]).catch(error => t.diagnostic(error.message));
+    // 停止失败时直接结束残留的服务，不留进程影响后续测试。
+    const leftover = await health(port);
+    if (leftover) {
+      t.diagnostic(`清理残留服务进程 ${leftover.pid}`);
+      try { process.kill(leftover.pid); } catch { /* 已退出 */ }
+    }
     assert.equal(path.dirname(directory), path.resolve(tmpdir()));
     await rm(directory, { recursive: true, force: true });
   });
@@ -54,51 +87,52 @@ async function workspace(t) {
 }
 
 test('服务脚本：启动、重复启动、查看与停止只作用于本目录的服务', { skip }, async t => {
-  const { port, state, data } = await workspace(t);
+  const { port, state, data, run } = await workspace(t);
   const args = ['-Port', String(port), '-StateDirectory', state];
   const env = { IPEITU_DATA_DIR: data };
-  assert.equal(run('service', ['-Action', 'status', ...args], env).status, 1, '未启动时状态为 1');
-  let result = run('service', ['-Action', 'start', ...args], env);
+  assert.equal((await run('service', ['-Action', 'status', ...args], env)).status, 1, '未启动时状态为 1');
+  let result = await run('service', ['-Action', 'start', ...args], env);
   assert.equal(result.status, 0, result.output);
   const first = await health(port);
   assert.equal(first?.service, 'iPeiTu');
   assert.equal(first.root.toLowerCase(), root.toLowerCase());
   assert.equal(JSON.parse(await readFile(path.join(state, `service-${port}.json`), 'utf8')).pid, first.pid);
-  result = run('service', ['-Action', 'start', ...args], env);
+  await access(path.join(data, 'images'));
+  result = await run('service', ['-Action', 'start', ...args], env);
   assert.equal(result.status, 0, result.output);
   assert.match(result.output, /已在运行/);
   assert.equal((await health(port)).pid, first.pid, '重复启动不另起进程');
-  assert.equal(run('service', ['-Action', 'status', ...args], env).status, 0);
-  result = run('service', ['-Action', 'stop', ...args], env);
+  assert.equal((await run('service', ['-Action', 'status', ...args], env)).status, 0);
+  result = await run('service', ['-Action', 'stop', ...args], env);
   assert.equal(result.status, 0, result.output);
   assert.match(result.output, /已停止/);
   assert.equal(await health(port), null);
-  result = run('service', ['-Action', 'stop', ...args], env);
+  result = await run('service', ['-Action', 'stop', ...args], env);
   assert.equal(result.status, 0);
   assert.match(result.output, /未在运行/);
 });
 
 test('端口被其他程序占用时不启动，也不影响占用端口的程序', { skip }, async t => {
-  const { port, state, data } = await workspace(t);
-  const blocker = net.createServer();
+  const { port, state, data, run } = await workspace(t);
+  const blocker = net.createServer(socket => socket.destroy());
   await new Promise(resolve => blocker.listen(port, '127.0.0.1', resolve));
   t.after(() => new Promise(resolve => blocker.close(resolve)));
   const args = ['-Port', String(port), '-StateDirectory', state];
-  const result = run('service', ['-Action', 'start', ...args], { IPEITU_DATA_DIR: data });
+  const result = await run('service', ['-Action', 'start', ...args], { IPEITU_DATA_DIR: data });
   assert.equal(result.status, 2, result.output);
   assert.match(result.output, /已被.*占用/);
   assert.equal(blocker.listening, true);
-  assert.equal(run('service', ['-Action', 'status', ...args], {}).status, 2);
+  assert.equal((await run('service', ['-Action', 'status', ...args])).status, 2);
 });
 
 test('状态文件指向无关进程时拒绝停止，并清除过期的状态文件', { skip }, async t => {
-  const { port, state } = await workspace(t);
+  const { port, state, run } = await workspace(t);
   const unrelated = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore', windowsHide: true });
   t.after(() => unrelated.kill());
   const statePath = path.join(state, `service-${port}.json`);
   await mkdir(state, { recursive: true });
   await writeFile(statePath, JSON.stringify({ version: 1, pid: unrelated.pid, port, root }));
-  const result = run('service', ['-Action', 'stop', '-Port', String(port), '-StateDirectory', state], {});
+  const result = await run('service', ['-Action', 'stop', '-Port', String(port), '-StateDirectory', state]);
   assert.equal(result.status, 0, result.output);
   assert.match(result.output, /不是本目录启动的 iPeiTu 服务，未停止/);
   assert.equal(unrelated.exitCode, null);
@@ -107,10 +141,10 @@ test('状态文件指向无关进程时拒绝停止，并清除过期的状态�
 });
 
 test('一键安装与卸载：注册加载项、设置自动启动并启动服务；卸载后全部还原，素材图库保留', { skip }, async t => {
-  const { port, state, data, config, startup } = await workspace(t);
+  const { port, state, data, config, startup, run } = await workspace(t);
   const common = ['-ConfigDirectory', config, '-StartupDirectory', startup, '-StateDirectory', state, '-Port', String(port)];
   const env = { IPEITU_DATA_DIR: data };
-  let result = run('setup', [...common, '-SkipDependencies'], env);
+  let result = await run('setup', [...common, '-SkipDependencies'], env);
   assert.equal(result.status, 0, result.output);
   assert.match(result.output, /安装完成/);
   assert.match(await readFile(path.join(config, 'publish.xml'), 'utf8'), /name="iPeiTu"/);
@@ -118,11 +152,11 @@ test('一键安装与卸载：注册加载项、设置自动启动并启动服�
   await access(shortcut);
   assert.equal((await health(port))?.service, 'iPeiTu');
 
-  result = run('setup', [...common, '-SkipDependencies'], env);
+  result = await run('setup', [...common, '-SkipDependencies'], env);
   assert.equal(result.status, 0, result.output);
   assert.match(result.output, /已在运行/, '重复安装不另起服务');
 
-  result = run('remove', common, env);
+  result = await run('remove', common, env);
   assert.equal(result.status, 0, result.output);
   assert.equal(await health(port), null);
   await assert.rejects(access(shortcut), '自动启动已移除');

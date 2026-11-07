@@ -60,10 +60,20 @@ function Start-IPeiTu {
         return 3
     }
     [IO.Directory]::CreateDirectory((Split-Path -Parent $logPath)) | Out-Null
-    # 经 cmd 把输出追加到日志。Start-Process 不让后台进程继承本窗口的输出管道，调用方不会被挂住。
-    $env:IPEITU_PORT = [string]$Port
-    $arguments = '/d /c ""' + $node.Source + '" "' + $entry + '" >> "' + $logPath + '" 2>&1"'
-    $launcher = Start-Process -FilePath $env:ComSpec -ArgumentList $arguments -WorkingDirectory $root -WindowStyle Hidden -PassThru
+    $dataDirectory = if ($env:IPEITU_DATA_DIR) { $env:IPEITU_DATA_DIR } else { Join-Path $env:LOCALAPPDATA 'iPeiTu\library' }
+    $quote = { param($value) '"' + ([string]$value).TrimEnd('\') + '"' }
+    $commandLine = (& $quote $node.Source) + ' ' + (& $quote $entry) + ' --port ' + $Port + ' --data-dir ' + (& $quote $dataDirectory) + ' --log ' + (& $quote $logPath)
+    # 用 WMI 创建进程：由系统 WMI 服务创建，与本窗口及其调用方没有父子与句柄继承关系
+    # （改用 Start-Process 时，CI 中从测试调用的脚本一直没有结束）。端口、图库和日志经命令行参数传入。
+    $startup = New-CimInstance -ClassName Win32_ProcessStartup -ClientOnly -Property @{ ShowWindow = [uint16]0 }
+    $created = Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{
+        CommandLine = $commandLine; CurrentDirectory = $root; ProcessStartupInformation = $startup
+    }
+    if ($created.ReturnValue -ne 0) {
+        Write-Host "无法创建本地图库进程（Win32_Process.Create 返回 $($created.ReturnValue)）。"
+        return 1
+    }
+    $launcherId = [int]$created.ProcessId
     $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
     while ((Get-Date) -lt $deadline) {
         Start-Sleep -Milliseconds 300
@@ -74,7 +84,7 @@ function Start-IPeiTu {
             Write-Host "iPeiTu 本地图库已启动：$baseUrl（进程 $($health.pid)）"
             return 0
         }
-        if ($launcher.HasExited) { break }
+        if (!(Get-Process -Id $launcherId -ErrorAction SilentlyContinue)) { break }
     }
     Write-Host "iPeiTu 本地图库未能启动，日志：$logPath"
     if (Test-Path -LiteralPath $logPath) {
