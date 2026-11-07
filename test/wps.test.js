@@ -861,9 +861,10 @@ test('正文中间插入占位框：独立成段、单倍行距、尺寸准确�
 
 test('空单元格直接作为框所在段落，不多拆一段撑高表格行', () => {
   const { state } = createHost({ text: '\r\u0007', start: 0, end: 0, inTable: true });
+  const paragraphsBefore = state.paragraphs.length;
   insertPlaceholder(boxImage, capturePlaceholderTarget(box({ size: 'cell' })));
   assert.equal(state.text, '\uFFFC\r\u0007');
-  assert.equal(state.paragraphs.length, 1);
+  assert.equal(state.paragraphs.length, paragraphsBefore, '没有新增段落');
   assert.deepEqual([state.pictures[0].Width, state.pictures[0].Height], [200, 170]);
   const format = state.paragraphs[0].format;
   assert.deepEqual([format.Alignment, format.LineSpacingRule, format.SpaceBefore, format.SpaceAfter, format.FirstLineIndent], [1, 0, 0, 0, 0]);
