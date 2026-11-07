@@ -7,6 +7,7 @@ import sharp from 'sharp';
 import { startServer } from '../server/http.js';
 import { verifyImportAndTrash } from './verify-import-ui.mjs';
 import { verifyQuality } from './verify-quality-ui.mjs';
+import { verifyFormat } from './verify-format-ui.mjs';
 import { verifyPlaceholders } from './verify-placeholder-ui.mjs';
 
 const temporary = await mkdtemp(path.join(os.tmpdir(), 'ipeitu-ui-'));
@@ -471,6 +472,7 @@ try {
   await verifyPlaceholders({ page });
   await verifyImportAndTrash({ page, base, temporary, picture, filename });
   await verifyQuality({ base });
+  await verifyFormat({ page, base });
   assert.deepEqual(failures, []);
   console.log('UI 验收通过：导入/检索/预览、素材信息与组合筛选、收藏重载与写失败恢复、最近成功记录及失败分离、键盘选图不误插入、卡片添加按钮的连击与键盘操作、排版偏好恢复、320/420/1080 布局、模拟 WPS 插图与替换、目标变更拒绝写入、只读与读取失败恢复');
   console.log('WPS 行为使用模拟宿主；真实 WPS 验收另行记录。');

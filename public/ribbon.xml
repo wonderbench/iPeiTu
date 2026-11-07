@@ -6,6 +6,9 @@
         <group id="ipeituLibrary" label="标书素材">
           <button id="ipeituOpenLibrary" label="打开素材库" size="large" onAction="OpenImageLibrary" screentip="检索并插入本地图片" supertip="打开素材库，选择图片后插入 WPS 当前光标位置" />
         </group>
+        <group id="ipeituLayout" label="标书排版">
+          <button id="ipeituOpenLayout" label="排版工具" size="large" onAction="OpenLayoutTools" screentip="一键排版" supertip="打开排版工具：清除格式、首行缩进、删除空行、表格满页、去除底纹与表格线、一键去色等" />
+        </group>
       </tab>
     </tabs>
   </ribbon>
