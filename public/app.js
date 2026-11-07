@@ -1,6 +1,7 @@
 import {
   captureInsertionTarget, getHostStatus, insertPicture,
   getReplacementStatus, captureReplacementTarget, replacePicture,
+  getFillStatus, captureFillTarget, fillPlaceholder, FIT_MODES,
 } from './wps-bridge.js';
 import { normalizeLayoutOptions, normalizeQualityProfile } from './layout-options.js';
 import { loadLayoutPreferences, saveLayoutPreferences } from './layout-preferences.js';
@@ -30,6 +31,7 @@ const ui = Object.fromEntries([
   'selectedSpec', 'selectedCategories', 'selectedTags',
   'toggleBoxes', 'boxPanel', 'boxForm', 'boxName', 'boxSize', 'boxCustomSize', 'boxWidthCm',
   'boxHeightCm', 'boxError', 'insertBox', 'boxCount', 'scanBoxes', 'boxList',
+  'fillBar', 'fillTarget', 'fitMode', 'searchBoxName',
 ].map((id) => [id, element(id)]));
 
 function icon(name) {
@@ -48,6 +50,9 @@ let hostAvailable = false;
 let inserting = false;
 let replacing = false;
 let replacementAvailable = false;
+let fillTarget = { available: false };
+const FIT_STORAGE_KEY = 'ipeitu.fit.v1';
+const centimeters = points => (points * 2.54 / 72).toFixed(1);
 let requestVersion = 0;
 let searchTimer;
 let libraryRequest;
@@ -230,7 +235,9 @@ function refreshAddButtons() {
     button.disabled = !hostAvailable;
     // 等待期间只标记不禁用：真正禁用会丢失键盘焦点，连续添加时焦点要留在按钮上。
     button.setAttribute('aria-disabled', String(busy));
-    button.title = hostAvailable ? '插入光标处' : ui.hostStatus.textContent;
+    button.title = !hostAvailable ? ui.hostStatus.textContent : fillTarget.available ? '填入占位框' : '插入光标处';
+    button.setAttribute('aria-label', fillTarget.available
+      ? `填入「${button.dataset.name}」到占位框「${fillTarget.name}」` : `插入「${button.dataset.name}」到光标处`);
   }
 }
 
@@ -262,8 +269,15 @@ function refreshHost() {
       ui.replaceButton.title = error.message || '无法读取当前图片，请重新选择';
     }
   }
-  // 只在文档中选中图片时显示，平时把高度留给素材。
-  ui.documentActions.hidden = trashed || !replacementAvailable;
+  // 选中占位框时“+”改为填入，替换会丢失框的标记，因此不显示替换。
+  fillTarget = inWps && !trashed ? getFillStatus() : { available: false };
+  ui.fillBar.hidden = !fillTarget.available;
+  if (fillTarget.available) {
+    ui.fillTarget.textContent = `填入占位框「${fillTarget.name}」${centimeters(fillTarget.widthPt)} × ${centimeters(fillTarget.heightPt)} 厘米`;
+    ui.fillTarget.title = fillTarget.name;
+  }
+  // 只在文档中选中普通图片时显示，平时把高度留给素材。
+  ui.documentActions.hidden = trashed || !replacementAvailable || fillTarget.available;
   ui.replaceButton.disabled = !selected || !replacementAvailable || inserting || replacing || changingTrash || trashed;
   refreshAddButtons();
   boxes?.refresh({ available: hostAvailable, busy: inserting || replacing || changingTrash, inWps });
@@ -391,7 +405,7 @@ function renderAssets(assets) {
       add.className = 'card-add';
       add.dataset.id = asset.id;
       add.tabIndex = asset.id === tabId ? 0 : -1;
-      add.setAttribute('aria-label', `插入「${asset.name}」到光标处`);
+      add.dataset.name = asset.name;
       add.append(icon('plus'));
       add.addEventListener('click', () => insertAsset(asset));
       item.append(add);
@@ -432,20 +446,34 @@ async function insertAsset(candidate) {
   const asset = visibleAssets.find(item => item.id === candidate.id) || candidate;
   // 同时选中这张图，图题和底部信息才与插入的图片对应。
   if (selected?.id !== asset.id) selectAsset(asset);
+  const filling = fillTarget.available;
   inserting = true;
   refreshHost();
   showAction('');
   try {
-    const options = insertionOptions();
     const profile = normalizeQualityProfile(layoutPreferences.qualityProfile);
-    const target = captureInsertionTarget();
-    const insertion = await request(`/api/assets/${encodeURIComponent(asset.id)}/insertion?profile=${profile}`);
-    insertPicture(insertion, target, options);
-    showAction(`已插入「${asset.name}」`);
-    await recordSuccessfulUse(asset, '插入');
+    if (filling) {
+      const target = captureFillTarget();
+      const fit = ui.fitMode.value;
+      const round = value => String(Math.round(value * 10) / 10);
+      const parameters = new URLSearchParams({ mode: fit, widthPt: round(target.width), heightPt: round(target.height), profile });
+      const image = await request(`/api/assets/${encodeURIComponent(asset.id)}/fit?${parameters}`);
+      fillPlaceholder(image, target, { asset: asset.id, fit });
+      showAction(`已填入占位框「${target.name}」`);
+      await recordSuccessfulUse(asset, '填入');
+      boxes?.refreshList();
+    } else {
+      const options = insertionOptions();
+      const target = captureInsertionTarget();
+      const insertion = await request(`/api/assets/${encodeURIComponent(asset.id)}/insertion?profile=${profile}`);
+      insertPicture(insertion, target, options);
+      showAction(`已插入「${asset.name}」`);
+      await recordSuccessfulUse(asset, '插入');
+    }
     markAdded(asset.id);
   } catch (error) {
-    showAction(error.inserted ? error.message : `插入失败：${readableError(error)}`, true);
+    showAction(error.inserted || error.filled || error.resultUncertain ? error.message
+      : `${filling ? '填入' : '插入'}失败：${readableError(error)}`, true);
   } finally {
     inserting = false;
     refreshHost();
@@ -820,6 +848,24 @@ document.documentElement.addEventListener('pointerenter', refreshHost);
 document.addEventListener('visibilitychange', () => {
   if (!document.hidden) refreshHost();
 });
+ui.fitMode.addEventListener('change', () => {
+  try {
+    localStorage.setItem(FIT_STORAGE_KEY, ui.fitMode.value);
+  } catch {
+    showAction('适配方式已应用于本次使用，但未能保存在本机', true);
+  }
+});
+ui.searchBoxName.addEventListener('click', () => {
+  if (!fillTarget.available) return;
+  ui.searchInput.value = fillTarget.name;
+  scheduleSearch();
+});
+try {
+  const savedFit = localStorage.getItem(FIT_STORAGE_KEY);
+  if (FIT_MODES.includes(savedFit)) ui.fitMode.value = savedFit;
+} catch {
+  // 读不到本机设置时沿用默认的裁切填满，不影响使用。
+}
 
 try {
   layoutPreferences = loadLayoutPreferences();

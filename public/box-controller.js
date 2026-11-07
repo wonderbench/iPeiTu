@@ -46,7 +46,14 @@ export function createBoxController({ ui, request, readableError, showAction, be
       const size = document.createElement('span');
       size.className = 'box-size figures';
       size.textContent = `${centimeters(box.widthPt)} × ${centimeters(box.heightPt)}`;
-      button.append(index, name, size);
+      button.append(index, name);
+      if (box.filled) {
+        const filled = document.createElement('span');
+        filled.className = 'box-filled';
+        filled.textContent = '已填';
+        button.append(filled);
+      }
+      button.append(size);
       button.addEventListener('click', () => locate(box));
       item.append(button);
       ui.boxList.append(item);
@@ -124,6 +131,10 @@ export function createBoxController({ ui, request, readableError, showAction, be
       ui.toggleBoxes.setAttribute('aria-expanded', 'true');
       if (typeof globalThis.Application !== 'undefined') rescan();
       ui.boxName.focus();
+    },
+    // 填入后若面板开着，刷新列表中的已填状态。
+    refreshList() {
+      if (!ui.boxPanel.hidden && typeof globalThis.Application !== 'undefined') rescan();
     },
     close() {
       ui.boxPanel.hidden = true;

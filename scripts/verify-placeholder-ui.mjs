@@ -123,6 +123,89 @@ export async function verifyPlaceholders({ page }) {
   assert.equal(await page.locator('#boxPanel').isVisible(), false, '打开导入时收起占位框面板');
   await page.locator('#toggleImport').click();
   await page.unroute('**/api/placeholders');
+
+  // 填入：选中占位框后“+”改为填入，按框的尺寸请求适配图，新图替换原框并保留标记。
+  await page.setViewportSize({ width: 420, height: 800 });
+  await page.evaluate(() => {
+    const items = window.fillItems = [];
+    const shape = (alternativeText, width, height, path) => {
+      const item = {
+        path, Type: 3, Width: width, Height: height, LockAspectRatio: 0, AlternativeText: alternativeText, font: null,
+        get Range() {
+          const start = items.indexOf(item) + 10;
+          return {
+            Start: start, End: start + 1, StoryType: 1,
+            get Font() { return { Duplicate: { Name: '宋体' } }; },
+            set Font(value) { item.font = value; },
+            get Duplicate() {
+              const index = items.indexOf(item);
+              return {
+                Collapse() {},
+                Select() { window.selectedShape = null; },
+                InlineShapes: { AddPicture(file) { const added = shape('', 600, 400, file); items.splice(index, 0, added); return added; } },
+              };
+            },
+          };
+        },
+        Delete() { items.splice(items.indexOf(item), 1); },
+      };
+      return item;
+    };
+    const box = shape('iPeiTu-box:1:{"name":"脚手架搭设"}', 340.1, 255.1);
+    items.push(box);
+    window.selectedShape = box;
+    const doc = { Name: '填入.docx', FullName: 'C:\\test\\填入.docx', ReadOnly: false, ProtectionType: -1,
+      get InlineShapes() { return { Count: items.length, Item: index => items[index - 1] }; } };
+    window.Application = {
+      Documents: { Count: 1 }, ActiveDocument: doc,
+      UndoRecord: { StartCustomRecord() {}, EndCustomRecord() {} },
+      Selection: {
+        get Type() { return window.selectedShape ? 7 : 1; },
+        get Range() {
+          const selected = window.selectedShape;
+          if (!selected) return { Start: 0, End: 0, StoryType: 1, InlineShapes: { Count: 0 } };
+          const range = selected.Range;
+          return { Start: range.Start, End: range.End, StoryType: 1, InlineShapes: { Count: 1, Item: () => selected } };
+        },
+      },
+    };
+    window.dispatchEvent(new Event('focus'));
+  });
+  await visibleText('#fillTarget', '填入占位框「脚手架搭设」12.0 × 9.0 厘米');
+  assert.equal(await page.locator('#fillBar').isVisible(), true);
+  assert.equal(await page.locator('#documentActions').isVisible(), false, '选中占位框时不显示替换');
+  assert.equal(await page.locator('.card-add').first().getAttribute('title'), '填入占位框');
+  assert.match(await page.locator('.card-add').first().getAttribute('aria-label'), /到占位框「脚手架搭设」/);
+  await page.locator('#fitMode').selectOption('contain');
+  assert.equal(await page.evaluate(() => localStorage.getItem('ipeitu.fit.v1')), 'contain', '适配方式保存在本机');
+  await page.locator('#searchBoxName').click();
+  assert.equal(await page.locator('#searchInput').inputValue(), '脚手架搭设');
+  await page.locator('#clearSearch').click();
+  await page.waitForFunction(() => document.querySelector('#assetGrid').getAttribute('aria-busy') === 'false'
+    && document.querySelectorAll('.card-add').length > 0);
+
+  const fitRequests = [];
+  await page.route('**/api/assets/*/fit?*', async route => {
+    const parameters = Object.fromEntries(new URL(route.request().url()).searchParams);
+    const response = await route.fetch();
+    const data = await response.json();
+    fitRequests.push({ ...parameters, file: data.path });
+    await route.fulfill({ response, json: { ...data, path: 'C:\\test\\fitted.jpg' } });
+  });
+  await page.locator('.card-add').first().click();
+  await visibleText('#actionStatus', '已填入');
+  assert.equal(fitRequests.length, 1);
+  assert.deepEqual([fitRequests[0].mode, fitRequests[0].widthPt, fitRequests[0].heightPt], ['contain', '340.1', '255.1']);
+  const fitted = await sharp(fitRequests[0].file).metadata();
+  assert.ok(Math.abs(fitted.width / fitted.height - 340.1 / 255.1) < 0.01, '服务端适配图按框的比例');
+  const filled = await page.evaluate(() => window.fillItems.map(({ path, Width, Height, LockAspectRatio, AlternativeText, font }) => (
+    { path, Width, Height, LockAspectRatio, AlternativeText, font })));
+  assert.equal(filled.length, 1, '原框已删除，只留下新图');
+  assert.deepEqual([filled[0].path, filled[0].Width, filled[0].Height, filled[0].LockAspectRatio], ['C:\\test\\fitted.jpg', 340.1, 255.1, -1]);
+  assert.match(filled[0].AlternativeText, /"name":"脚手架搭设".*"fit":"contain"/);
+  assert.deepEqual(filled[0].font, { Name: '宋体' }, '保留原框的字符格式');
+  await page.waitForFunction(() => document.querySelector('#fillBar').hidden);
+  await page.unroute('**/api/assets/*/fit?*');
   await page.reload();
-  console.log('占位框 UI 验收通过：浏览器模式禁用、框名与尺寸校验、预设与自定义尺寸、服务端占位图、扫描列表、定位与文档变化后重新扫描、窄窗格布局。');
+  console.log('占位框 UI 验收通过：浏览器模式禁用、框名与尺寸校验、预设与自定义尺寸、服务端占位图、扫描列表、定位与文档变化后重新扫描、窄窗格布局、选中框后填入与适配方式。');
 }
