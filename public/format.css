@@ -1,0 +1,22 @@
+/* 排版工具：按作用对象分组，点击即执行；沿用素材库的灰白中性色与深青强调色。 */
+.format-app { display: grid; grid-template-rows: auto minmax(0, 1fr); min-height: 100vh; min-height: 100dvh; }
+.format-workspace { display: grid; align-content: start; gap: 16px; padding: 12px; overflow: auto; }
+.tool-group { display: grid; gap: 8px; }
+.tool-group h2 { color: var(--text-secondary); font-size: 13px; line-height: 20px; }
+.tool-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(128px, 1fr)); gap: 8px; }
+.tool-button {
+  min-width: 0; min-height: 40px; padding: 8px 12px;
+  border: 1px solid var(--control-line); border-radius: 8px;
+  background: var(--card); color: var(--text); line-height: 20px; text-align: left;
+  transition: background-color 120ms var(--ease), border-color 120ms var(--ease), transform 120ms var(--ease);
+}
+.tool-button:hover:not(:disabled) { border-color: var(--accent); background: var(--raised); }
+.tool-button:active:not(:disabled) { transform: scale(0.98); }
+.tool-button:disabled { border-color: var(--line); background: var(--raised); color: var(--text-muted); }
+.format-workspace .action-status { font-size: 13px; line-height: 20px; }
+/* 素材库在窄窗格隐藏副标题给顶栏按钮让位；排版页顶栏没有按钮，保留标题 */
+.format-app .brand h1 { display: block; }
+
+@media (min-width: 800px) {
+  .format-workspace { max-width: 720px; padding: 16px 24px; }
+}

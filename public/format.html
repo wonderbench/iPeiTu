@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>iPeiTu · 排版工具</title>
+    <link rel="stylesheet" href="/styles.css">
+    <link rel="stylesheet" href="/format.css">
+    <script type="module" src="/format.js"></script>
+  </head>
+  <body>
+    <div class="format-app">
+      <header class="topbar">
+        <div class="brand">
+          <span class="wordmark">iPeiTu</span>
+          <h1>排版工具</h1>
+        </div>
+      </header>
+
+      <main class="format-workspace">
+        <p id="scopeStatus" class="host-status">正在检查 WPS 状态</p>
+
+        <section class="tool-group" aria-labelledby="paragraphTools">
+          <h2 id="paragraphTools">段落</h2>
+          <div class="tool-grid">
+            <button class="tool-button" type="button" data-operation="clearFormatting" title="清除所选内容的样式、段落格式和字符格式">清除格式</button>
+            <button class="tool-button" type="button" data-operation="firstLineIndent" title="所选段落或光标所在段落首行缩进 2 字符">首行缩进</button>
+            <button class="tool-button" type="button" data-operation="center" title="所选段落或光标所在段落水平居中">居中对齐</button>
+          </div>
+        </section>
+
+        <section class="tool-group" aria-labelledby="tableTools">
+          <h2 id="tableTools">表格</h2>
+          <div class="tool-grid">
+            <button class="tool-button" type="button" data-operation="tableFullWidth" title="表格宽度设为页面宽度的 100%">表格满页</button>
+            <button class="tool-button" type="button" data-operation="zeroPadding" title="单元格上下左右边距归零，并固定列宽">边距清零</button>
+            <button class="tool-button" type="button" data-operation="clearTableSpaces" title="删除表格中的全角空格和首尾空格，英文或数字之间保留一个半角空格">清除空格</button>
+            <button class="tool-button" type="button" data-operation="removeShading" title="清除表格和单元格底纹">去除底纹</button>
+            <button class="tool-button" type="button" data-operation="removeBorders" title="清除表格和单元格边框">去除表格线</button>
+          </div>
+        </section>
+
+        <section class="tool-group" aria-labelledby="documentTools">
+          <h2 id="documentTools">全文</h2>
+          <div class="tool-grid">
+            <button class="tool-button" type="button" data-operation="deleteEmptyLines" title="删除空行；跳过表格内、分节符所在及两个表格之间的空行">删除空行</button>
+            <button class="tool-button" type="button" data-operation="decolor" title="图片改为灰度，图形填充和线条改为灰色；浮动图形只在未选中内容时处理">一键去色</button>
+          </div>
+        </section>
+
+        <p id="formatResult" class="action-status" role="status" aria-live="polite" hidden></p>
+      </main>
+    </div>
+  </body>
+</html>
