@@ -1,10 +1,17 @@
 import { normalizeLayoutOptions } from './layout-options.js';
+import { normalizePlaceholderOptions } from './placeholder-options.js';
 
 const COLLAPSE_END = 0;
 const COLLAPSE_START = 1;
 const WITHIN_TABLE = 12;
 const NO_PROTECTION = -1;
 const LOCK_ASPECT_RATIO = -1;
+const UNLOCK_ASPECT_RATIO = 0;
+const ROW_HEIGHT_AUTO = 0;
+const MIN_BOX_PT = 14;
+const MAX_BOX_PT = 1440;
+const PLACEHOLDER_PREFIX = 'iPeiTu-box:1:';
+const LOCAL_PATH = /^(?:[a-z]:[\\/]|\\\\[^\\]+\\[^\\]+)/i;
 const replacementTargets = new WeakMap();
 
 function editableDocument(app, action = '插入') {
@@ -349,4 +356,202 @@ export function replacePicture(asset, expectedTarget) {
     throw error;
   }
   return result;
+}
+
+// 占位框：一张内嵌占位图，AlternativeText 中写入带版本的标记，便于扫描和后续填入。
+export function placeholderMarker(name) {
+  return `${PLACEHOLDER_PREFIX}${JSON.stringify({ name })}`;
+}
+
+export function parsePlaceholderMarker(text) {
+  if (typeof text !== 'string' || !text.startsWith(PLACEHOLDER_PREFIX)) return null;
+  let value;
+  try { value = JSON.parse(text.slice(PLACEHOLDER_PREFIX.length)); } catch { return null; }
+  if (!value || typeof value !== 'object' || Array.isArray(value) || typeof value.name !== 'string' || !value.name) return null;
+  return { name: value.name };
+}
+
+function placeholderSize(app, range, options) {
+  const page = range.PageSetup;
+  const maxWidth = availableWidth(range);
+  const maxHeight = page.PageHeight - page.TopMargin - page.BottomMargin;
+  if (!Number.isFinite(maxHeight) || maxHeight <= 0) throw new Error('当前位置没有可用的版面高度，请移动光标后重试');
+  let width;
+  let height;
+  if (options.size === 'cell') {
+    if (!range.Information(WITHIN_TABLE)) throw new Error('光标不在表格单元格内，请改选其他尺寸');
+    const cell = range.Cells.Item(1);
+    width = maxWidth;
+    const inner = cell.Height - cell.TopPadding - cell.BottomPadding;
+    // 自动行高的单元格没有确定高度，按 4:3 取高。
+    height = cell.HeightRule === ROW_HEIGHT_AUTO || !(Number.isFinite(inner) && inner > 0) ? width * 3 / 4 : inner;
+  } else if (options.size === 'line') {
+    width = maxWidth;
+    height = width * 3 / 4;
+  } else {
+    width = app.CentimetersToPoints(options.widthCm);
+    height = app.CentimetersToPoints(options.heightCm);
+  }
+  const scale = Math.min(1, maxWidth / width, maxHeight / height, MAX_BOX_PT / width, MAX_BOX_PT / height);
+  const widthPt = Math.floor(width * scale * 10 + 1e-6) / 10;
+  const heightPt = Math.floor(height * scale * 10 + 1e-6) / 10;
+  if (!(widthPt >= MIN_BOX_PT && heightPt >= MIN_BOX_PT)) throw new Error('可用空间太小，放不下占位框');
+  return { widthPt, heightPt };
+}
+
+export function capturePlaceholderTarget(input) {
+  const options = normalizePlaceholderOptions(input);
+  try {
+    const app = globalThis.Application;
+    const doc = editableDocument(app);
+    const range = insertionRange(app).Duplicate;
+    const target = { document: doc.FullName, start: range.Start, end: range.End, story: range.StoryType };
+    range.Collapse(COLLAPSE_END);
+    return { ...target, name: options.name, ...placeholderSize(app, range, options) };
+  } catch (cause) {
+    throw new Error(`无法放置占位框：${cause.message || '请在文档中放置光标后重试'}`);
+  }
+}
+
+function zeroParagraphSpacing(paragraph) {
+  const format = paragraph.Format;
+  format.SpaceBefore = 0;
+  format.SpaceAfter = 0;
+}
+
+export function insertPlaceholder(image, target) {
+  const app = globalThis.Application;
+  if (!image || typeof image.path !== 'string' || !LOCAL_PATH.test(image.path)) throw new Error('占位图路径无效，请重试');
+  if (!target || typeof target.name !== 'string' || !target.name
+    || ![target.widthPt, target.heightPt].every(value => Number.isFinite(value) && value >= MIN_BOX_PT && value <= MAX_BOX_PT)) {
+    throw new Error('占位框目标无效，请重新点击插入');
+  }
+  let picture;
+  let inserting = false;
+  let marked = false;
+  let removed = false;
+  let undoRecord;
+  let failure;
+  let result;
+  try {
+    const doc = editableDocument(app);
+    const range = insertionRange(app).Duplicate;
+    if (doc.FullName !== target.document || range.Start !== target.start || range.End !== target.end || range.StoryType !== target.story) {
+      throw new Error('当前文档或光标位置已改变，请确认目标后重新点击');
+    }
+    range.Collapse(COLLAPSE_END);
+    const paragraph = range.Paragraphs.Item(1);
+    const paragraphRange = paragraph.Range;
+    const text = paragraphRange.Text;
+    const endingLength = text.endsWith('\r\u0007') ? 2 : text.endsWith('\r') ? 1 : 0;
+    if (range.Start > paragraphRange.End - endingLength) throw new Error('请将光标放在正文或单元格内容内，不要选中结束标记');
+    // 空段落（含空单元格）直接作为框所在段落，不再多拆一段，避免撑高表格行。
+    const empty = text.length === endingLength;
+    const original = {
+      start: paragraphRange.Start,
+      hasPrefix: range.Start > paragraphRange.Start,
+      style: paragraph.Style,
+      format: paragraph.Format.Duplicate,
+    };
+
+    app.UndoRecord.StartCustomRecord('iPeiTu 插入占位框');
+    undoRecord = app.UndoRecord;
+    inserting = true;
+    picture = range.InlineShapes.AddPicture(image.path, false, true, range);
+    picture.LockAspectRatio = UNLOCK_ASPECT_RATIO;
+    picture.Width = target.widthPt;
+    picture.Height = target.heightPt;
+    picture.LockAspectRatio = LOCK_ASPECT_RATIO;
+    if (!(Math.abs(picture.Width - target.widthPt) <= 0.1 && Math.abs(picture.Height - target.heightPt) <= 0.1)) {
+      throw new Error('WPS 未能按框的尺寸设置占位图');
+    }
+    const marker = placeholderMarker(target.name);
+    picture.AlternativeText = marker;
+    if (picture.AlternativeText !== marker) throw new Error('WPS 未能保存占位框标记');
+    marked = true;
+
+    let after;
+    if (empty) {
+      formatNewParagraph(picture.Range.Paragraphs.Item(1), { layout: 'centered' }, original.format.Alignment);
+      after = picture.Range.Duplicate;
+      after.Collapse(COLLAPSE_END);
+    } else {
+      after = separatePictureParagraphs(picture, original, { layout: 'centered', caption: '' });
+    }
+    zeroParagraphSpacing(picture.Range.Paragraphs.Item(1));
+    after.Select();
+    result = { name: target.name, widthPt: picture.Width, heightPt: picture.Height };
+  } catch (cause) {
+    failure = cause;
+    // 没有标记的框无法被扫描和填入，删掉而不是留给用户。
+    if (picture && !marked) {
+      try {
+        picture.Delete();
+        removed = true;
+      } catch (cleanupError) {
+        failure = new Error(`${cause.message}；无法移除未完成的占位图：${cleanupError.message}`);
+      }
+    }
+  }
+  if (undoRecord) {
+    try { undoRecord.EndCustomRecord(); } catch (cause) {
+      failure = new Error(`${failure ? `${failure.message}；` : ''}无法完成本次撤销记录：${cause.message}`);
+    }
+  }
+  if (failure) {
+    const detail = failure.message ? `（${failure.message}）` : '';
+    let message;
+    if (marked) message = `占位框已插入，但排版或光标定位未完成${detail}。请检查文档，不要重复插入`;
+    else if (removed) message = `占位框未插入，未完成的占位图已移除${detail}`;
+    else if (picture) message = `占位图已插入但未能写入标记${detail}。请删除这张图片后重试`;
+    else if (inserting) message = `WPS 未能确认插入结果${detail}。请检查文档，确认没有新增图片后再重试`;
+    else message = `插入已中止${detail}`;
+    const error = new Error(message);
+    error.inserted = marked || (Boolean(picture) && !removed);
+    error.cause = failure;
+    throw error;
+  }
+  return result;
+}
+
+function readableDocument() {
+  const app = globalThis.Application;
+  if (!app) throw new Error('请在 WPS 文字中打开 iPeiTu 素材库');
+  if (app.Documents.Count === 0) throw new Error('请先打开需要配图的 WPS 文字文档');
+  const doc = app.ActiveDocument;
+  if (!doc) throw new Error('请先切换到需要配图的 WPS 文字文档');
+  return doc;
+}
+
+export function scanPlaceholders() {
+  const doc = readableDocument();
+  const shapes = doc.InlineShapes;
+  const count = shapes.Count;
+  const boxes = [];
+  let unreadable = 0;
+  for (let index = 1; index <= count; index++) {
+    const shape = shapes.Item(index);
+    let marker;
+    try { marker = parsePlaceholderMarker(shape.AlternativeText); } catch {
+      // 个别对象（如部分 OLE）可能读不出替代文字；计数报告，不当作没有占位框。
+      unreadable++;
+      continue;
+    }
+    if (!marker) continue;
+    boxes.push({ index, name: marker.name, start: shape.Range.Start, widthPt: shape.Width, heightPt: shape.Height });
+  }
+  return { document: doc.FullName, boxes, unreadable };
+}
+
+export function selectPlaceholder(scan, box) {
+  const doc = readableDocument();
+  const stale = message => Object.assign(new Error(message), { stale: true });
+  if (!scan || doc.FullName !== scan.document) throw stale('当前文档已切换，已重新扫描');
+  const shapes = doc.InlineShapes;
+  if (!box || !Number.isInteger(box.index) || box.index < 1 || box.index > shapes.Count) throw stale('文档已变化，已重新扫描');
+  const shape = shapes.Item(box.index);
+  const range = shape.Range;
+  const marker = parsePlaceholderMarker(shape.AlternativeText);
+  if (!marker || marker.name !== box.name || range.Start !== box.start) throw stale('文档已变化，已重新扫描');
+  range.Select();
 }

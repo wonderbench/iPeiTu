@@ -7,6 +7,7 @@ import sharp from 'sharp';
 import { startServer } from '../server/http.js';
 import { verifyImportAndTrash } from './verify-import-ui.mjs';
 import { verifyQuality } from './verify-quality-ui.mjs';
+import { verifyPlaceholders } from './verify-placeholder-ui.mjs';
 
 const temporary = await mkdtemp(path.join(os.tmpdir(), 'ipeitu-ui-'));
 const { server } = await startServer({ port: 0, dataDirectory: path.join(temporary, 'library') });
@@ -467,6 +468,7 @@ try {
   await page.locator('#saveLayout').click();
   await visibleText('#actionStatus', '未能保存在本机');
   await visibleText('#layoutSettingsButton', '宽 9 厘米');
+  await verifyPlaceholders({ page });
   await verifyImportAndTrash({ page, base, temporary, picture, filename });
   await verifyQuality({ base });
   assert.deepEqual(failures, []);

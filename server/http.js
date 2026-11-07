@@ -4,6 +4,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Library, LibraryError, MAX_IMAGE_BYTES } from './library.js';
 import { ImportJobs } from './import-jobs.js';
+import { Placeholders } from './placeholder.js';
 
 const defaultPublicDirectory = fileURLToPath(new URL('../public/', import.meta.url));
 const contentTypes = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8',
@@ -67,6 +68,7 @@ function validateRequest(request, port) {
 export async function createServer({ dataDirectory, publicDirectory = defaultPublicDirectory } = {}) {
   const library = await Library.open(dataDirectory);
   const jobs = new ImportJobs(library);
+  const placeholders = new Placeholders(library.directory);
   const publicRoot = path.resolve(publicDirectory);
   const server = http.createServer(async (request, response) => {
     response.setHeader('X-Content-Type-Options', 'nosniff');
@@ -115,6 +117,9 @@ export async function createServer({ dataDirectory, publicDirectory = defaultPub
           throw new LibraryError('目录导入仅接受 directory 字段');
         }
         json(response, 200, await jobs.importDirectory(input.directory));
+      } else if (request.method === 'POST' && url.pathname === '/api/placeholders') {
+        validateParameters(url.searchParams, []);
+        json(response, 200, await placeholders.create(await jsonBody(request)));
       } else if (request.method === 'POST' && url.pathname === '/api/import-file') {
         if (request.headers['content-type']?.split(';')[0] !== 'application/octet-stream') throw new LibraryError('图片上传需要 application/octet-stream', 415);
         validateParameters(url.searchParams, ['name', 'category']);
