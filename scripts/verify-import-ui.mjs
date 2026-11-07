@@ -134,7 +134,8 @@ export async function verifyImportAndTrash({ page, base, temporary, picture, fil
   await page.locator('#viewTrash').click();
   await visibleText('#resultCount', '1 张');
   await page.locator('.asset-card').click();
-  for (const selector of ['#insertButton', '#replaceButton', '#editMetadata', '#favoriteButton']) {
+  assert.equal(await page.locator('.card-add').count(), 0, '回收站不显示添加按钮');
+  for (const selector of ['#replaceButton', '#editMetadata', '#favoriteButton']) {
     assert.ok(!(await page.locator(selector).isVisible()) || await page.locator(selector).isDisabled(), `回收站禁止 ${selector}`);
   }
   await page.locator('#previewButton').click();

@@ -24,6 +24,10 @@ try {
   async function visibleText(selector, text) {
     await page.waitForFunction(({ selector, text }) => document.querySelector(selector)?.textContent.includes(text), { selector, text });
   }
+  const addIdle = () => page.waitForFunction(() => {
+    const button = document.querySelector('.card-add');
+    return button && !button.disabled && button.getAttribute('aria-disabled') === 'false';
+  });
 
   await page.goto(`${base}/taskpane.html`);
   await visibleText('#stateTitle', '先添加');
@@ -36,7 +40,9 @@ try {
   await page.locator('#searchInput').fill('  alias  ');
   await visibleText('#resultCount', '1 / 1 张');
   await page.locator('.asset-card').click();
-  assert.equal(await page.locator('#insertButton').isDisabled(), true, '浏览器模式禁止插入');
+  assert.equal(await page.locator('#insertButton').count(), 0, '底部不再有单独的插入按钮');
+  assert.equal(await page.locator('.card-add').isDisabled(), true, '浏览器模式禁止插入');
+  assert.match(await page.locator('.card-add').getAttribute('title'), /浏览器模式/, '禁用的添加按钮说明原因');
   assert.equal(await page.locator('#replaceButton').isVisible(), false, '浏览器隐藏文档替换操作');
   await page.locator('#previewButton').click();
   assert.equal(await page.locator('#previewDialog').isVisible(), true);
@@ -166,6 +172,7 @@ try {
   await page.keyboard.press('ArrowRight');
   await visibleText('#selectedName', '桥架施工.png');
   assert.equal(await page.locator('.asset-card[tabindex="0"]').count(), 1);
+  assert.equal(await page.locator('.card-add[tabindex="0"]').count(), 1, '只有当前卡片的添加按钮进入 Tab 顺序');
   await page.keyboard.press('Home');
   await visibleText('#selectedName', filename);
   await page.keyboard.press('End');
@@ -178,8 +185,11 @@ try {
   for (const width of [320, 420, 1080]) {
     await page.setViewportSize({ width, height: 800 });
     assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true, `${width}px 无横向溢出`);
-    const bounds = await page.locator('#insertButton').boundingBox();
-    assert.ok(bounds.y + bounds.height <= 800, `${width}px 插入操作可见`);
+    const add = await page.locator('.card-add').first().boundingBox();
+    const frame = await page.locator('.thumbnail-wrap').first().boundingBox();
+    assert.ok(add.y + add.height <= 800, `${width}px 添加按钮可见`);
+    assert.ok(add.x >= frame.x && add.x + add.width <= frame.x + frame.width
+      && add.y >= frame.y && add.y + add.height <= frame.y + frame.height, `${width}px 添加按钮位于缩略图内`);
     assert.equal(await page.locator('#selectedSpec').isVisible(), width >= 800, `${width}px 分类与工序只在宽窗口展开`);
     assert.ok((await page.locator('.workspace').boundingBox()).height >= 480, `${width}px 素材区保持为窗格主体`);
     assert.equal(await page.locator('.thumbnail-wrap img').first().evaluate(image => Math.abs(image.getBoundingClientRect().height - image.parentElement.clientHeight) <= 1), true, `${width}px 缩略图按容器完整显示，竖图不被裁切`);
@@ -221,7 +231,7 @@ try {
       Documents: { Count: 1 },
       CentimetersToPoints: value => value * 72 / 2.54,
       UndoRecord: { StartCustomRecord: () => {}, EndCustomRecord: () => {} },
-      get ActiveDocument() { return { Name: '验收文档.docx', FullName: 'C:\\test\\验收文档.docx', ReadOnly: window.mockReadOnly, ProtectionType: -1 }; },
+      get ActiveDocument() { return { Name: '验收文档.docx', FullName: window.mockFullName || 'C:\\test\\验收文档.docx', ReadOnly: window.mockReadOnly, ProtectionType: -1 }; },
       Selection: { get Range() {
         const range = {
           Start: 5, End: 12, StoryType: 1, PageSetup: { PageWidth: 600, LeftMargin: 60, RightMargin: 60 },
@@ -251,9 +261,11 @@ try {
   await page.locator('#searchInput').focus();
   await page.keyboard.press('Enter');
   assert.equal(await page.evaluate(() => window.insertions.length), 0, '检索框 Enter 不插入');
-  await page.locator('.asset-card').first().click();
-  await page.locator('#insertButton').click();
+  // 重载后没有所选图片：点击添加按钮即插入，并选中这张图。
+  await page.reload();
+  await page.locator('.card-add').first().click();
   await visibleText('#actionStatus', '已插入');
+  await visibleText('#selectedName', filename);
   const inserted = await page.evaluate(() => window.insertions);
   assert.equal(inserted.length, 1);
   assert.equal(qualityRequests.at(-1), 'balanced', '插入使用已保存质量档');
@@ -263,9 +275,9 @@ try {
   assert.equal(inserted[0].end, 12);
   assert.ok(Math.abs(inserted[0].width - 8 * 72 / 2.54) < 0.01, '持久化的固定宽度实际传递到 WPS');
   assert.ok(inserted[0].height <= 5 * 72 / 2.54, '最大高度限制保持有效');
-  await page.locator('#insertButton').click();
+  await page.locator('.card-add').first().click();
   await page.waitForFunction(() => window.insertions.length === 2);
-  await page.waitForFunction(() => !document.querySelector('#insertButton').disabled);
+  await addIdle();
   let recent = await (await fetch(`${base}/api/library?view=recent`)).json();
   assert.equal(recent.assets.length, 1, '同图连续插入只留一条最近记录');
   assert.equal(recent.assets[0].name, filename);
@@ -274,23 +286,22 @@ try {
   await visibleText('#resultCount', '1 张');
   await page.locator('#viewAll').click();
   await visibleText('#resultCount', '2 张');
-  await page.locator('.asset-card').nth(1).click();
   await page.route('**/api/assets/*/recent', route => route.fulfill({ status: 500, contentType: 'application/json', body: JSON.stringify({ error: '验收用记录失败' }) }));
-  await page.locator('#insertButton').click();
+  await page.locator('.card-add').nth(1).click();
   await visibleText('#actionStatus', '图片已插入，但最近记录未保存');
   assert.equal(await page.evaluate(() => window.insertions.length), 3, '记录失败不会重复插图');
   recent = await (await fetch(`${base}/api/library?view=recent`)).json();
   assert.equal(recent.assets.length, 1);
   await page.unroute('**/api/assets/*/recent');
   await page.evaluate(() => { window.mockInsertFailure = true; });
-  await page.locator('#insertButton').click();
+  await page.locator('.card-add').nth(1).click();
   await visibleText('#actionStatus', '插入失败');
   recent = await (await fetch(`${base}/api/library?view=recent`)).json();
   assert.equal(recent.assets.length, 1, 'WPS插图失败不记最近');
   await page.evaluate(() => { window.mockInsertFailure = false; });
-  await page.locator('#insertButton').click();
+  await page.locator('.card-add').nth(1).click();
   await visibleText('#actionStatus', '已插入');
-  await page.waitForFunction(() => !document.querySelector('#insertButton').disabled);
+  await addIdle();
   recent = await (await fetch(`${base}/api/library?view=recent`)).json();
   assert.deepEqual(recent.assets.map(asset => asset.name), ['桥架施工.png', filename]);
   await page.locator('#viewRecent').click();
@@ -298,14 +309,50 @@ try {
   await visibleText('.asset-name', '桥架施工.png');
   await page.locator('#viewAll').click();
   await visibleText('#resultCount', '2 张');
+
+  const insertionCount = () => page.evaluate(() => window.insertions.length);
+  const focusOnAdd = () => page.evaluate(() => document.activeElement.classList.contains('card-add'));
+  let insertionsBefore = await insertionCount();
+  await page.locator('.card-add').first().evaluate(button => { button.click(); button.click(); });
+  await addIdle();
+  assert.equal(await insertionCount(), insertionsBefore + 1, '连击添加按钮只插入一次');
+
+  insertionsBefore = await insertionCount();
+  await page.locator('.asset-card').first().focus();
+  await page.keyboard.press('Enter');
+  assert.equal(await insertionCount(), insertionsBefore, '卡片 Enter 只选图');
+  await page.keyboard.press('Tab');
+  assert.equal(await focusOnAdd(), true, 'Tab 从当前卡片进入它的添加按钮');
+  await page.keyboard.press('Enter');
+  await page.waitForFunction(count => window.insertions.length === count, insertionsBefore + 1);
+  await addIdle();
+  assert.equal(await focusOnAdd(), true, '插入后焦点留在添加按钮上，可继续添加');
+
+  // 等待插入文件期间文档切换，必须在写入前中止。
+  insertionsBefore = await insertionCount();
+  const insertionUrl = /\/api\/assets\/[^/]+\/insertion(?:\?.*)?$/;
+  let releaseInsertion;
+  const insertionGate = new Promise(resolve => { releaseInsertion = resolve; });
+  const heldInsertion = async route => { await insertionGate; await route.fallback(); };
+  await page.route(insertionUrl, heldInsertion);
+  await page.locator('.card-add').first().click();
+  assert.equal(await page.locator('.card-add').first().getAttribute('aria-disabled'), 'true', '插入等待时其他添加按钮不可用');
+  await page.evaluate(() => { window.mockFullName = 'C:\\test\\另一份文档.docx'; });
+  releaseInsertion();
+  await visibleText('#actionStatus', '已改变');
+  assert.equal(await insertionCount(), insertionsBefore, '等待期间文档变化不写入');
+  await page.unroute(insertionUrl, heldInsertion);
+  await page.evaluate(() => { window.mockFullName = undefined; });
+  await addIdle();
+
   await page.locator('.asset-card').first().click();
   await page.evaluate(() => { window.mockReadOnly = true; window.dispatchEvent(new Event('focus')); });
-  assert.equal(await page.locator('#insertButton').isDisabled(), true);
+  assert.equal(await page.locator('.card-add').first().isDisabled(), true);
   await visibleText('#hostStatus', '只读');
   await page.evaluate(() => { window.mockReadOnly = false; });
   await page.mouse.move(-1, -1);
   await page.mouse.move(50, 100);
-  await page.waitForFunction(() => !document.querySelector('#insertButton').disabled);
+  await addIdle();
 
   await page.evaluate(() => {
     window.prepareReplacement = () => {
@@ -361,7 +408,7 @@ try {
   assert.equal(await page.locator('#replaceButton').isEnabled(), true);
   await page.locator('#replaceButton').click();
   await visibleText('#actionStatus', '已替换');
-  await page.waitForFunction(() => !document.querySelector('#insertButton').disabled);
+  await addIdle();
   let replacement = await page.evaluate(() => window.replacementFixture);
   assert.equal(replacement.added, 1);
   assert.equal(qualityRequests.at(-1), 'balanced', '替换使用已保存质量档');
@@ -392,7 +439,8 @@ try {
   };
   await page.route(/\/api\/assets\/[^/]+\/insertion(?:\?.*)?$/, delayedInsertion);
   await page.locator('#replaceButton').click();
-  assert.equal(await page.locator('#insertButton').isDisabled(), true, '替换等待时不能同时插入');
+  assert.equal(await page.locator('.card-add').first().getAttribute('aria-disabled'), 'true', '替换等待时不能同时插入');
+  await page.locator('.card-add').first().evaluate(button => button.click());
   assert.equal(await page.locator('#replaceButton').isDisabled(), true);
   await page.evaluate(() => { window.replacementFixture.moved = true; });
   releaseReplacement();
@@ -422,7 +470,7 @@ try {
   await verifyImportAndTrash({ page, base, temporary, picture, filename });
   await verifyQuality({ base });
   assert.deepEqual(failures, []);
-  console.log('UI 验收通过：导入/检索/预览、素材信息与组合筛选、收藏重载与写失败恢复、最近成功记录及失败分离、键盘选图不误插入、排版偏好恢复、320/420/1080 布局、模拟 WPS 插图与替换、目标变更拒绝写入、只读与读取失败恢复');
+  console.log('UI 验收通过：导入/检索/预览、素材信息与组合筛选、收藏重载与写失败恢复、最近成功记录及失败分离、键盘选图不误插入、卡片添加按钮的连击与键盘操作、排版偏好恢复、320/420/1080 布局、模拟 WPS 插图与替换、目标变更拒绝写入、只读与读取失败恢复');
   console.log('WPS 行为使用模拟宿主；真实 WPS 验收另行记录。');
 } finally {
   await browser?.close();

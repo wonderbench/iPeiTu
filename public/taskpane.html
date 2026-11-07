@@ -104,7 +104,7 @@
         </section>
       </main>
 
-      <footer class="selection-bar" aria-label="当前选择与插入">
+      <footer class="selection-bar" aria-label="当前选择">
         <div class="title-block">
           <div class="selected-asset">
             <button id="previewButton" class="preview-button" type="button" aria-label="放大预览所选图片" title="放大预览" disabled>
@@ -139,9 +139,8 @@
             </button>
           </div>
         </div>
-        <div id="documentActions" class="document-actions">
-          <button id="insertButton" class="button primary" type="button" disabled>插入光标处</button>
-          <button id="replaceButton" class="button secondary" type="button" hidden disabled>替换选中图</button>
+        <div id="documentActions" class="document-actions" hidden>
+          <button id="replaceButton" class="button secondary" type="button" disabled>替换选中图</button>
         </div>
         <button id="restoreButton" class="button primary" type="button" hidden disabled>恢复到图库</button>
         <p id="hostStatus" class="host-status">正在检查 WPS 状态</p>

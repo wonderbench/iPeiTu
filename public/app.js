@@ -13,7 +13,7 @@ const ui = Object.fromEntries([
   'failureSummary', 'failureList', 'searchInput', 'clearSearch', 'resultCount',
   'libraryState', 'stateTitle', 'stateDescription', 'stateAction', 'assetGrid',
   'previewButton', 'selectedThumbnail', 'previewPlaceholder', 'selectedName',
-  'selectedMeta', 'insertButton', 'hostStatus', 'actionStatus', 'previewDialog',
+  'selectedMeta', 'hostStatus', 'actionStatus', 'previewDialog',
   'previewTitle', 'closePreview', 'previewImage', 'previewError', 'previewMeta',
   'layoutSettingsButton', 'layoutDialog', 'layoutForm', 'widthMode', 'widthCm',
   'maxHeightCm', 'layoutMode', 'includeCaption', 'captionFields', 'captionText', 'qualityProfile',
@@ -220,9 +220,19 @@ function showAction(message, error = false) {
   ui.actionStatus.hidden = !message;
 }
 
+function refreshAddButtons() {
+  const busy = inserting || replacing || changingTrash;
+  for (const button of ui.assetGrid.querySelectorAll('.card-add')) {
+    button.disabled = !hostAvailable;
+    // 等待期间只标记不禁用：真正禁用会丢失键盘焦点，连续添加时焦点要留在按钮上。
+    button.setAttribute('aria-disabled', String(busy));
+    button.title = hostAvailable ? '插入光标处' : ui.hostStatus.textContent;
+  }
+}
+
 function refreshHost() {
   const trashed = libraryView === 'trash';
-  ui.documentActions.hidden = trashed;
+  const inWps = typeof globalThis.Application !== 'undefined';
   ui.layoutSettingsButton.parentElement.hidden = trashed;
   ui.hostStatus.hidden = trashed;
   ui.restoreButton.hidden = !trashed;
@@ -232,16 +242,12 @@ function refreshHost() {
   try {
     const status = getHostStatus();
     hostAvailable = status.available;
-    ui.hostStatus.textContent = typeof globalThis.Application === 'undefined'
-      ? '浏览器模式 · 插入需从 WPS 打开' : status.message;
+    ui.hostStatus.textContent = inWps ? status.message : '浏览器模式 · 插入需从 WPS 打开';
   } catch (error) {
     hostAvailable = false;
     ui.hostStatus.textContent = error.message;
   }
   ui.hostStatus.classList.toggle('ready', hostAvailable);
-  const inWps = typeof globalThis.Application !== 'undefined';
-  ui.replaceButton.hidden = !inWps || trashed;
-  ui.documentActions.classList.toggle('with-replacement', inWps);
   replacementAvailable = false;
   if (inWps) {
     try {
@@ -252,8 +258,10 @@ function refreshHost() {
       ui.replaceButton.title = error.message || '无法读取当前图片，请重新选择';
     }
   }
-  ui.insertButton.disabled = !selected || !hostAvailable || inserting || replacing || changingTrash || trashed;
+  // 只在文档中选中图片时显示，平时把高度留给素材。
+  ui.documentActions.hidden = trashed || !replacementAvailable;
   ui.replaceButton.disabled = !selected || !replacementAvailable || inserting || replacing || changingTrash || trashed;
+  refreshAddButtons();
 }
 
 async function recordSuccessfulUse(asset, action) {
@@ -277,9 +285,11 @@ function selectAsset(asset) {
   }
   selected = asset;
   const tabId = visibleAssets.some(item => item.id === asset?.id) ? asset.id : visibleAssets[0]?.id;
-  for (const card of ui.assetGrid.children) {
+  for (const card of ui.assetGrid.querySelectorAll('.asset-card')) {
     card.setAttribute('aria-pressed', String(card.dataset.id === asset?.id));
-    card.tabIndex = card.dataset.id === tabId ? 0 : -1;
+  }
+  for (const control of ui.assetGrid.querySelectorAll('.asset-card, .card-add')) {
+    control.tabIndex = control.dataset.id === tabId ? 0 : -1;
   }
   ui.previewButton.disabled = !asset;
   ui.editMetadata.disabled = !asset;
@@ -316,11 +326,15 @@ function openImport() {
 }
 
 function renderAssets(assets) {
-  const focusedId = document.activeElement?.classList.contains('asset-card') ? document.activeElement.dataset.id : null;
+  const active = document.activeElement;
+  const focusedClass = ['card-add', 'asset-card'].find(name => active?.classList.contains(name));
+  const focusedId = focusedClass ? active.dataset.id : null;
   visibleAssets = assets;
   const tabId = assets.some(asset => asset.id === selected?.id) ? selected.id : assets[0]?.id;
   const fragment = document.createDocumentFragment();
   for (const asset of assets) {
+    const item = document.createElement('div');
+    item.className = 'asset-item';
     const card = document.createElement('button');
     card.type = 'button';
     card.className = 'asset-card';
@@ -364,12 +378,71 @@ function renderAssets(assets) {
       card.append(favorite);
     }
     card.addEventListener('click', () => selectAsset(visibleAssets.find(item => item.id === asset.id) || null));
-    fragment.append(card);
+    item.append(card);
+    if (libraryView !== 'trash') {
+      const add = document.createElement('button');
+      add.type = 'button';
+      add.className = 'card-add';
+      add.dataset.id = asset.id;
+      add.tabIndex = asset.id === tabId ? 0 : -1;
+      add.setAttribute('aria-label', `插入「${asset.name}」到光标处`);
+      add.append(icon('plus'));
+      add.addEventListener('click', () => insertAsset(asset));
+      item.append(add);
+    }
+    fragment.append(item);
   }
   ui.assetGrid.replaceChildren(fragment);
+  refreshAddButtons();
   if (focusedId) {
-    const cards = Array.from(ui.assetGrid.children);
-    (cards.find(card => card.dataset.id === focusedId) || cards[0])?.focus({ preventScroll: true });
+    (ui.assetGrid.querySelector(`.${focusedClass}[data-id="${focusedId}"]`)
+      || ui.assetGrid.querySelector('.asset-card'))?.focus({ preventScroll: true });
+  }
+}
+
+let addedMarkTimer;
+
+function clearAddedMark() {
+  clearTimeout(addedMarkTimer);
+  for (const button of ui.assetGrid.querySelectorAll('.card-add.added')) {
+    button.classList.remove('added');
+    button.replaceChildren(icon('plus'));
+  }
+}
+
+function markAdded(id) {
+  clearAddedMark();
+  const button = ui.assetGrid.querySelector(`.card-add[data-id="${id}"]`);
+  if (!button) return;
+  button.classList.add('added');
+  button.replaceChildren(icon('check'));
+  addedMarkTimer = setTimeout(clearAddedMark, 1200);
+}
+
+async function insertAsset(candidate) {
+  if (inserting || replacing || changingTrash || libraryView === 'trash') return;
+  refreshHost();
+  if (!hostAvailable) return;
+  const asset = visibleAssets.find(item => item.id === candidate.id) || candidate;
+  // 同时选中这张图，图题和底部信息才与插入的图片对应。
+  if (selected?.id !== asset.id) selectAsset(asset);
+  inserting = true;
+  refreshHost();
+  showAction('');
+  try {
+    const options = insertionOptions();
+    const profile = normalizeQualityProfile(layoutPreferences.qualityProfile);
+    const target = captureInsertionTarget();
+    const insertion = await request(`/api/assets/${encodeURIComponent(asset.id)}/insertion?profile=${profile}`);
+    insertPicture(insertion, target, options);
+    showAction(`已插入「${asset.name}」`);
+    await recordSuccessfulUse(asset, '插入');
+    markAdded(asset.id);
+  } catch (error) {
+    showAction(error.inserted ? error.message : `插入失败：${readableError(error)}`, true);
+  } finally {
+    inserting = false;
+    refreshHost();
   }
 }
 
@@ -453,10 +526,12 @@ ui.assetGrid.addEventListener('keydown', (event) => {
   if (event.isComposing || event.altKey || event.ctrlKey || event.metaKey || event.shiftKey
     || document.querySelector('dialog[open]')) return;
   const card = event.target.closest('.asset-card');
-  if (!card || card.parentElement !== ui.assetGrid) return;
-  const cards = Array.from(ui.assetGrid.children);
+  if (!card || !ui.assetGrid.contains(card)) return;
+  const cards = Array.from(ui.assetGrid.querySelectorAll('.asset-card'));
   const index = cards.indexOf(card);
-  const rowEnd = cards.findIndex(item => item.offsetTop !== cards[0].offsetTop);
+  // 卡片相对各自容器定位，行要按容器的 offsetTop 判断。
+  const items = Array.from(ui.assetGrid.children);
+  const rowEnd = items.findIndex(item => item.offsetTop !== items[0].offsetTop);
   const columns = rowEnd < 0 ? cards.length : rowEnd;
   let next;
   if (event.key === 'ArrowLeft') next = index - 1;
@@ -685,31 +760,6 @@ ui.layoutForm.addEventListener('submit', (event) => {
   updateLayoutSummary();
   ui.layoutDialog.close();
   showAction(saved ? '设置已保存' : '设置已应用于本次使用，但未能保存在本机', !saved);
-});
-ui.insertButton.addEventListener('click', async () => {
-  if (!selected || inserting || replacing || changingTrash || libraryView === 'trash') return;
-  refreshHost();
-  if (!hostAvailable) return;
-  const asset = selected;
-  inserting = true;
-  refreshHost();
-  ui.insertButton.textContent = '正在插入';
-  showAction('');
-  try {
-    const options = insertionOptions();
-    const profile = normalizeQualityProfile(layoutPreferences.qualityProfile);
-    const target = captureInsertionTarget();
-    const insertion = await request(`/api/assets/${encodeURIComponent(asset.id)}/insertion?profile=${profile}`);
-    insertPicture(insertion, target, options);
-    showAction(`已插入「${asset.name}」`);
-    await recordSuccessfulUse(asset, '插入');
-  } catch (error) {
-    showAction(error.inserted ? error.message : `插入失败：${readableError(error)}`, true);
-  } finally {
-    inserting = false;
-    ui.insertButton.textContent = '插入光标处';
-    refreshHost();
-  }
 });
 ui.replaceButton.addEventListener('click', async () => {
   if (!selected || inserting || replacing || changingTrash || libraryView === 'trash') return;
