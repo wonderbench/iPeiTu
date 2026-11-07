@@ -797,11 +797,11 @@ test('注册与重复卸载只还原本次插件，保留旧注册和其他插�
   assert.doesNotMatch(await readFile(path.join(fresh, 'publish.xml'), 'utf8'), /name="iPeiTu"/);
 });
 
-const boxImage = { path: 'C:\图库\placeholders\box.png' };
+const boxImage = { path: 'C:\\图库\\placeholders\\box.png' };
 const box = (overrides = {}) => ({ name: '脚手架搭设', size: 'fixed', widthCm: 12, heightCm: 9, ...overrides });
 
 test('占位框标记带版本，可往返解析，非标记和损坏内容不被当作框', () => {
-  assert.deepEqual(parsePlaceholderMarker(placeholderMarker('含"引号\与斜杠')), { name: '含"引号\与斜杠' });
+  assert.deepEqual(parsePlaceholderMarker(placeholderMarker('含"引号\\与斜杠')), { name: '含"引号\\与斜杠' });
   for (const text of [undefined, '', '普通图片说明', 'iPeiTu-box:1:{broken', 'iPeiTu-box:1:[]', 'iPeiTu-box:1:{"name":""}', 'iPeiTu-box:2:{"name":"a"}']) {
     assert.equal(parsePlaceholderMarker(text), null, String(text));
   }
@@ -889,7 +889,7 @@ test('等待占位图期间光标或文档变化时在写入前中止；无效�
   assert.throws(() => insertPlaceholder(boxImage, target), /已改变/);
   ({ state } = createHost({ text: '前文后文\r', start: 2, end: 2 }));
   const captured = capturePlaceholderTarget(box());
-  globalThis.Application.ActiveDocument.FullName = 'C:\其他\标书.docx';
+  globalThis.Application.ActiveDocument.FullName = 'C:\\其他\\标书.docx';
   assert.throws(() => insertPlaceholder(boxImage, captured), /已改变/);
   for (const image of [null, { path: 'box.png' }, { path: 'https://example.com/box.png' }]) {
     assert.throws(() => insertPlaceholder(image, captured), /路径无效/);
@@ -909,7 +909,7 @@ test('扫描只列出带有效标记的框，读不出替代文字的对象单�
   state.pictures[2].altText = 'iPeiTu-box:1:{broken';
   Object.defineProperty(state.pictures[3], 'AlternativeText', { get() { throw new Error('OLE 对象不支持'); } });
   assert.deepEqual(scanPlaceholders(), {
-    document: 'C:\文档\标书.docx', unreadable: 1,
+    document: 'C:\\文档\\标书.docx', unreadable: 1,
     boxes: [{ index: 1, name: '甲框', start: 1, widthPt: 240, heightPt: 120 }],
   });
 });
@@ -927,7 +927,7 @@ test('定位选中对应的框；框移动、标记变化或切换文档时要�
   state.pictures[0].altText = placeholderMarker('改名');
   assert.throws(() => selectPlaceholder(scan, scan.boxes[0]), stale);
   scan = scanPlaceholders();
-  app.ActiveDocument.FullName = 'C:\其他.docx';
+  app.ActiveDocument.FullName = 'C:\\其他.docx';
   assert.throws(() => selectPlaceholder(scan, scan.boxes[0]), stale);
   assert.throws(() => selectPlaceholder(scan, { ...scan.boxes[0], index: 9 }), stale);
 });
