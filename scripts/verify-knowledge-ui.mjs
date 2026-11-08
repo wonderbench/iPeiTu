@@ -69,6 +69,8 @@ export async function verifyKnowledge({ page, base }) {
   await page.goto(`${base}/knowledge.html`);
   await visibleText('#stateTitle', '知识库还没有片段');
   assert.equal(await page.locator('#typeChips button').count(), 5, '全部加四类工程');
+  // 主验收脚本的初始化脚本会在每个页面装上模拟宿主；先移除以检查浏览器模式。
+  await page.evaluate(() => { delete window.Application; window.dispatchEvent(new Event('focus')); });
   await visibleText('#hostStatus', '浏览器模式');
   assert.equal(await page.locator('#captureSelection').isDisabled(), true, '浏览器模式不能收录');
 
