@@ -6,6 +6,7 @@ import { Library, LibraryError, MAX_IMAGE_BYTES } from './library.js';
 import { ImportJobs } from './import-jobs.js';
 import { Placeholders } from './placeholder.js';
 import { Fitter } from './fit.js';
+import { Knowledge } from './knowledge.js';
 
 const defaultPublicDirectory = fileURLToPath(new URL('../public/', import.meta.url));
 // 健康检查用于识别端口上是不是 iPeiTu，以及是不是本目录启动的服务。
@@ -14,6 +15,9 @@ const { version } = JSON.parse(await readFile(new URL('../package.json', import.
 const contentTypes = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8',
   '.css': 'text/css; charset=utf-8', '.xml': 'application/xml; charset=utf-8', '.json': 'application/json; charset=utf-8',
   '.png': 'image/png', '.svg': 'image/svg+xml', '.ico': 'image/x-icon', '.jpeg': 'image/jpeg', '.jpg': 'image/jpeg' };
+
+const knowledgePath = /^\/api\/knowledge\/[0-9a-f-]{36}$/;
+const knowledgeTrashPath = /^\/api\/knowledge\/[0-9a-f-]{36}\/trash$/;
 
 function json(response, status, value) {
   response.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8' });
@@ -74,6 +78,7 @@ export async function createServer({ dataDirectory, publicDirectory = defaultPub
   const jobs = new ImportJobs(library);
   const placeholders = new Placeholders(library.directory);
   const fitter = new Fitter(library);
+  const knowledge = await Knowledge.open(library.directory);
   const publicRoot = path.resolve(publicDirectory);
   const server = http.createServer(async (request, response) => {
     response.setHeader('X-Content-Type-Options', 'nosniff');
@@ -144,6 +149,18 @@ export async function createServer({ dataDirectory, publicDirectory = defaultPub
         const image = await readFile(file.path);
         response.writeHead(200, { 'Content-Type': file.type, 'Content-Length': image.length });
         response.end(image);
+      } else if (request.method === 'GET' && url.pathname === '/api/knowledge') {
+        validateParameters(url.searchParams, ['q', 'type', 'section', 'view']);
+        json(response, 200, knowledge.list(Object.fromEntries(url.searchParams)));
+      } else if (request.method === 'POST' && url.pathname === '/api/knowledge') {
+        validateParameters(url.searchParams, []);
+        json(response, 201, { snippet: await knowledge.create(await jsonBody(request, 128 * 1024)) });
+      } else if (request.method === 'PATCH' && knowledgePath.test(url.pathname)) {
+        validateParameters(url.searchParams, []);
+        json(response, 200, { snippet: await knowledge.update(url.pathname.split('/')[3], await jsonBody(request, 128 * 1024)) });
+      } else if (request.method === 'PATCH' && knowledgeTrashPath.test(url.pathname)) {
+        validateParameters(url.searchParams, []);
+        json(response, 200, { snippet: await knowledge.setTrash(url.pathname.split('/')[3], await jsonBody(request)) });
       } else if (request.method === 'GET' && url.pathname === '/api/health') {
         validateParameters(url.searchParams, []);
         json(response, 200, { service: 'iPeiTu', version, pid: process.pid, root: appRoot });
@@ -175,7 +192,7 @@ export async function createServer({ dataDirectory, publicDirectory = defaultPub
     }
   });
   server.requestTimeout = 120_000;
-  return { server, library, jobs };
+  return { server, library, jobs, knowledge };
 }
 
 export async function startServer({ port = 39831, ...options } = {}) {

@@ -1,0 +1,37 @@
+/* 知识库：列表为主体，所选片段的全文与插入设置在底部（宽窗口在右侧）；沿用素材库的灰白与深青。 */
+.knowledge-app .brand h1 { display: block; }
+.snippet-list { display: grid; gap: 4px; margin: 0; padding: 12px; list-style: none; }
+.snippet-list:empty { display: none; }
+.snippet-item { position: relative; min-width: 0; }
+.snippet-card {
+  display: grid; gap: 2px; width: 100%; min-width: 0; padding: 8px 48px 8px 12px;
+  border: 1px solid var(--line); border-radius: 8px; background: var(--card); color: inherit; text-align: left;
+  transition: border-color 120ms var(--ease), background-color 120ms var(--ease);
+}
+.snippet-item:hover .snippet-card { border-color: var(--control-line); }
+.snippet-card[aria-pressed="true"] { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
+.snippet-title { overflow: hidden; font-size: 13px; line-height: 20px; font-weight: 500; white-space: nowrap; text-overflow: ellipsis; }
+.snippet-excerpt { overflow: hidden; color: var(--text-secondary); font-size: 12px; line-height: 16px; white-space: nowrap; text-overflow: ellipsis; }
+.snippet-item .card-add { top: 50%; right: 8px; bottom: auto; margin-top: -16px; }
+
+.knowledge-bar { align-content: start; }
+.snippet-preview { display: grid; gap: 8px; min-width: 0; padding: 8px 12px; border: 1px solid var(--line); border-radius: 8px; background: var(--card); }
+.preview-heading { display: grid; gap: 2px; min-width: 0; }
+.preview-heading h2 { overflow-wrap: anywhere; }
+.snippet-body { display: grid; gap: 4px; max-height: 120px; overflow: auto; color: var(--text-secondary); font-size: 13px; line-height: 20px; scrollbar-width: thin; }
+.snippet-body p { overflow-wrap: anywhere; text-indent: 2em; }
+.snippet-body .snippet-heading { color: var(--text); font-weight: 500; text-indent: 0; }
+.preview-actions { display: flex; flex-wrap: wrap; gap: 4px; margin-left: -8px; }
+.preview-actions .text-button { font-size: 12px; line-height: 20px; }
+.insert-options { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 8px 16px; }
+.insert-options .field-group { grid-template-columns: auto 112px; align-items: center; gap: 8px; }
+.insert-options select { min-height: 32px; padding: 4px 8px; }
+.insert-options .checkbox-label { min-height: 32px; }
+.knowledge-bar > .button { justify-self: start; align-self: flex-start; }
+#snippetBody { min-height: 200px; }
+
+@media (min-width: 800px) {
+  .snippet-list { padding: 16px 24px 24px; }
+  .knowledge-bar { gap: 12px; }
+  .snippet-body { max-height: 48vh; }
+}

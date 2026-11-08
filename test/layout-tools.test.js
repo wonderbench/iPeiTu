@@ -235,8 +235,14 @@ test('功能区排版工具打开独立任务窗格并复用，不影响素材�
   context.OpenLayoutTools();
   context.OpenImageLibrary();
   context.OpenLayoutTools();
-  assert.deepEqual(panes.map(pane => pane.url), ['http://127.0.0.1:39831/format.html', 'http://127.0.0.1:39831/taskpane.html']);
+  context.OpenKnowledgeBase();
+  context.OpenKnowledgeBase();
+  assert.deepEqual(panes.map(pane => pane.url), ['http://127.0.0.1:39831/format.html', 'http://127.0.0.1:39831/taskpane.html', 'http://127.0.0.1:39831/knowledge.html']);
   assert.ok(panes.every(pane => pane.Visible && pane.DockPosition === 2));
+  const ribbon = await readFile(new URL('../public/ribbon.xml', import.meta.url), 'utf8');
+  const actions = [...ribbon.matchAll(/onAction="(\w+)"/g)].map(match => match[1]);
+  assert.deepEqual(actions, ['OpenImageLibrary', 'OpenLayoutTools', 'OpenKnowledgeBase']);
+  assert.ok(actions.every(name => typeof context[name] === 'function'), '功能区按钮的回调都在 main.js 中');
 });
 
 function widthTable({ rows, columns = 1, nested = [] }) {

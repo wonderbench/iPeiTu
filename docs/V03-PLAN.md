@@ -28,6 +28,7 @@
 | 10 | 背景切换与页面尺寸（模块五） | 背景图应用与清除、四种页面尺寸 | 待开发 |
 | 11 | 颜色替换 | 范围待用户说明 | 待确认 |
 | 12 | 团队云图库（原步骤 8a、8b） | 见 V02-PLAN.md | 待开发 |
+| 13 | 标书知识库：通用文字片段的分类、维护与插入 | 片段存储的校验、持久化、回收站与损坏文件；模拟 WPS 的标题层级、插入位置、撤销记录、收录选中内容；页面流程与窄窗格 | 开发中（`codex/knowledge-base`） |
 
 每步从最新 main 建立 `codex/` 分支并单独提交 PR。原步骤 9 的表格占位配图并入步骤 2—4，并扩展到正文任意文本位置。
 
@@ -167,6 +168,33 @@
 
 **本轮暂不做：** 格式方案管理与样式应用（原步骤 7、8）、格式检查与修复、多级标题编号、图题自动编号、目录、页眉页脚、封面、招标要求解析、暗标检查。
 
+## 步骤 13：标书知识库
+
+2026-11-08 用户提出：增加独立的知识库页面，预设工艺工法等通用标书片段，便于快速插入正文。
+
+**用户决定：**
+
+- 四类工程都要有：房建施工、市政道路管网、信息化/弱电、通用措施。先做分类，正文内容由用户后续自行维护，不预置正文。
+- 片段可新增、编辑、删除（进回收站，可恢复）。
+- 插入时带标题层级：小标题用文档的“标题 N”样式，正文用“正文”样式并首行缩进 2 字符。
+- 不做可替换字段和配图标记，片段都是通用文字。
+
+**实际交付：**
+
+- 功能区“标书内容 › 知识库”打开独立任务窗格 `knowledge.html`，窗格 ID 记在 `ipeitu_knowledge_pane_id`。
+- 分类常量在 `server/knowledge.js`：每类工程附常用章节建议，章节也可填建议以外的名称。片段保存在图库目录的 `knowledge.json`（版本 1）：标题 1—100 字、工程类别、章节 1—30 字、标签最多 32 个、正文 1—20000 字，最多 5000 个片段。先写临时文件再替换。
+- 文件损坏或版本不明时只停用知识库并报错，原文件不改，图库照常可用。
+- 接口：`GET /api/knowledge`（`q`、`type`、`section`、`view=all|trash`，附类别与章节数量）、`POST /api/knowledge`、`PATCH /api/knowledge/:id`、`PATCH /api/knowledge/:id/trash`。字段必须完全匹配；回收站中的片段不能修改。
+- 正文每行一段，行首 1—6 个 `#` 加空格为相对小标题。插入设置“小标题从标题 1—6 开始”（默认标题 3）和“插入片段标题”，保存在本机。超过标题 9 时按标题 9。
+- 插入规则：
+  - 有选中文字时拒绝，避免覆盖。
+  - 空段直接写入；段首、段尾分别在前、后插入；段中先分段，原段落两侧的文字和样式不变。
+  - 每段设置样式后重置直接段落格式和字符格式；正文去掉列表编号，标题保留样式自带的编号。
+  - 表格单元格内只写文字，不套用样式。
+  - 写入后逐段回读文字，不一致时报错并提示撤销一次恢复。一次撤销记录，插入后光标停在末尾。
+- 收录选中内容：把所选段落整段读入编辑框，按 `OutlineLevel` 换算成相对小标题（所选内容中级别最高的标题记为 `#`），去掉结束标记、制表符和控制字符。只读文档也可收录。
+- 卡片“+”与素材库一致：只有当前卡片进入 Tab 顺序，Enter 和空格只选中，方向键移动焦点；浏览器模式、只读、受保护时禁用并说明原因，回收站中不显示。
+
 ## 验收方式
 
 当前工作机只做模拟测试，所以：
@@ -204,6 +232,12 @@
 11. 连续配图：填入后选中下一个空框时窗格能否随之切换；文字标记在正文和表格单元格中的查找与转换位置是否准确（依赖段落文字与位置的对应关系）；清除标记后保存重开，图片与尺寸不变。
 12. 素材管理：WPS 任务窗格能否接收从资源管理器拖入的文件，以及截图粘贴（剪贴板图片在 WPS 内嵌浏览器中是否以文件形式提供）。
 13. 一键安装：先关闭以前手动运行 `npm start` 的窗口（旧版本没有健康检查接口，安装会提示端口被 node 占用），在装有 WPS 的电脑上双击“安装.cmd”后重新打开 WPS，功能区出现“iPeiTu 配图”；注销或重启后登录，本地图库自动在后台启动且没有窗口；“卸载.cmd”后自动启动和加载项都移除，图库保留。中文用户名或含空格的项目路径下各脚本是否正常。
+14. 知识库：
+    - 内置样式编号 `-2`—`-10` 能否设为“标题 1—9”，以及文档模板的标题编号是否随之生效。
+    - 段中、段首、段尾和空段插入后，两侧段落的文字与格式是否不变。
+    - 单元格内插入多段的结果。
+    - `Paragraph.OutlineLevel` 对自定义标题样式的读取。
+    - 三个任务窗格能否同时打开。
 
 ## 接口依据
 
@@ -214,6 +248,8 @@
 - [Cell](https://open.wps.cn/documents/app-integration-dev/wps365/client/wpsoffice/jsapi/wps/Cell/obj)：`Height`、`HeightRule`、`Width` 及四边内边距
 - [Style](https://open.wps.cn/documents/app-integration-dev/wps365/client/wpsoffice/jsapi/wps/Style/obj)：`Font`、`ParagraphFormat`、`BaseStyle`、`LinkToListTemplate`
 - [Document](https://open.wps.cn/documents/app-integration-dev/wps365/client/wpsoffice/jsapi/wps/Document/obj)：`Styles`、`PageSetup`、`InlineShapes`、`Tables`、`CopyStylesFromTemplate`
+- [Paragraph](https://open.wps.cn/documents/app-integration-dev/wps365/client/wpsoffice/jsapi/wps/Paragraph/obj)：`OutlineLevel`（可读写）、`Style`（可读写）、`Range`
+- [Range](https://open.wps.cn/documents/app-integration-dev/wps365/client/wpsoffice/jsapi/wps/Range/obj)：`InsertAfter`、`Select`、`Information`、`Duplicate`、`Paragraphs`、`ParagraphFormat`、`Font`、`ListFormat`
 - [wps-jsapi-declare 类型声明](https://app.unpkg.com/wps-jsapi-declare@2.1.0/files/addon.wps.d.ts)：`WindowSelectionChange`，第三方来源，官方页面未核实
 
 各步开发前继续查阅对应成员的详细说明。

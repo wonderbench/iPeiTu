@@ -25,3 +25,7 @@ function OpenImageLibrary() {
 function OpenLayoutTools() {
   return openPane('ipeitu_layout_pane_id', '/format.html');
 }
+
+function OpenKnowledgeBase() {
+  return openPane('ipeitu_knowledge_pane_id', '/knowledge.html');
+}
