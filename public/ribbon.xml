@@ -9,6 +9,9 @@
         <group id="ipeituLayout" label="标书排版">
           <button id="ipeituOpenLayout" label="排版工具" size="large" onAction="OpenLayoutTools" screentip="一键排版" supertip="打开排版工具：清除格式、首行缩进、删除空行、表格满页、去除底纹与表格线、一键去色等" />
         </group>
+        <group id="ipeituContent" label="标书内容">
+          <button id="ipeituOpenKnowledge" label="知识库" size="large" onAction="OpenKnowledgeBase" screentip="插入标书通用片段" supertip="打开知识库：按工程类别和章节检索工艺工法、各类措施等通用片段，插入光标处" />
+        </group>
       </tab>
     </tabs>
   </ribbon>

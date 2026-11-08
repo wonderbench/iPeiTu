@@ -421,3 +421,70 @@ test('HTTP orientation filter and batch metadata endpoint validate input and rej
   assert.equal((await fetch(`${base}/api/assets/batch`, { method: 'POST', headers: { 'content-type': 'text/plain' }, body: '{}' })).status, 415);
   assert.ok(library.assets.every(asset => !asset.tags.includes('x')));
 });
+
+test('HTTP knowledge routes create, filter, edit, trash and restore snippets with strict inputs', async t => {
+  const { base, root } = await setup(t);
+  const send = (pathname, method, input, headers = {}) => fetch(`${base}${pathname}`, {
+    method, headers: { 'content-type': 'application/json', ...headers }, body: JSON.stringify(input),
+  });
+  const input = { title: '模板支设', type: '房建施工', section: '模板工程', tags: ['模板'], body: '# 支设\n按方案支设。' };
+  const empty = await (await fetch(`${base}/api/knowledge`)).json();
+  assert.deepEqual([empty.snippets, empty.total], [[], 0]);
+  assert.equal(empty.categories.length, 4);
+
+  assert.equal((await send('/api/knowledge', 'POST', input, { origin: 'https://attacker.example' })).status, 403);
+  assert.equal((await send('/api/knowledge', 'POST', input, { 'content-type': 'text/plain' })).status, 415);
+  assert.equal((await send('/api/knowledge?extra=1', 'POST', input)).status, 400);
+  assert.equal((await send('/api/knowledge', 'POST', { ...input, extra: true })).status, 400);
+  assert.equal((await send('/api/knowledge', 'POST', { ...input, type: '未知类别' })).status, 400);
+  const created = await send('/api/knowledge', 'POST', input);
+  assert.equal(created.status, 201);
+  const { snippet } = await created.json();
+  assert.equal(snippet.title, '模板支设');
+
+  const query = params => fetch(`${base}/api/knowledge?${new URLSearchParams(params)}`);
+  assert.equal((await (await query({ q: '方案', type: '房建施工', section: '模板工程' })).json()).snippets.length, 1);
+  assert.equal((await (await query({ type: '通用措施' })).json()).snippets.length, 0);
+  assert.equal((await query({ view: 'favorites' })).status, 400);
+  assert.equal((await query({ type: '未知类别' })).status, 400);
+  assert.equal((await query({ unknown: '1' })).status, 400);
+  assert.equal((await fetch(`${base}/api/knowledge?q=a&q=b`)).status, 400);
+
+  assert.equal((await send(`/api/knowledge/${snippet.id}`, 'PATCH', { title: '模板支设与拆除' }, { origin: 'https://attacker.example' })).status, 403);
+  assert.equal((await send(`/api/knowledge/${snippet.id}`, 'PATCH', { id: 'x' })).status, 400);
+  assert.equal((await send('/api/knowledge/00000000-0000-4000-8000-000000000000', 'PATCH', { title: 'x' })).status, 404);
+  const edited = await send(`/api/knowledge/${snippet.id}`, 'PATCH', { title: '模板支设与拆除' });
+  assert.equal(edited.status, 200);
+  assert.equal((await edited.json()).snippet.title, '模板支设与拆除');
+
+  assert.equal((await send(`/api/knowledge/${snippet.id}/trash`, 'PATCH', { trashed: 'yes' })).status, 400);
+  assert.equal((await send(`/api/knowledge/${snippet.id}/trash`, 'PATCH', { trashed: true })).status, 200);
+  assert.equal((await (await fetch(`${base}/api/knowledge`)).json()).total, 0);
+  assert.equal((await (await query({ view: 'trash' })).json()).snippets.length, 1);
+  assert.equal((await send(`/api/knowledge/${snippet.id}`, 'PATCH', { title: '不保存' })).status, 410);
+  assert.equal((await send(`/api/knowledge/${snippet.id}/trash`, 'PATCH', { trashed: false })).status, 200);
+  const saved = JSON.parse(await readFile(path.join(root, 'data', 'knowledge.json'), 'utf8'));
+  assert.deepEqual(saved.snippets.map(item => [item.title, item.trashedAt]), [['模板支设与拆除', null]]);
+});
+
+test('a damaged knowledge file keeps the image library available and reports the knowledge error', async t => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'ipeitu-http-knowledge-'));
+  let server;
+  t.after(async () => {
+    if (server) {
+      server.closeAllConnections();
+      await new Promise(resolve => server.close(resolve));
+    }
+    await rm(root, { recursive: true, force: true });
+  });
+  await mkdir(path.join(root, 'data'), { recursive: true });
+  await writeFile(path.join(root, 'data', 'knowledge.json'), '{broken');
+  ({ server } = await startServer({ port: 0, dataDirectory: path.join(root, 'data') }));
+  const base = `http://127.0.0.1:${server.address().port}`;
+  const library = await request(base, '/api/library');
+  assert.equal(library.status, 200);
+  const knowledge = await request(base, '/api/knowledge');
+  assert.equal(knowledge.status, 500);
+  assert.match(JSON.parse(knowledge.text).error, /knowledge\.json 不是有效 JSON/);
+  assert.equal(await readFile(path.join(root, 'data', 'knowledge.json'), 'utf8'), '{broken');
+});

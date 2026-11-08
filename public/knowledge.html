@@ -1,0 +1,135 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>iPeiTu · 知识库</title>
+    <link rel="stylesheet" href="/styles.css">
+    <link rel="stylesheet" href="/knowledge.css">
+    <script type="module" src="/knowledge.js"></script>
+  </head>
+  <body>
+    <!-- Icons from lucide (ISC License), https://lucide.dev -->
+    <svg class="sprite" aria-hidden="true">
+      <symbol id="i-plus" viewBox="0 0 24 24"><path d="M5 12h14"/><path d="M12 5v14"/></symbol>
+      <symbol id="i-search" viewBox="0 0 24 24"><path d="m21 21-4.34-4.34"/><circle cx="11" cy="11" r="8"/></symbol>
+      <symbol id="i-check" viewBox="0 0 24 24"><path d="M20 6 9 17l-5-5"/></symbol>
+    </svg>
+
+    <div class="app knowledge-app">
+      <header class="topbar">
+        <div class="brand">
+          <span class="wordmark">iPeiTu</span>
+          <h1>知识库</h1>
+        </div>
+        <div class="topbar-actions">
+          <button id="newSnippet" class="button secondary" type="button" aria-haspopup="dialog" aria-controls="snippetDialog">
+            <svg class="icon" aria-hidden="true"><use href="#i-plus"/></svg>
+            <span>新建片段</span>
+          </button>
+        </div>
+      </header>
+
+      <main id="workspace" class="workspace">
+        <section aria-labelledby="knowledgeTitle">
+          <div class="library-tools">
+            <label class="visually-hidden" for="searchInput">检索标题、章节、标签或正文</label>
+            <div class="search-field">
+              <svg class="icon" aria-hidden="true"><use href="#i-search"/></svg>
+              <input id="searchInput" type="search" autocomplete="off" spellcheck="false" placeholder="标题、章节、标签或正文" title="多个关键词用空格分隔" aria-controls="snippetList">
+              <button id="clearSearch" type="button" class="text-button" hidden>清空</button>
+            </div>
+            <div id="typeChips" class="category-chips" role="group" aria-label="工程类别"></div>
+            <div id="sectionChips" class="category-chips" role="group" aria-label="章节" hidden></div>
+            <div class="view-row">
+              <div class="view-switcher" role="group" aria-label="片段视图">
+                <button id="viewAll" type="button" data-view="all" aria-pressed="true">全部</button>
+                <button id="viewTrash" type="button" data-view="trash" aria-pressed="false">回收站</button>
+              </div>
+              <div class="library-heading">
+                <h2 id="knowledgeTitle" class="visually-hidden">标书片段</h2>
+                <span id="resultCount" class="meta figures" aria-live="polite">正在读取</span>
+              </div>
+            </div>
+          </div>
+          <div id="knowledgeState" class="empty-state" role="status">
+            <p id="stateTitle" class="state-title">正在读取知识库</p>
+            <p id="stateDescription" class="supporting" hidden></p>
+            <button id="stateAction" class="button secondary" type="button" hidden></button>
+          </div>
+          <ul id="snippetList" class="snippet-list" aria-label="片段列表" aria-busy="true"></ul>
+        </section>
+      </main>
+
+      <footer class="selection-bar knowledge-bar" aria-label="当前片段">
+        <article id="snippetPreview" class="snippet-preview" hidden>
+          <div class="preview-heading">
+            <h2 id="previewTitle"></h2>
+            <span id="previewMeta" class="meta"></span>
+          </div>
+          <div id="previewBody" class="snippet-body"></div>
+          <div class="preview-actions">
+            <button id="editSnippet" class="text-button" type="button" aria-haspopup="dialog" aria-controls="snippetDialog">编辑</button>
+            <button id="trashSnippet" class="text-button" type="button">移到回收站</button>
+            <button id="restoreSnippet" class="text-button" type="button" hidden>恢复</button>
+          </div>
+        </article>
+        <div class="insert-options">
+          <div class="field-group">
+            <label for="baseLevel">小标题从</label>
+            <select id="baseLevel">
+              <option value="1">标题 1</option>
+              <option value="2">标题 2</option>
+              <option value="3" selected>标题 3</option>
+              <option value="4">标题 4</option>
+              <option value="5">标题 5</option>
+              <option value="6">标题 6</option>
+            </select>
+          </div>
+          <label class="checkbox-label"><input id="includeTitle" type="checkbox">插入片段标题</label>
+        </div>
+        <button id="captureSelection" class="button secondary" type="button" title="把文档中选中的段落收录为新片段，标题层级按大纲级别保留">收录选中内容</button>
+        <p id="hostStatus" class="host-status">正在检查 WPS 状态</p>
+        <p id="actionStatus" class="action-status" role="status" aria-live="polite" hidden></p>
+      </footer>
+    </div>
+
+    <dialog id="snippetDialog" class="compact-dialog" aria-labelledby="snippetDialogTitle">
+      <form id="snippetForm" novalidate>
+        <div class="dialog-heading">
+          <h2 id="snippetDialogTitle">新建片段</h2>
+        </div>
+        <div class="layout-fields">
+          <div class="field-group">
+            <label for="snippetTitle">标题</label>
+            <input id="snippetTitle" name="title" type="text" maxlength="100" autocomplete="off" required>
+          </div>
+          <div class="size-fields">
+            <div class="field-group">
+              <label for="snippetType">工程类别</label>
+              <select id="snippetType" name="type"></select>
+            </div>
+            <div class="field-group">
+              <label for="snippetSection">章节</label>
+              <input id="snippetSection" name="section" type="text" maxlength="30" autocomplete="off" list="sectionOptions" required>
+              <datalist id="sectionOptions"></datalist>
+            </div>
+          </div>
+          <div class="field-group">
+            <label for="snippetTags">标签 · 逗号分隔</label>
+            <input id="snippetTags" name="tags" type="text" autocomplete="off">
+          </div>
+          <div class="field-group">
+            <label for="snippetBody">正文</label>
+            <textarea id="snippetBody" name="body" rows="10" maxlength="20000" placeholder="每行一段；行首 # 加空格为小标题，## 为下一级" required></textarea>
+          </div>
+        </div>
+        <p id="snippetError" class="form-error" role="alert" hidden></p>
+        <div class="dialog-actions">
+          <button id="cancelSnippet" class="button secondary" type="button">取消</button>
+          <button id="saveSnippet" class="button primary" type="submit">保存片段</button>
+        </div>
+      </form>
+    </dialog>
+  </body>
+</html>

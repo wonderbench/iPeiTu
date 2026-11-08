@@ -55,6 +55,14 @@ npm run wps:uninstall
 - 操作集中在 `public/layout-tools.js`，每项操作包在一个 `UndoRecord` 自定义记录中；只读、受保护和非正文位置在开始撤销记录前拒绝。
 - 用到的成员均已对照官方文档：`ParagraphFormat.Reset`、`Font.Reset`、`CharacterUnitFirstLineIndent`、`Table.PreferredWidthType`/`PreferredWidth`/`AllowAutoFit`/四边 `Padding`、`Cell` 四边 `Padding`、`Shading`、`Borders.Enable`、`PictureFormat.ColorType`、`Shape.Fill`/`Line` 的 `ForeColor.RGB`、`Document.Range`；表格宽度另用 `PageSetup.TextColumns.Count`、`Cell.Width`/`RowIndex`/`NestingLevel`、`Rows.Alignment`/`LeftIndent`、`Application.CentimetersToPoints`。实际效果待实机核对，清单见 [V03-PLAN.md](V03-PLAN.md) 的排版工具部分。
 
+## 知识库
+
+- 功能区新增“标书内容 › 知识库”，以独立任务窗格打开 `knowledge.html`，窗格 ID 记在 `ipeitu_knowledge_pane_id`。
+- 写入集中在 `public/knowledge-bridge.js`，一次插入一个 `UndoRecord` 自定义记录。用到的成员已对照官方文档：
+  - `Range` 的 `InsertAfter`、`Duplicate`、`Paragraphs`、`ParagraphFormat.Reset`、`Font.Reset`、`ListFormat.RemoveNumbers`、`Information`、`Select`；`Document.Range`。
+  - `Paragraph` 的 `Style`（可读写）和 `OutlineLevel`（可读写）。
+- 标题样式用内置样式编号 `-2`—`-10`（标题 1—9），与正文的 `-1` 同属 Word 的 `WdBuiltinStyle` 约定。实际效果待实机核对，清单见 [V03-PLAN.md](V03-PLAN.md) 第 14 项。
+
 ## 占位框
 
 - 占位图由本机服务按框的尺寸生成，保存在图库目录的 `placeholders` 中，以 `AddPicture` 内嵌插入。
