@@ -47,7 +47,7 @@ export async function verifyLan({ page, base, temporary }) {
     await visibleText('#sourceButton', '本机');
     assert.equal(await page.locator('#importScope').textContent(), '仅保存在本机');
     await page.locator('#sourceButton').click();
-    assert.equal(await page.locator('#connectionDialog').isVisible(), true);
+    await page.locator('#connectionDialog').waitFor({ state: 'visible' });
     assert.equal(await page.locator('#useLocal').isVisible(), false, '本机模式不显示切回按钮');
     await page.locator('#connectServer').click();
     await visibleText('#connectionError', '请填写服务器地址');
@@ -79,6 +79,7 @@ export async function verifyLan({ page, base, temporary }) {
     await page.goto(`${base}/taskpane.html`);
     await visibleText('#sourceButton', '局域网');
     await page.locator('#sourceButton').click();
+    await page.locator('#connectionDialog').waitFor({ state: 'visible' });
     assert.equal(await page.locator('#serverUrl').inputValue(), `http://${serverAddress}`);
     assert.equal(await page.locator('#accessKey').inputValue(), '', '不回显已保存的密钥');
     await page.locator('#useLocal').click();
