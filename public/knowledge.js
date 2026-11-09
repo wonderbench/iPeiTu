@@ -11,7 +11,7 @@ const elements = {
   preview: $('snippetPreview'), previewTitle: $('previewTitle'), previewMeta: $('previewMeta'), previewBody: $('previewBody'),
   edit: $('editSnippet'), trash: $('trashSnippet'), restore: $('restoreSnippet'),
   baseLevel: $('baseLevel'), includeTitle: $('includeTitle'), capture: $('captureSelection'),
-  hostStatus: $('hostStatus'), actionStatus: $('actionStatus'), newSnippet: $('newSnippet'),
+  hostStatus: $('hostStatus'), actionStatus: $('actionStatus'), newSnippet: $('newSnippet'), sourceBadge: $('sourceBadge'),
   dialog: $('snippetDialog'), form: $('snippetForm'), dialogTitle: $('snippetDialogTitle'), title: $('snippetTitle'),
   type: $('snippetType'), section: $('snippetSection'), sectionOptions: $('sectionOptions'), tags: $('snippetTags'),
   body: $('snippetBody'), error: $('snippetError'), cancel: $('cancelSnippet'), save: $('saveSnippet'),
@@ -420,10 +420,32 @@ elements.includeTitle.addEventListener('change', saveOptions);
 const options = readOptions();
 elements.baseLevel.value = String(options.baseLevel);
 elements.includeTitle.checked = options.includeTitle;
-window.addEventListener('focus', refreshHost);
+// 连接局域网图库时知识库与他人共享，顶栏标出；在素材库切换来源后，回到本窗格时重新读取。
+let source = null;
+async function refreshSource() {
+  let connection;
+  try { connection = await request('/api/connection'); } catch {
+    return; // 服务未运行时由列表读取给出说明。
+  }
+  const key = `${connection.mode} ${connection.url}`;
+  const lan = connection.mode === 'lan';
+  elements.sourceBadge.hidden = !lan;
+  elements.sourceBadge.title = lan ? `局域网图库 ${connection.url ?? '（连接配置有误）'}` : '';
+  if (source !== null && source !== key) {
+    state.selectedId = null;
+    load();
+  }
+  source = key;
+}
+
+window.addEventListener('focus', () => {
+  refreshHost();
+  refreshSource();
+});
 document.documentElement.addEventListener('pointerenter', refreshHost);
 document.addEventListener('visibilitychange', () => {
   if (!document.hidden) refreshHost();
 });
 refreshHost();
+refreshSource();
 load();

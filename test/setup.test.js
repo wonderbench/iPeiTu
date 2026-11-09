@@ -175,3 +175,43 @@ test('一键安装与卸载：注册加载项、设置自动启动并启动服�
   await access(path.join(data, 'images'));
   assert.match(result.output, /素材图库保留/);
 });
+
+test('局域网服务器：生成并沿用访问密钥，以局域网模式运行；-LocalOnly 与卸载关闭局域网访问', { skip }, async t => {
+  const { port, state, data, config, runKey, run } = await workspace(t);
+  const common = ['-ConfigDirectory', config, '-RunKey', runKey, '-StateDirectory', state, '-Port', String(port), '-SkipDependencies'];
+  const env = { IPEITU_DATA_DIR: data };
+  const keyPath = path.join(state, 'lan-access-key.txt');
+  let result = await run('setup', [...common, '-Lan'], env);
+  assert.equal(result.status, 0, result.output);
+  const key = (await readFile(keyPath, 'utf8')).trim();
+  assert.match(key, /^[A-Za-z0-9_-]{43}$/);
+  assert.match(result.output, /已生成新的访问密钥/);
+  assert.match(result.output, /局域网图库服务器/);
+  assert.ok(result.output.includes(key), '安装窗口显示密钥');
+  assert.match(result.output, /New-NetFirewallRule/);
+  const first = await health(port);
+  assert.equal(first?.lan, true, '服务以局域网模式运行');
+
+  result = await run('setup', [...common, '-Lan'], env);
+  assert.equal(result.status, 0, result.output);
+  assert.match(result.output, /沿用已有的访问密钥/);
+  assert.equal((await readFile(keyPath, 'utf8')).trim(), key, '再次安装不更换密钥');
+  assert.equal((await health(port)).pid, first.pid, '模式未变时不重启');
+
+  result = await run('setup', [...common, '-LocalOnly'], env);
+  assert.equal(result.status, 0, result.output);
+  assert.match(result.output, /已关闭局域网访问/);
+  assert.match(result.output, /重新启动/);
+  await assert.rejects(access(keyPath));
+  const local = await health(port);
+  assert.equal(local?.lan, false, '切回只供本机使用');
+  assert.notEqual(local.pid, first.pid);
+
+  assert.equal((await run('setup', [...common, '-Lan', '-LocalOnly'], env)).status, 3, '两个开关不能同时使用');
+  result = await run('setup', [...common, '-Lan'], env);
+  assert.equal(result.status, 0, result.output);
+  assert.equal((await health(port))?.lan, true);
+  result = await run('remove', common.filter(item => item !== '-SkipDependencies'), env);
+  assert.equal(result.status, 0, result.output);
+  await assert.rejects(access(keyPath), '卸载时删除访问密钥');
+});

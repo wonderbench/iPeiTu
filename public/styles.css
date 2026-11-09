@@ -83,6 +83,14 @@ textarea { resize: vertical; min-height: 64px; line-height: 20px; }
 .wordmark { font-size: 16px; line-height: 20px; font-weight: 600; }
 h1 { min-width: 0; overflow: hidden; color: var(--text-muted); font-size: 13px; line-height: 20px; font-weight: 400; white-space: nowrap; text-overflow: ellipsis; }
 .topbar-actions { display: flex; flex: none; gap: 8px; }
+/* 图库来源：本机为中性色，局域网用强调色，提醒正在使用共享图库 */
+.source-button, .source-badge {
+  flex: none; align-self: center; min-height: 24px; padding: 1px 8px;
+  border: 1px solid var(--line); border-radius: 999px; background: transparent;
+  color: var(--text-secondary); font-size: 12px; line-height: 20px; white-space: nowrap;
+}
+.source-button:hover { background: var(--raised); }
+.source-button.is-lan, .source-badge { border-color: var(--accent); color: var(--accent); }
 .topbar .button { flex: none; min-height: 32px; padding: 4px 12px 4px 8px; gap: 4px; }
 .topbar .button[aria-expanded="true"] { background: var(--raised-strong); }
 .workspace { overflow: auto; min-height: 0; scrollbar-width: thin; }
@@ -296,7 +304,7 @@ dialog::backdrop { background: rgb(23 23 23 / 48%); }
   margin: 16px -16px -16px; padding: 12px 16px;
   border-top: 1px solid var(--line); background: var(--card);
 }
-.trash-button { margin-right: auto; color: var(--text-secondary); }
+.trash-button, #useLocal { margin-right: auto; color: var(--text-secondary); }
 .preview-stage { display: grid; place-items: center; min-height: 160px; overflow: hidden; border-radius: 8px; background: var(--raised); }
 .preview-stage img { display: block; max-width: 100%; max-height: 64vh; object-fit: contain; }
 .preview-stage .supporting { padding: 16px; }

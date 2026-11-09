@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { mkdir, readFile, writeFile, rename, lstat, opendir, open, stat, realpath } from 'node:fs/promises';
+import { mkdir, readFile, readdir, writeFile, rename, lstat, opendir, open, stat, realpath } from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
 import sharp from 'sharp';
@@ -16,6 +16,8 @@ const metadataLimits = { aliases: [100, 255], categories: [32, 255], tags: [64, 
 const fieldLabels = { name: '图片名称', aliases: '别名', categories: '分类', tags: '标签' };
 const controlCharacters = /[\x00-\x1f\x7f\u2028\u2029]/;
 export const MAX_BATCH_ASSETS = 1000;
+export const MAX_CLIENTS = 1000;
+export const clientIdPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 // \u5bbd\u9ad8\u6bd4\u5927\u4e8e 1.05 \u4e3a\u6a2a\u56fe\uff0c\u5c0f\u4e8e 1/1.05 \u4e3a\u7ad6\u56fe\uff0c\u5176\u4f59\u4e3a\u65b9\u56fe\u3002
 const orientations = {
   '': () => true,
@@ -175,6 +177,7 @@ export class Library {
     this.directory = path.resolve(directory);
     this.assets = [];
     this.usage = { version: 1, favorites: [], recent: [] };
+    this.clientUsage = new Map();
     this.pending = Promise.resolve();
     this.quality = new InsertionQuality(this.directory);
   }
@@ -251,11 +254,49 @@ export class Library {
     this.usage = usage;
   }
 
+  // 局域网客户端的收藏与最近使用按客户端分别保存在 clients/<clientId>.json；本机请求（client 为空）使用 usage.json。
+  async usageFor(client = null) {
+    if (client === null) return this.usage;
+    if (typeof client !== 'string' || !clientIdPattern.test(client)) throw new LibraryError('客户端标识无效');
+    if (this.clientUsage.has(client)) return this.clientUsage.get(client);
+    let original;
+    try { original = await readFile(path.join(this.directory, 'clients', `${client}.json`), 'utf8'); } catch (error) {
+      if (error.code !== 'ENOENT') throw error;
+      return { version: 1, favorites: [], recent: [] };
+    }
+    let usage;
+    try { usage = JSON.parse(original); } catch { usage = null; }
+    if (!validUsage(usage, this.assets)) {
+      throw new LibraryError(`客户端 ${client} 的收藏与最近记录已损坏，请保留 clients 目录中的原文件并恢复备份`, 500);
+    }
+    this.clientUsage.set(client, usage);
+    return usage;
+  }
+
+  async persistUsageFor(client, usage) {
+    if (client === null) return this.persistUsage(usage);
+    const directory = path.join(this.directory, 'clients');
+    const filename = path.join(directory, `${client}.json`);
+    if (!this.clientUsage.has(client)) {
+      await mkdir(directory, { recursive: true });
+      let exists = true;
+      try { await stat(filename); } catch (error) {
+        if (error.code !== 'ENOENT') throw error;
+        exists = false;
+      }
+      if (!exists && (await readdir(directory)).filter(name => name.endsWith('.json')).length >= MAX_CLIENTS) {
+        throw new LibraryError(`局域网客户端记录已达 ${MAX_CLIENTS} 个上限，请清理服务器图库 clients 目录中不再使用的记录`, 409);
+      }
+    }
+    await replaceFile(filename, `${JSON.stringify(usage, null, 2)}\n`);
+    this.clientUsage.set(client, usage);
+  }
+
   get activeTotal() {
     return this.assets.filter(asset => asset.deletedAt === null).length;
   }
 
-  list(query = '', { category = '', tags = [], uncategorized = false, view = 'all', orientation = '' } = {}) {
+  list(query = '', { category = '', tags = [], uncategorized = false, view = 'all', orientation = '' } = {}, usage = this.usage) {
     if (typeof query !== 'string' || query.length > 512 || /[\x00-\x08\x0e-\x1f\x7f]/.test(query)) {
       throw new LibraryError('检索词须为不超过 512 个字符的文字');
     }
@@ -271,10 +312,10 @@ export class Library {
     const facetAssets = view === 'trash' ? this.assets.filter(asset => asset.deletedAt !== null) : activeAssets;
     let viewAssets = facetAssets;
     if (view === 'trash') viewAssets = [...facetAssets].sort((a, b) => Date.parse(b.deletedAt) - Date.parse(a.deletedAt));
-    else if (view === 'favorites') viewAssets = activeAssets.filter(asset => this.usage.favorites.includes(asset.id));
+    else if (view === 'favorites') viewAssets = activeAssets.filter(asset => usage.favorites.includes(asset.id));
     else if (view === 'recent') {
       const byId = new Map(activeAssets.map(asset => [asset.id, asset]));
-      viewAssets = this.usage.recent.map(entry => byId.get(entry.id)).filter(Boolean);
+      viewAssets = usage.recent.map(entry => byId.get(entry.id)).filter(Boolean);
     }
     const assets = viewAssets.filter(asset => {
       const names = [asset.name, ...asset.aliases, ...asset.tags].map(matchKey);
@@ -283,7 +324,7 @@ export class Library {
         && (!uncategorized || asset.categories.length === 0)
         && tagKeys.every(tag => asset.tags.some(item => matchKey(item) === tag))
         && orientations[orientation](asset);
-    }).map(asset => displayAsset(asset, this.usage));
+    }).map(asset => displayAsset(asset, usage));
     const facets = {
       categories: [], tags: [], uncategorized: facetAssets.filter(asset => asset.categories.length === 0).length,
       orientations: Object.fromEntries(['landscape', 'portrait', 'square'].map(key => [key, facetAssets.filter(orientations[key]).length])),
@@ -302,9 +343,10 @@ export class Library {
     return { assets, total: activeAssets.length, viewTotal: viewAssets.length, facets };
   }
 
-  updateAsset(id, input) {
+  updateAsset(id, input, client = null) {
     return this.serialize(async () => {
       const asset = this.getAsset(id);
+      const usage = await this.usageFor(client);
       if (!input || typeof input !== 'object' || Array.isArray(input)) throw new LibraryError('素材整理内容须为 JSON 对象');
       const fields = Object.keys(input);
       if (!fields.length || fields.some(field => !Object.hasOwn(fieldLabels, field))) {
@@ -315,7 +357,7 @@ export class Library {
         ? metadataText(input[field], field, 255) : metadataList(input[field], field);
       const updated = { ...asset, ...changes };
       await this.persist(this.assets.map(item => item.id === id ? updated : item));
-      return displayAsset(updated, this.usage);
+      return displayAsset(updated, usage);
     });
   }
 
@@ -353,38 +395,43 @@ export class Library {
     });
   }
 
-  setFavorite(id, input) {
+  setFavorite(id, input, client = null) {
     return this.serialize(async () => {
       const asset = this.getAsset(id);
       if (!hasExactFields(input, ['favorite']) || typeof input.favorite !== 'boolean') {
         throw new LibraryError('收藏设置仅接受 favorite 布尔值');
       }
-      if (this.usage.favorites.includes(id) !== input.favorite) {
-        const favorites = input.favorite ? [...this.usage.favorites, id] : this.usage.favorites.filter(item => item !== id);
-        await this.persistUsage({ ...this.usage, favorites });
+      let usage = await this.usageFor(client);
+      if (usage.favorites.includes(id) !== input.favorite) {
+        const favorites = input.favorite ? [...usage.favorites, id] : usage.favorites.filter(item => item !== id);
+        usage = { ...usage, favorites };
+        await this.persistUsageFor(client, usage);
       }
-      return displayAsset(asset, this.usage);
+      return displayAsset(asset, usage);
     });
   }
 
-  recordRecent(id, input) {
+  recordRecent(id, input, client = null) {
     return this.serialize(async () => {
       const asset = this.getAsset(id);
       if (!hasExactFields(input, [])) throw new LibraryError('最近插入记录仅接受空 JSON 对象，时间由服务端生成');
       // Prepending gives equal-millisecond events stable order, including after a restart.
       // Clamp a backwards system clock so persisted timestamps remain in descending order.
-      const timestamp = Math.max(Date.now(), Date.parse(this.usage.recent[0]?.insertedAt) || 0);
-      const recent = [{ id, insertedAt: new Date(timestamp).toISOString() }, ...this.usage.recent.filter(entry => entry.id !== id)].slice(0, 100);
-      await this.persistUsage({ ...this.usage, recent });
-      return displayAsset(asset, this.usage);
+      let usage = await this.usageFor(client);
+      const timestamp = Math.max(Date.now(), Date.parse(usage.recent[0]?.insertedAt) || 0);
+      const recent = [{ id, insertedAt: new Date(timestamp).toISOString() }, ...usage.recent.filter(entry => entry.id !== id)].slice(0, 100);
+      usage = { ...usage, recent };
+      await this.persistUsageFor(client, usage);
+      return displayAsset(asset, usage);
     });
   }
 
-  setTrash(id, input) {
+  setTrash(id, input, client = null) {
     return this.serialize(async () => {
       const asset = this.getAsset(id, { includeDeleted: true });
       if (!hasExactFields(input, ['trashed']) || typeof input.trashed !== 'boolean') throw new LibraryError('移出设置仅接受 trashed 布尔值');
-      if ((asset.deletedAt !== null) === input.trashed) return displayAsset(asset, this.usage);
+      const usage = await this.usageFor(client);
+      if ((asset.deletedAt !== null) === input.trashed) return displayAsset(asset, usage);
       if (!input.trashed) {
         await this.file(id, 'image');
         if (asset.normalized || asset.format === 'webp') {
@@ -396,7 +443,7 @@ export class Library {
       }
       const updated = { ...asset, deletedAt: input.trashed ? new Date().toISOString() : null };
       await this.persist(this.assets.map(item => item.id === id ? updated : item));
-      return displayAsset(updated, this.usage);
+      return displayAsset(updated, usage);
     });
   }
 
@@ -576,6 +623,12 @@ export class Library {
   }
 
   async importSourceFile(context, descriptor) {
+    const { name, buffer, categories } = await this.readImportSource(context, descriptor);
+    return this.serialize(() => this.importImage(name, buffer, categories));
+  }
+
+  // 读取导入来源的一张图片：校验路径未被替换，文件夹名映射为分类。局域网客户端用它读取后上传到服务器。
+  async readImportSource(context, descriptor) {
     const source = await this.resolveImportSource(context, descriptor.relativePath, 'file');
     if (source.details.size > MAX_IMAGE_BYTES) throw new LibraryError('单张图片不超过 32 MB', 413);
     const handle = await open(source.path, 'r');
@@ -599,7 +652,7 @@ export class Library {
     } finally { await handle.close(); }
     const parent = path.posix.dirname(descriptor.relativePath);
     const category = parent === '.' ? path.basename(context.root) : parent;
-    return this.serialize(() => this.importImage(descriptor.name, buffer, category ? [category] : []));
+    return { name: descriptor.name, buffer, categories: category ? [category] : [] };
   }
 
   async importDirectory(directory) {

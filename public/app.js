@@ -37,6 +37,8 @@ const ui = Object.fromEntries([
   'fillBar', 'fillTarget', 'fitMode', 'searchBoxName', 'ratioSort',
   'unfilledOnly', 'findMarkers', 'clearMarkers', 'markerResult', 'markerSummary', 'markerList',
   'convertMarkers', 'clearMarkersDialog', 'clearMarkersText',
+  'sourceButton', 'importScope', 'connectionDialog', 'connectionForm', 'connectionCurrent', 'connectionServing',
+  'serverUrl', 'accessKey', 'connectionError', 'useLocal', 'cancelConnection', 'connectServer',
 ].map((id) => [id, element(id)]));
 
 function icon(name) {
@@ -1055,6 +1057,79 @@ try {
 } catch {
   showAction('无法读取上次的排版设置，本次使用默认设置', true);
 }
+// 图库来源：本机图库或局域网图库，二选一。切换由本机服务保存，素材库与知识库窗格共用。
+let connection = { mode: 'local', url: null, lanServer: false };
+
+function renderConnection() {
+  const lan = connection.mode === 'lan';
+  ui.sourceButton.textContent = lan ? '局域网' : '本机';
+  ui.sourceButton.classList.toggle('is-lan', lan);
+  ui.sourceButton.title = lan ? `局域网图库 ${connection.url ?? '（连接配置有误）'}` : connection.lanServer ? '本机图库，已开放给局域网' : '本机图库';
+  ui.importScope.textContent = lan ? '保存到局域网图库' : connection.lanServer ? '保存在本机，局域网共享' : '仅保存在本机';
+}
+
+async function loadConnection() {
+  const previous = `${connection.mode} ${connection.url}`;
+  try { connection = await request('/api/connection'); } catch {
+    // 服务未运行时由图库读取失败给出说明，这里保持上次的显示。
+  }
+  renderConnection();
+  return previous !== `${connection.mode} ${connection.url}`;
+}
+
+function showConnectionError(message) {
+  ui.connectionError.textContent = message;
+  ui.connectionError.hidden = !message;
+}
+
+async function changeSource(method, body) {
+  ui.connectServer.disabled = true;
+  ui.useLocal.disabled = true;
+  showConnectionError('');
+  if (method === 'PUT') ui.connectServer.textContent = '连接中…';
+  try {
+    connection = await request('/api/connection', body
+      ? { method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) } : { method });
+    ui.connectionDialog.close();
+    renderConnection();
+    clearAllConditions();
+    showAction(connection.mode === 'lan' ? `已连接局域网图库 ${connection.url}` : '已切回本机图库');
+  } catch (error) {
+    showConnectionError(readableError(error));
+  } finally {
+    ui.connectServer.disabled = connection.lanServer;
+    ui.useLocal.disabled = false;
+    ui.connectServer.textContent = '连接';
+  }
+}
+
+ui.sourceButton.addEventListener('click', async () => {
+  await loadConnection();
+  const lan = connection.mode === 'lan';
+  ui.connectionCurrent.textContent = lan ? '当前：局域网' : '当前：本机';
+  ui.serverUrl.value = connection.url ?? '';
+  ui.accessKey.value = '';
+  ui.accessKey.placeholder = lan && connection.url ? '重新连接时需再次填写' : '';
+  ui.useLocal.hidden = !lan;
+  ui.connectionServing.hidden = !connection.lanServer;
+  for (const control of [ui.serverUrl, ui.accessKey, ui.connectServer]) control.disabled = connection.lanServer;
+  showConnectionError(connection.error ?? '');
+  ui.connectionDialog.showModal();
+});
+ui.connectionForm.addEventListener('submit', (event) => {
+  event.preventDefault();
+  if (!ui.serverUrl.value.trim()) { showConnectionError('请填写服务器地址'); ui.serverUrl.focus(); return; }
+  if (!ui.accessKey.value.trim()) { showConnectionError('请填写访问密钥'); ui.accessKey.focus(); return; }
+  changeSource('PUT', { url: ui.serverUrl.value, key: ui.accessKey.value });
+});
+ui.useLocal.addEventListener('click', () => changeSource('DELETE'));
+ui.cancelConnection.addEventListener('click', () => ui.connectionDialog.close());
+// 在其他窗格切换来源后，回到本窗格时同步显示并重新读取。
+window.addEventListener('focus', async () => {
+  if (await loadConnection()) clearAllConditions();
+});
+
 updateLayoutSummary();
 refreshHost();
+loadConnection();
 loadLibrary();

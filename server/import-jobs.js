@@ -129,6 +129,8 @@ export class ImportJobs {
       for (const file of files) {
         job.currentName = file.relativePath;
         try { job[await this.library.importSourceFile(record.context, file)]++; } catch (error) {
+          // 局域网图库连不上或密钥失效时，后续每张都会同样失败，直接结束整批。
+          if (error.fatal) throw error;
           this.addFailure(record, file, error);
         } finally { job.processed++; }
       }

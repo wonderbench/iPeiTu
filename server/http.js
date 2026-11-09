@@ -2,11 +2,14 @@ import http from 'node:http';
 import { readFile, realpath, stat } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { Library, LibraryError, MAX_IMAGE_BYTES } from './library.js';
+import { createHash, timingSafeEqual } from 'node:crypto';
+import { Library, LibraryError, MAX_IMAGE_BYTES, clientIdPattern } from './library.js';
 import { ImportJobs } from './import-jobs.js';
 import { Placeholders } from './placeholder.js';
 import { Fitter } from './fit.js';
 import { Knowledge } from './knowledge.js';
+import { API_VERSION, LanClient, accessKeyPattern, isDownloadPath, isForwardedPath } from './lan-client.js';
+import { readBody as body, readJsonBody as jsonBody } from './request-body.js';
 
 const defaultPublicDirectory = fileURLToPath(new URL('../public/', import.meta.url));
 // 健康检查用于识别端口上是不是 iPeiTu，以及是不是本目录启动的服务。
@@ -24,32 +27,6 @@ function json(response, status, value) {
   response.end(JSON.stringify(value));
 }
 
-async function body(request, limit) {
-  if (Number(request.headers['content-length']) > limit) {
-    request.resume();
-    throw new LibraryError('请求超过允许大小', 413);
-  }
-  const chunks = [];
-  let length = 0;
-  for await (const chunk of request.iterator({ destroyOnReturn: false })) {
-    length += chunk.length;
-    if (length > limit) {
-      request.resume();
-      throw new LibraryError('请求超过允许大小', 413);
-    }
-    chunks.push(chunk);
-  }
-  return Buffer.concat(chunks);
-}
-
-async function jsonBody(request, limit = 16 * 1024) {
-  if (request.headers['content-type']?.split(';')[0] !== 'application/json') throw new LibraryError('需要 JSON 请求', 415);
-  try { return JSON.parse((await body(request, limit)).toString('utf8')); } catch (error) {
-    if (error instanceof LibraryError) throw error;
-    throw new LibraryError('请求不是有效 JSON');
-  }
-}
-
 function validateParameters(parameters, allowed, repeatable = []) {
   for (const key of new Set(parameters.keys())) {
     if (!allowed.includes(key)) throw new LibraryError(`不支持的请求参数：${key}`);
@@ -57,9 +34,25 @@ function validateParameters(parameters, allowed, repeatable = []) {
   }
 }
 
-function validateRequest(request, port) {
+const loopbackAddresses = new Set(['127.0.0.1', '::1', '::ffff:127.0.0.1']);
+const loopbackHosts = new Set(['127.0.0.1', 'localhost', '::1']);
+
+// 远程请求（局域网客户端的本机服务转发）可用的接口；静态页面、目录导入、占位图与连接设置只供本机使用。
+function remoteRoute(pathname) {
+  return pathname === '/api/health' || isForwardedPath(pathname);
+}
+
+function sameKey(actual, expected) {
+  const digest = value => createHash('sha256').update(value).digest();
+  return timingSafeEqual(digest(actual), digest(expected));
+}
+
+// 连接来自回环地址且 Host 是本机地址时为本机请求，沿用原有检查；其余为远程请求，只在局域网模式下凭密钥接受。
+function validateRequest(request, port, accessKey) {
   const allowedHosts = new Set([`127.0.0.1:${port}`, `localhost:${port}`]);
-  if (!allowedHosts.has(request.headers.host)) throw new LibraryError('只接受本机地址请求', 403);
+  if (!loopbackAddresses.has(request.socket.remoteAddress) || !allowedHosts.has(request.headers.host)) {
+    return validateRemote(request, accessKey);
+  }
   const origin = `http://${request.headers.host}`;
   if (request.headers.origin && request.headers.origin !== origin) throw new LibraryError('不接受其他网站的请求', 403);
   if (request.headers['sec-fetch-site'] && !['same-origin', 'none'].includes(request.headers['sec-fetch-site'])) {
@@ -70,15 +63,49 @@ function validateRequest(request, port) {
     try { referer = new URL(request.headers.referer); } catch { throw new LibraryError('来源地址无效', 403); }
     if (referer.origin !== origin) throw new LibraryError('不接受其他网站的请求', 403);
   }
-  return origin;
+  return { origin, remote: false, client: null };
 }
 
-export async function createServer({ dataDirectory, publicDirectory = defaultPublicDirectory } = {}) {
+function validateRemote(request, accessKey) {
+  if (!accessKey) throw new LibraryError('只接受本机地址请求', 403);
+  // 转发请求由客户端本机服务发出，不带浏览器的来源标头；带这些标头的是浏览器直接访问。
+  if (request.headers.origin || request.headers['sec-fetch-site'] || request.headers.referer) {
+    throw new LibraryError('局域网图库不接受浏览器直接访问，请在 WPS 加载项中连接', 403);
+  }
+  const [scheme, token] = (request.headers.authorization ?? '').split(' ');
+  if (scheme !== 'Bearer' || !token || !sameKey(token, accessKey)) {
+    console.warn(`iPeiTu 局域网访问被拒绝：${request.socket.remoteAddress} 未提供正确的访问密钥`);
+    throw new LibraryError('访问密钥不正确', 401);
+  }
+  const client = request.headers['x-ipeitu-client'];
+  if (typeof client !== 'string' || !clientIdPattern.test(client)) throw new LibraryError('缺少有效的客户端标识', 400);
+  return { origin: 'http://lan.invalid', remote: true, client };
+}
+
+async function sendFile(response, filePath, type) {
+  const content = await readFile(filePath);
+  response.writeHead(200, { 'Content-Type': type, 'Content-Length': content.length });
+  response.end(content);
+}
+
+// 远程客户端读不到服务器上的路径：去掉 path，附上文件哈希与下载地址。
+async function downloadable(result, file) {
+  const { path: filePath, ...rest } = result;
+  const content = await readFile(filePath);
+  return { ...rest, bytes: content.length, sha256: createHash('sha256').update(content).digest('hex'), file };
+}
+
+export async function createServer({ dataDirectory, publicDirectory = defaultPublicDirectory, accessKey = null } = {}) {
+  if (accessKey !== null && !accessKeyPattern.test(accessKey)) throw new Error('局域网访问密钥格式无效，应为 43 位 base64url 字符');
   const library = await Library.open(dataDirectory);
   const jobs = new ImportJobs(library);
   const placeholders = new Placeholders(library.directory);
   const fitter = new Fitter(library);
   const knowledge = await Knowledge.open(library.directory);
+  // 作为局域网服务器运行时不再连接其他服务器，避免一台电脑既提供又转发。
+  const lan = await LanClient.open(library, { disabled: accessKey !== null });
+  const importJobs = () => (lan.active ? lan.jobs : jobs);
+  const importing = () => Boolean(jobs.activeId || lan.jobs.activeId);
   const publicRoot = path.resolve(publicDirectory);
   const server = http.createServer(async (request, response) => {
     response.setHeader('X-Content-Type-Options', 'nosniff');
@@ -86,50 +113,65 @@ export async function createServer({ dataDirectory, publicDirectory = defaultPub
     response.setHeader('Cross-Origin-Resource-Policy', 'same-origin');
     response.setHeader('Referrer-Policy', 'same-origin');
     try {
-      const origin = validateRequest(request, server.address().port);
+      const { origin, remote, client } = validateRequest(request, server.address().port, accessKey);
       const url = new URL(request.url, origin);
-      if (request.method === 'GET' && url.pathname === '/api/library') {
+      if (remote && !remoteRoute(url.pathname)) throw new LibraryError('局域网客户端不能使用该接口', 403);
+      const assetId = url.pathname.split('/')[3];
+      if (!remote && lan.active && isForwardedPath(url.pathname)) {
+        // 已连接局域网图库：图库与知识库请求转发到服务器，插图文件下载到本机缓存。
+        if (request.method === 'GET' && isDownloadPath(url.pathname)) json(response, 200, await lan.download(url));
+        else await lan.forward(request, response, url);
+      } else if (request.method === 'GET' && url.pathname === '/api/connection') {
+        validateParameters(url.searchParams, []);
+        json(response, 200, lan.status());
+      } else if ((request.method === 'PUT' || request.method === 'DELETE') && url.pathname === '/api/connection') {
+        validateParameters(url.searchParams, []);
+        const input = request.method === 'PUT' ? await jsonBody(request) : null;
+        if (importing()) throw new LibraryError('有目录导入正在进行，请等待完成后再切换图库来源', 409);
+        json(response, 200, request.method === 'PUT' ? await lan.connect(input) : await lan.disconnect());
+      } else if (request.method === 'GET' && url.pathname === '/api/library') {
         validateParameters(url.searchParams, ['q', 'category', 'tag', 'uncategorized', 'view', 'orientation'], ['tag']);
         const uncategorized = url.searchParams.get('uncategorized');
         if (uncategorized !== null && !['0', '1'].includes(uncategorized)) throw new LibraryError('uncategorized 仅接受 0 或 1');
-        json(response, 200, library.list(url.searchParams.get('q') || '', {
+        const filters = {
           category: url.searchParams.get('category') || '', tags: url.searchParams.getAll('tag'), uncategorized: uncategorized === '1',
           view: url.searchParams.get('view') ?? 'all', orientation: url.searchParams.get('orientation') ?? '',
-        }));
+        };
+        json(response, 200, library.list(url.searchParams.get('q') || '', filters, await library.usageFor(client)));
       } else if (request.method === 'POST' && url.pathname === '/api/assets/batch') {
         validateParameters(url.searchParams, []);
         json(response, 200, await library.updateAssets(await jsonBody(request, 256 * 1024)));
       } else if (request.method === 'PATCH' && /^\/api\/assets\/[a-f0-9]{64}$/.test(url.pathname)) {
         validateParameters(url.searchParams, []);
-        json(response, 200, { asset: await library.updateAsset(url.pathname.split('/')[3], await jsonBody(request, 128 * 1024)) });
+        json(response, 200, { asset: await library.updateAsset(assetId, await jsonBody(request, 128 * 1024), client) });
       } else if (request.method === 'PATCH' && /^\/api\/assets\/[a-f0-9]{64}\/favorite$/.test(url.pathname)) {
         validateParameters(url.searchParams, []);
-        json(response, 200, { asset: await library.setFavorite(url.pathname.split('/')[3], await jsonBody(request)) });
+        json(response, 200, { asset: await library.setFavorite(assetId, await jsonBody(request), client) });
       } else if (request.method === 'POST' && /^\/api\/assets\/[a-f0-9]{64}\/recent$/.test(url.pathname)) {
         validateParameters(url.searchParams, []);
-        json(response, 200, { asset: await library.recordRecent(url.pathname.split('/')[3], await jsonBody(request)) });
+        json(response, 200, { asset: await library.recordRecent(assetId, await jsonBody(request), client) });
       } else if (request.method === 'PATCH' && /^\/api\/assets\/[a-f0-9]{64}\/trash$/.test(url.pathname)) {
         validateParameters(url.searchParams, []);
-        json(response, 200, { asset: await library.setTrash(url.pathname.split('/')[3], await jsonBody(request)) });
+        json(response, 200, { asset: await library.setTrash(assetId, await jsonBody(request), client) });
       } else if (request.method === 'POST' && url.pathname === '/api/import-jobs') {
         validateParameters(url.searchParams, []);
         const input = await jsonBody(request);
         if (!input || typeof input !== 'object' || Array.isArray(input) || Object.keys(input).length !== 1
           || !Object.hasOwn(input, 'directory')) throw new LibraryError('目录导入仅接受 directory 字段');
-        json(response, 202, { job: await jobs.create(input.directory) });
+        json(response, 202, { job: await importJobs().create(input.directory) });
       } else if (request.method === 'GET' && /^\/api\/import-jobs\/[^/]+$/.test(url.pathname)) {
         validateParameters(url.searchParams, []);
-        json(response, 200, { job: jobs.get(url.pathname.split('/')[3]) });
+        json(response, 200, { job: importJobs().get(url.pathname.split('/')[3]) });
       } else if (request.method === 'POST' && /^\/api\/import-jobs\/[^/]+\/retry$/.test(url.pathname)) {
         validateParameters(url.searchParams, []);
-        json(response, 202, { job: await jobs.retry(url.pathname.split('/')[3], await jsonBody(request, 64 * 1024)) });
+        json(response, 202, { job: await importJobs().retry(url.pathname.split('/')[3], await jsonBody(request, 64 * 1024)) });
       } else if (request.method === 'POST' && url.pathname === '/api/import') {
         validateParameters(url.searchParams, []);
         const input = await jsonBody(request);
         if (!input || typeof input !== 'object' || Array.isArray(input) || Object.keys(input).some(key => key !== 'directory')) {
           throw new LibraryError('目录导入仅接受 directory 字段');
         }
-        json(response, 200, await jobs.importDirectory(input.directory));
+        json(response, 200, await importJobs().importDirectory(input.directory));
       } else if (request.method === 'POST' && url.pathname === '/api/placeholders') {
         validateParameters(url.searchParams, []);
         json(response, 200, await placeholders.create(await jsonBody(request)));
@@ -139,16 +181,23 @@ export async function createServer({ dataDirectory, publicDirectory = defaultPub
         json(response, 200, await library.importFile(url.searchParams.get('name'), await body(request, MAX_IMAGE_BYTES), url.searchParams.get('category') ?? undefined));
       } else if (request.method === 'GET' && /^\/api\/assets\/[a-f0-9]{64}\/fit$/.test(url.pathname)) {
         validateParameters(url.searchParams, ['mode', 'widthPt', 'heightPt', 'profile']);
-        json(response, 200, await fitter.create(url.pathname.split('/')[3], Object.fromEntries(url.searchParams)));
+        const fitted = await fitter.create(assetId, Object.fromEntries(url.searchParams));
+        json(response, 200, remote ? await downloadable(fitted, `/api/assets/${assetId}/fit/file${url.search}`) : fitted);
       } else if (request.method === 'GET' && /^\/api\/assets\/[a-f0-9]{64}\/insertion$/.test(url.pathname)) {
         validateParameters(url.searchParams, ['profile']);
-        json(response, 200, await library.insertion(url.pathname.split('/')[3], url.searchParams.get('profile') ?? 'original'));
+        const insertion = await library.insertion(assetId, url.searchParams.get('profile') ?? 'original');
+        json(response, 200, remote ? await downloadable(insertion, `/api/assets/${assetId}/insertion/file?profile=${encodeURIComponent(insertion.profile)}`) : insertion);
+      } else if (request.method === 'GET' && /^\/api\/assets\/[a-f0-9]{64}\/fit\/file$/.test(url.pathname)) {
+        validateParameters(url.searchParams, ['mode', 'widthPt', 'heightPt', 'profile']);
+        const fitted = await fitter.create(assetId, Object.fromEntries(url.searchParams));
+        await sendFile(response, fitted.path, `image/${fitted.format}`);
+      } else if (request.method === 'GET' && /^\/api\/assets\/[a-f0-9]{64}\/insertion\/file$/.test(url.pathname)) {
+        validateParameters(url.searchParams, ['profile']);
+        const insertion = await library.insertion(assetId, url.searchParams.get('profile') ?? 'original');
+        await sendFile(response, insertion.path, `image/${insertion.format}`);
       } else if (request.method === 'GET' && /^\/api\/assets\/[a-f0-9]{64}\/(image|thumbnail)$/.test(url.pathname)) {
-        const [, , , id, kind] = url.pathname.split('/');
-        const file = await library.file(id, kind);
-        const image = await readFile(file.path);
-        response.writeHead(200, { 'Content-Type': file.type, 'Content-Length': image.length });
-        response.end(image);
+        const file = await library.file(assetId, url.pathname.split('/')[4]);
+        await sendFile(response, file.path, file.type);
       } else if (request.method === 'GET' && url.pathname === '/api/knowledge') {
         validateParameters(url.searchParams, ['q', 'type', 'section', 'view']);
         json(response, 200, knowledge.list(Object.fromEntries(url.searchParams)));
@@ -163,7 +212,10 @@ export async function createServer({ dataDirectory, publicDirectory = defaultPub
         json(response, 200, { snippet: await knowledge.setTrash(url.pathname.split('/')[3], await jsonBody(request)) });
       } else if (request.method === 'GET' && url.pathname === '/api/health') {
         validateParameters(url.searchParams, []);
-        json(response, 200, { service: 'iPeiTu', version, pid: process.pid, root: appRoot });
+        // 远程健康检查不返回进程号与安装路径，只返回连接所需信息。
+        json(response, 200, remote
+          ? { service: 'iPeiTu', version, api: API_VERSION, lan: true, total: library.activeTotal }
+          : { service: 'iPeiTu', version, api: API_VERSION, lan: accessKey !== null, pid: process.pid, root: appRoot });
       } else if (url.pathname.startsWith('/api/')) {
         throw new LibraryError('接口不存在', 404);
       } else if (request.method === 'GET' || request.method === 'HEAD') {
@@ -192,14 +244,18 @@ export async function createServer({ dataDirectory, publicDirectory = defaultPub
     }
   });
   server.requestTimeout = 120_000;
-  return { server, library, jobs, knowledge };
+  return { server, library, jobs, knowledge, lan };
 }
 
-export async function startServer({ port = 39831, ...options } = {}) {
+// host 默认只监听本机；局域网模式监听 0.0.0.0，必须同时提供访问密钥。
+export async function startServer({ port = 39831, host = '127.0.0.1', ...options } = {}) {
+  if (!loopbackHosts.has(host) && !accessKeyPattern.test(options.accessKey ?? '')) {
+    throw new Error('局域网模式需要访问密钥，请运行“局域网服务器.cmd”生成');
+  }
   const result = await createServer(options);
   await new Promise((resolve, reject) => {
     result.server.once('error', reject);
-    result.server.listen(port, '127.0.0.1', resolve);
+    result.server.listen(port, host, resolve);
   });
   return result;
 }
