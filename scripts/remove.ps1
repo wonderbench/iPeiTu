@@ -17,6 +17,11 @@ $code = 0
 Write-Host '[1/3] 停止本地图库'
 & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $service -Action stop -Port $Port -StateDirectory $StateDirectory
 if ($LASTEXITCODE -ne 0) { $code = $LASTEXITCODE }
+$keyPath = Join-Path ([IO.Path]::GetFullPath($StateDirectory)) 'lan-access-key.txt'
+if (Test-Path -LiteralPath $keyPath) {
+    Remove-Item -LiteralPath $keyPath
+    Write-Host '  已删除局域网访问密钥，重新开启时会生成新密钥'
+}
 
 Write-Host '[2/3] 移除登录后自动启动'
 $current = $null

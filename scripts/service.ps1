@@ -17,7 +17,29 @@ $entry = Join-Path $root 'server\index.js'
 $stateRoot = [IO.Path]::GetFullPath($StateDirectory)
 $statePath = Join-Path $stateRoot "service-$Port.json"
 $logPath = Join-Path $stateRoot "logs\service-$Port.log"
+# 局域网模式由访问密钥文件决定：存在时监听所有网卡，其他电脑凭密钥连接（见“局域网服务器.cmd”）。
+$keyPath = Join-Path $stateRoot 'lan-access-key.txt'
 $baseUrl = "http://127.0.0.1:$Port/"
+
+function Get-LanAddresses {
+    try {
+        return @(Get-NetIPAddress -AddressFamily IPv4 -ErrorAction Stop |
+            Where-Object { $_.IPAddress -notlike '127.*' -and $_.IPAddress -notlike '169.254.*' } |
+            ForEach-Object { "http://$($_.IPAddress):$Port" })
+    } catch {
+        return @()
+    }
+}
+
+function Show-LanAddresses {
+    $addresses = Get-LanAddresses
+    if ($addresses.Count) {
+        Write-Host '局域网内其他电脑可连接：'
+        $addresses | ForEach-Object { Write-Host "  $_" }
+    } else {
+        Write-Host '已开启局域网访问，但未找到本机的局域网地址，请检查网络连接。'
+    }
+}
 
 function Get-Health {
     try {
@@ -44,10 +66,17 @@ function Test-OwnProcess([int]$ProcessId) {
 }
 
 function Start-IPeiTu {
+    $lan = Test-Path -LiteralPath $keyPath
     $health = Get-Health
     if ($health) {
-        Write-Host "iPeiTu 本地图库已在运行：$baseUrl（进程 $($health.pid)）"
-        return 0
+        if ([bool]$health.lan -eq $lan) {
+            Write-Host "iPeiTu 本地图库已在运行：$baseUrl（进程 $($health.pid)）"
+            if ($lan) { Show-LanAddresses }
+            return 0
+        }
+        Write-Host '运行中的服务与局域网设置不一致，正在重新启动'
+        $stopped = Stop-IPeiTu
+        if ($stopped -ne 0) { return $stopped }
     }
     $owner = Get-PortOwner
     if ($owner) {
@@ -65,6 +94,7 @@ function Start-IPeiTu {
     $dataDirectory = if ($env:IPEITU_DATA_DIR) { $env:IPEITU_DATA_DIR } else { Join-Path $env:LOCALAPPDATA 'iPeiTu\library' }
     $quote = { param($value) '"' + ([string]$value).TrimEnd('\') + '"' }
     $commandLine = (& $quote $node.Source) + ' ' + (& $quote $entry) + ' --port ' + $Port + ' --data-dir ' + (& $quote $dataDirectory) + ' --log ' + (& $quote $logPath)
+    if ($lan) { $commandLine += ' --host 0.0.0.0 --access-key-file ' + (& $quote $keyPath) }
     # 用 WMI 创建进程：由系统 WMI 服务创建，与本窗口及其调用方没有父子与句柄继承关系
     # （改用 Start-Process 时，CI 中从测试调用的脚本一直没有结束）。端口、图库和日志经命令行参数传入。
     $startup = New-CimInstance -ClassName Win32_ProcessStartup -ClientOnly -Property @{ ShowWindow = [uint16]0 }
@@ -84,6 +114,7 @@ function Start-IPeiTu {
             $state = [ordered]@{ version = 1; pid = [int]$health.pid; port = $Port; root = $root; startedAt = (Get-Date).ToString('o') }
             [IO.File]::WriteAllText($statePath, (ConvertTo-Json -InputObject $state), (New-Object System.Text.UTF8Encoding($false)))
             Write-Host "iPeiTu 本地图库已启动：$baseUrl（进程 $($health.pid)）"
+            if ($lan) { Show-LanAddresses }
             return 0
         }
         if (!(Get-Process -Id $launcherId -ErrorAction SilentlyContinue)) { break }
@@ -137,6 +168,7 @@ function Show-Status {
     $health = Get-Health
     if ($health) {
         Write-Host "运行中：$baseUrl（进程 $($health.pid)，版本 $($health.version)）"
+        if ($health.lan) { Show-LanAddresses }
         if ([string]::Compare([string]$health.root, $root, $true) -ne 0) { Write-Host "注意：该服务来自 $($health.root)" }
         return 0
     }

@@ -25,6 +25,7 @@
       <header class="topbar">
         <div class="brand">
           <span class="wordmark">iPeiTu</span>
+          <button id="sourceButton" class="source-button" type="button" aria-haspopup="dialog" aria-controls="connectionDialog" title="图库来源">本机</button>
           <h1>标书配图库</h1>
         </div>
         <div class="topbar-actions">
@@ -43,7 +44,7 @@
         <section id="importPanel" class="import-panel" aria-labelledby="importTitle" hidden>
           <div class="section-heading">
             <h2 id="importTitle">添加本地图片</h2>
-            <span class="meta">仅保存在本机</span>
+            <span id="importScope" class="meta">仅保存在本机</span>
           </div>
           <div class="file-import">
             <button id="chooseFiles" class="button secondary" type="button">选择图片</button>
@@ -394,6 +395,32 @@
           <button id="trashButton" class="text-button trash-button" type="button">移出图库</button>
           <button id="cancelMetadata" class="button secondary" type="button">取消</button>
           <button id="saveMetadata" class="button primary" type="submit">保存信息</button>
+        </div>
+      </form>
+    </dialog>
+
+    <dialog id="connectionDialog" class="compact-dialog" aria-labelledby="connectionTitle">
+      <form id="connectionForm" novalidate>
+        <div class="dialog-heading">
+          <h2 id="connectionTitle">图库来源</h2>
+          <span id="connectionCurrent" class="meta"></span>
+        </div>
+        <p id="connectionServing" class="metadata-hint" hidden>本机正作为局域网图库服务器，其他电脑连接本机</p>
+        <div class="layout-fields">
+          <div class="field-group">
+            <label for="serverUrl">局域网服务器地址</label>
+            <input id="serverUrl" name="url" type="text" maxlength="200" autocomplete="off" spellcheck="false" placeholder="192.168.1.10">
+          </div>
+          <div class="field-group">
+            <label for="accessKey">访问密钥</label>
+            <input id="accessKey" name="key" type="password" maxlength="100" autocomplete="off" spellcheck="false">
+          </div>
+        </div>
+        <p id="connectionError" class="form-error" role="alert" hidden></p>
+        <div class="dialog-actions">
+          <button id="useLocal" class="text-button" type="button">使用本机图库</button>
+          <button id="cancelConnection" class="button secondary" type="button">取消</button>
+          <button id="connectServer" class="button primary" type="submit">连接</button>
         </div>
       </form>
     </dialog>
