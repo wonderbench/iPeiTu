@@ -328,8 +328,9 @@ dialog > .meta { margin-top: 12px; }
 .metadata-hint { margin-top: 12px; color: var(--text-muted); font-size: 12px; line-height: 16px; }
 
 @media (max-width: 380px) {
-  /* 顶栏两个入口放不下副标题，保留字标 */
+  /* 顶栏放不下副标题；有图库来源按钮时字标也让位，来源与两个入口始终可见 */
   .brand h1 { display: none; }
+  .brand:has(.source-button) .wordmark { display: none; }
   .directory-form { grid-template-columns: minmax(0, 1fr); }
   .directory-form button { justify-self: start; }
   .size-fields { grid-template-columns: minmax(0, 1fr); }
