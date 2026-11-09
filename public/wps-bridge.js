@@ -303,9 +303,14 @@ export function replacePicture(asset, expectedTarget) {
     }
     picture.LockAspectRatio = LOCK_ASPECT_RATIO;
     picture.Width = snapshot.width;
-    if (!Number.isFinite(picture.Width) || !Number.isFinite(picture.Height) || picture.Height <= 0
-      || Math.abs(picture.Width - snapshot.width) > 0.1
-      || Math.abs(picture.Height - snapshot.width * nativeHeight / nativeWidth) > 0.1) {
+    const actualWidth = picture.Width;
+    const actualHeight = picture.Height;
+    const expectedHeight = actualWidth * nativeHeight / nativeWidth;
+    // WPS 会量化宽高，且插入时和缩放后的读数可能来自不同的尺寸精度。
+    const heightTolerance = Math.min(3, Math.max(1, expectedHeight * 0.01));
+    if (!Number.isFinite(actualWidth) || actualWidth <= 0 || !Number.isFinite(actualHeight) || actualHeight <= 0
+      || Math.abs(actualWidth - snapshot.width) > 1
+      || Math.abs(actualHeight - expectedHeight) > heightTolerance) {
       throw new Error('WPS 未能按原宽度等比例调整新图片');
     }
     picture.Range.Font = font;
@@ -453,7 +458,9 @@ function placeBox(range, { empty, original }, image, target, progress) {
   picture.Width = target.widthPt;
   picture.Height = target.heightPt;
   picture.LockAspectRatio = LOCK_ASPECT_RATIO;
-  if (!(Math.abs(picture.Width - target.widthPt) <= 0.1 && Math.abs(picture.Height - target.heightPt) <= 0.1)) {
+  // 部分 WPS 版本的内嵌图片宽高只保留整数磅，写入时会截去小数。
+  const matches = (actual, expected) => Math.abs(actual - expected) <= 0.1 || actual === Math.trunc(expected);
+  if (!matches(picture.Width, target.widthPt) || !matches(picture.Height, target.heightPt)) {
     throw new Error('WPS 未能按框的尺寸设置占位图');
   }
   const marker = placeholderMarker(target.name);
@@ -652,7 +659,8 @@ export function fillPlaceholder(image, expectedTarget, filled) {
     picture.Width = snapshot.width;
     picture.Height = snapshot.height;
     picture.LockAspectRatio = LOCK_ASPECT_RATIO;
-    if (!(Math.abs(picture.Width - snapshot.width) <= 0.1 && Math.abs(picture.Height - snapshot.height) <= 0.1)) {
+    // WPS 会按图片分辨率量化尺寸，340 磅在 120 dpi 下可能回读为 339.6 磅。
+    if (!(Math.abs(picture.Width - snapshot.width) < 1 && Math.abs(picture.Height - snapshot.height) < 1)) {
       throw new Error('WPS 未能按占位框尺寸设置图片');
     }
     const marker = placeholderMarker(snapshot.name, filled);

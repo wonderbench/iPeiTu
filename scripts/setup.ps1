@@ -11,11 +11,12 @@ param(
     [switch]$LocalOnly
 )
 
-# 一键安装：检查 Node.js、安装依赖、注册 WPS 加载项、设置登录后自动启动并启动本地图库。
+# 一键安装：准备 Node.js、安装依赖、注册 WPS 加载项、设置登录后自动启动并启动本地图库。
 $ErrorActionPreference = 'Stop'
 try { [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding($false) } catch { }
 $root = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
 $service = Join-Path $PSScriptRoot 'service.ps1'
+. (Join-Path $PSScriptRoot 'node-runtime.ps1')
 $defaultState = Join-Path $env:LOCALAPPDATA 'iPeiTu'
 $keyPath = Join-Path ([IO.Path]::GetFullPath($StateDirectory)) 'lan-access-key.txt'
 if ($Lan -and $LocalOnly) {
@@ -23,37 +24,42 @@ if ($Lan -and $LocalOnly) {
     exit 3
 }
 
-Write-Host '[1/4] 检查 Node.js'
-$node = Get-Command node -ErrorAction SilentlyContinue
-if (!$node) {
-    Write-Host '未找到 Node.js。请从 https://nodejs.org 安装 24 或更新的 LTS 版本，再重新运行“安装.cmd”。未做任何改动。'
+Write-Host '[1/4] 准备 Node.js'
+try {
+    $runtime = Find-IPeiTuRuntime -StateDirectory $StateDirectory -RequireNpm
+    if (!$runtime) { $runtime = Install-IPeiTuPortableRuntime $StateDirectory }
+    if (!$runtime) { throw '未找到可用的 Node.js 和 npm。' }
+} catch {
+    Write-Host "Node.js 环境准备失败：$($_.Exception.Message)"
+    Write-Host '请检查网络后重试，也可以从 https://nodejs.org 安装 Node.js 24 或更新的 LTS 版本。'
     exit 3
 }
-$versionText = ([string](& $node.Source -v)).Trim()
-$major = 0
-[void][int]::TryParse(($versionText -replace '^v', '').Split('.')[0], [ref]$major)
-if ($major -lt 24) {
-    Write-Host "当前 Node.js 为 $versionText，需要 24 或更新版本。未做任何改动。"
-    exit 3
+Write-Host "  Node.js $($runtime.Version)"
+# npm 的子进程也使用本次选中的 Node.js。这里仅修改安装进程的 PATH。
+$env:Path = (Split-Path -Parent $runtime.Node) + ';' + $env:Path
+
+function Test-IPeiTuDependencies {
+    $sharp = Join-Path $root 'node_modules\sharp'
+    if (!(Test-Path -LiteralPath (Join-Path $sharp 'package.json') -PathType Leaf)) { return $false }
+    try {
+        & $runtime.Node -e 'require(process.argv[1])' $sharp 2>$null | Out-Null
+        return $LASTEXITCODE -eq 0
+    } catch {
+        return $false
+    }
 }
-Write-Host "  Node.js $versionText"
 
 Write-Host '[2/4] 安装依赖'
 if ($SkipDependencies) {
     Write-Host '  已跳过'
-} elseif (Test-Path -LiteralPath (Join-Path $root 'node_modules\sharp\package.json')) {
+} elseif (Test-IPeiTuDependencies) {
     Write-Host '  依赖已安装'
 } else {
-    $npm = Get-Command npm.cmd -ErrorAction SilentlyContinue
-    if (!$npm) {
-        Write-Host '未找到 npm，请重新安装 Node.js 后再运行。'
-        exit 3
-    }
     Push-Location $root
     try {
-        & $npm.Source ci --omit=dev
-        if ($LASTEXITCODE -ne 0) {
-            Write-Host '依赖安装失败，请检查网络后重新运行“安装.cmd”。WPS 加载项尚未注册。'
+        & $runtime.Npm ci --omit=dev
+        if ($LASTEXITCODE -ne 0 -or !(Test-IPeiTuDependencies)) {
+            Write-Host '依赖安装失败，请检查网络和上方错误后重新运行安装脚本。WPS 加载项尚未注册。'
             exit 1
         }
     } finally {
@@ -70,6 +76,12 @@ if ($Lan) {
     if (Test-Path -LiteralPath $keyPath) {
         Write-Host '  局域网访问：沿用已有的访问密钥'
     } else {
+        # 运行中的服务仍使用启动时加载的密钥，换钥前先停止它。
+        & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $service -Action stop -Port $Port -StateDirectory $StateDirectory
+        if ($LASTEXITCODE -ne 0) {
+            Write-Host '未能停止原服务，未生成新密钥。请先关闭原服务，再重新运行“局域网服务器.cmd”。'
+            exit $LASTEXITCODE
+        }
         $bytes = New-Object byte[] 32
         $random = [Security.Cryptography.RandomNumberGenerator]::Create()
         try { $random.GetBytes($bytes) } finally { $random.Dispose() }

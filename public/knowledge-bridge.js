@@ -93,6 +93,17 @@ export function insertSnippet(snippet, options) {
     const cursor = selection.Start;
     const contentEnd = paragraph.Start + content.length;
     if (cursor < paragraph.Start || cursor > contentEnd) throw new Error('请将光标放在正文或单元格内容内，不要选中结束标记');
+    const styles = new Map();
+    if (!inTable) {
+      for (const { heading } of lines) {
+        if (styles.has(heading)) continue;
+        const id = heading ? -(heading + 1) : STYLE_NORMAL; // wdStyleHeading1 = -2
+        // WPS 可能静默忽略赋给 Paragraph.Style 的数字编号，按编号读取本地样式名后再应用。
+        const name = doc.Styles.Item(id)?.NameLocal;
+        if (typeof name !== 'string' || !name) throw new Error(`无法读取文档的${heading ? `标题 ${heading}` : '正文'}样式`);
+        styles.set(heading, name);
+      }
+    }
     // 空段直接写入；段首在前面插入；段尾在后面插入；段中先分段，原段落两侧文字保持不变。
     const prefix = content && cursor > paragraph.Start ? '\r' : '';
     const suffix = content && cursor < contentEnd ? '\r' : '';
@@ -114,15 +125,19 @@ export function insertSnippet(snippet, options) {
       if (paragraphContent(added.Range.Text) !== item.text) throw new Error(`第 ${index} 段文字与片段不一致`);
       // 表格内沿用单元格的格式，不套用标题样式。
       if (inTable) continue;
-      added.Style = item.heading ? -(item.heading + 1) : STYLE_NORMAL; // wdStyleHeading1 = -2
+      const style = styles.get(item.heading);
+      // WPS 的段落重置可能恢复正文样式，先清理继承的格式，再应用目标样式。
       added.Range.ParagraphFormat.Reset();
       added.Range.Font.Reset();
-      if (item.heading) {
-        headings++;
-      } else {
+      added.Style = style;
+      if (!item.heading) {
         added.Range.ListFormat.RemoveNumbers();
         added.Range.ParagraphFormat.CharacterUnitFirstLineIndent = 2;
       }
+      if (added.Style?.NameLocal !== style || added.OutlineLevel !== (item.heading ?? BODY_OUTLINE_LEVEL)) {
+        throw new Error(`第 ${index} 段未能应用「${style}」样式`);
+      }
+      if (item.heading) headings++;
     }
     doc.Range(end, end).Select();
     result = { paragraphs: lines.length, headings, inTable };
