@@ -1,0 +1,426 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>iPeiTu 任务窗格设计样机（2026-11-10）</title>
+<!--
+  静态样机，配合 docs/DESIGN-2026-11-10.md 阅读。不接入服务，不含真实素材：
+  缩略图是用色块和线条画的替身。四个画框都是 420 × 860，对应 WPS 任务窗格的默认宽度。
+  图标来自 Lucide（ISC 许可），https://lucide.dev
+-->
+<style>
+:root {
+  --font: "Microsoft YaHei UI", "Microsoft YaHei", "PingFang SC", "Segoe UI", system-ui, sans-serif;
+  --page: #f5f5f3;
+  --surface: #fff;
+  --sunken: #ebebe8;
+  --sunken-hover: #e1e1dd;
+  --text: #1c1c1a;
+  --text-2: #5a5a55;
+  --text-3: #6e6e68;
+  --line: rgb(28 28 26 / 9%);
+  --accent: #17645e;
+  --accent-ink: #0f4a45;
+  --accent-soft: #e2eeec;
+  --warn: #8a5a00;
+  --warn-soft: #f8ecd0;
+  --negative: #a23a31;
+  --shadow: 0 8px 28px rgb(28 28 26 / 16%), 0 1px 3px rgb(28 28 26 / 10%);
+}
+* { box-sizing: border-box; }
+body { margin: 0; padding: 32px; background: #dcdcd8; color: var(--text); font: 13px/20px var(--font); }
+h1, h2, h3, p { margin: 0; }
+button { font: inherit; color: inherit; border: 0; background: none; padding: 0; cursor: pointer; }
+.stage { display: flex; flex-wrap: wrap; gap: 32px; align-items: flex-start; }
+.frame-wrap { display: grid; gap: 8px; }
+.frame-title { color: #44443f; font-size: 13px; font-weight: 600; }
+.frame { position: relative; display: grid; grid-template-rows: auto minmax(0, 1fr) auto; width: 420px; height: 860px; overflow: hidden; background: var(--page); border-radius: 4px; box-shadow: 0 0 0 1px rgb(28 28 26 / 14%); }
+.icon { flex: none; width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 1.75; stroke-linecap: round; stroke-linejoin: round; }
+.num { font-variant-numeric: tabular-nums; }
+
+/* 导航：一个窗格，四个页签 */
+.nav { display: flex; align-items: center; gap: 8px; padding: 8px 12px; background: var(--surface); border-bottom: 1px solid var(--line); }
+.seg { display: grid; grid-auto-flow: column; grid-auto-columns: 1fr; flex: 1; gap: 2px; padding: 2px; border-radius: 8px; background: var(--sunken); }
+.seg button { display: flex; align-items: center; justify-content: center; gap: 4px; height: 28px; border-radius: 6px; color: var(--text-2); }
+.seg button[aria-pressed="true"] { background: var(--surface); color: var(--text); font-weight: 600; box-shadow: 0 1px 2px rgb(28 28 26 / 14%); }
+.seg .badge { min-width: 16px; padding: 0 4px; border-radius: 8px; background: var(--warn-soft); color: var(--warn); font-size: 11px; line-height: 16px; font-weight: 600; }
+.icon-button { display: grid; place-items: center; flex: none; width: 32px; height: 32px; border-radius: 8px; color: var(--text-2); }
+.icon-button.soft { background: var(--accent-soft); color: var(--accent-ink); }
+
+/* 工具行 */
+.tools { display: grid; gap: 8px; padding: 8px 12px; background: var(--page); }
+.search-row { display: flex; gap: 8px; }
+.search { display: flex; align-items: center; gap: 8px; flex: 1; height: 32px; padding: 0 4px 0 8px; border-radius: 8px; background: var(--sunken); color: var(--text-3); }
+.search span { flex: 1; }
+.search .icon-button { width: 24px; height: 24px; border-radius: 6px; }
+.chips { display: flex; gap: 4px; overflow: hidden; white-space: nowrap; }
+.chip { display: inline-flex; align-items: center; gap: 4px; flex: none; height: 24px; padding: 0 8px; border-radius: 12px; color: var(--text-2); font-size: 12px; }
+.chip .num { color: var(--text-3); }
+.chip[aria-pressed="true"] { background: var(--accent-soft); color: var(--accent-ink); font-weight: 600; }
+.chip[aria-pressed="true"] .num { color: var(--accent); font-weight: 400; }
+.chip-divider { flex: none; width: 1px; height: 16px; align-self: center; background: var(--line); margin: 0 4px; }
+
+/* 图库：按比例排布，不留灰边，不裁切 */
+.scroll { overflow: hidden; min-height: 0; }
+.gallery { display: flex; flex-wrap: wrap; gap: 12px 4px; padding: 4px 12px 12px; }
+.gallery::after { content: ""; flex: 100 1 0; }
+.tile { position: relative; display: grid; gap: 2px; min-width: 0; }
+.thumb { position: relative; display: block; height: 96px; overflow: hidden; border-radius: 6px; }
+.thumb svg { display: block; width: 100%; height: 100%; }
+.tile-name { overflow: hidden; color: var(--text-2); font-size: 12px; line-height: 16px; white-space: nowrap; text-overflow: ellipsis; }
+.tile.selected .thumb { outline: 2px solid var(--accent); outline-offset: 1px; }
+.tile.selected .tile-name { color: var(--text); font-weight: 600; }
+.add { position: absolute; right: 4px; top: 64px; display: grid; place-items: center; width: 28px; height: 28px; border-radius: 14px; background: var(--accent); color: #fff; box-shadow: 0 1px 4px rgb(28 28 26 / 30%); }
+.add.fill { width: auto; padding: 0 10px 0 6px; gap: 2px; display: inline-flex; align-items: center; font-size: 12px; font-weight: 600; }
+.tag { position: absolute; left: 4px; top: 4px; padding: 0 6px; border-radius: 4px; background: rgb(255 255 255 / 92%); color: var(--text-2); font-size: 11px; line-height: 18px; }
+.tag.match { background: var(--accent); color: #fff; }
+.section-label { display: flex; align-items: baseline; justify-content: space-between; padding: 4px 12px 4px; color: var(--text-2); font-size: 12px; }
+.section-label button { color: var(--accent); }
+
+/* 底部：所选图一行，写入目标一行 */
+.dock { background: var(--surface); border-top: 1px solid var(--line); }
+.picked { display: flex; align-items: center; gap: 8px; height: 40px; padding: 0 4px 0 12px; border-bottom: 1px solid var(--line); }
+.picked-name { flex: 1; min-width: 0; overflow: hidden; font-weight: 600; white-space: nowrap; text-overflow: ellipsis; }
+.picked-meta { flex: none; color: var(--text-3); font-size: 12px; }
+.target { display: flex; align-items: center; gap: 8px; min-height: 52px; padding: 8px 12px; }
+.target-icon { display: grid; place-items: center; flex: none; width: 32px; height: 32px; border-radius: 8px; background: var(--sunken); color: var(--text-2); }
+.target-text { flex: 1; min-width: 0; }
+.target-title { overflow: hidden; font-weight: 600; white-space: nowrap; text-overflow: ellipsis; }
+.target-sub { overflow: hidden; color: var(--text-3); font-size: 12px; line-height: 16px; white-space: nowrap; text-overflow: ellipsis; }
+.quiet { display: inline-flex; align-items: center; gap: 2px; flex: none; height: 28px; padding: 0 4px 0 8px; border-radius: 6px; background: var(--sunken); color: var(--text-2); font-size: 12px; }
+.target.filling { background: var(--accent-soft); }
+.target.filling .target-icon { background: var(--accent); color: #fff; }
+.target.filling .target-title { color: var(--accent-ink); }
+.target.filling .quiet { background: rgb(255 255 255 / 70%); color: var(--accent-ink); }
+
+/* 配图进度 */
+.progress-card { display: grid; gap: 8px; margin: 8px 12px 4px; padding: 12px; border-radius: 10px; background: var(--surface); }
+.progress-head { display: flex; align-items: baseline; justify-content: space-between; }
+.progress-head strong { font-size: 15px; }
+.progress-head span { color: var(--text-3); font-size: 12px; }
+.bar { height: 4px; border-radius: 2px; background: var(--sunken); }
+.bar i { display: block; width: 41.6%; height: 100%; border-radius: 2px; background: var(--accent); }
+.current { display: flex; align-items: center; gap: 4px; }
+.current-box { flex: 1; min-width: 0; padding: 4px 8px; border-radius: 8px; background: var(--page); }
+.current-name { overflow: hidden; font-weight: 600; white-space: nowrap; text-overflow: ellipsis; }
+.current-size { color: var(--text-3); font-size: 12px; line-height: 16px; }
+.fit { display: grid; grid-template-columns: repeat(3, 1fr); gap: 2px; padding: 2px; border-radius: 8px; background: var(--sunken); }
+.fit button { display: flex; align-items: center; justify-content: center; gap: 6px; height: 28px; border-radius: 6px; color: var(--text-2); font-size: 12px; }
+.fit button[aria-pressed="true"] { background: var(--surface); color: var(--text); font-weight: 600; box-shadow: 0 1px 2px rgb(28 28 26 / 14%); }
+.fit svg { width: 16px; height: 12px; }
+.links { display: flex; gap: 16px; color: var(--accent); font-size: 12px; }
+
+/* 排版：列表，不用按钮网格 */
+.scope { display: flex; align-items: center; gap: 8px; padding: 8px 12px 4px; }
+.scope .seg { flex: none; width: 176px; }
+.scope-doc { flex: 1; min-width: 0; overflow: hidden; color: var(--text-3); font-size: 12px; white-space: nowrap; text-overflow: ellipsis; }
+.group { margin: 8px 12px 0; border-radius: 10px; background: var(--surface); overflow: hidden; }
+.group h3 { padding: 8px 12px 4px; color: var(--text-3); font-size: 12px; font-weight: 400; line-height: 16px; }
+.op { display: flex; align-items: center; gap: 10px; width: 100%; height: 36px; padding: 0 12px; text-align: left; }
+.op + .op { border-top: 1px solid var(--line); }
+.op .icon { color: var(--text-2); }
+.op span { flex: 1; }
+.op em { color: var(--accent); font-size: 12px; font-style: normal; }
+.op.hover { background: var(--page); }
+.width-row { display: flex; align-items: center; gap: 8px; padding: 6px 12px 10px; border-top: 1px solid var(--line); }
+.field { display: flex; align-items: center; gap: 4px; flex: 1; height: 28px; padding: 0 8px; border-radius: 6px; background: var(--sunken); font-size: 12px; }
+.field b { flex: 1; font-weight: 600; text-align: right; }
+.field small { color: var(--text-3); font-size: 12px; }
+.toast { position: absolute; left: 12px; right: 12px; bottom: 12px; display: flex; align-items: center; gap: 8px; padding: 10px 12px; border-radius: 10px; background: #26302f; color: #fff; box-shadow: var(--shadow); }
+.toast .icon { color: #8fd3c9; }
+.toast span { flex: 1; }
+.toast kbd { padding: 0 6px; border-radius: 4px; background: rgb(255 255 255 / 14%); font: inherit; font-size: 12px; }
+
+/* 素材详情：从底部滑出，表单用标签而不是多行文本框 */
+.dim { position: absolute; inset: 0; background: rgb(28 28 26 / 32%); }
+.sheet { position: absolute; left: 0; right: 0; bottom: 0; display: grid; gap: 12px; padding: 8px 16px 16px; border-radius: 14px 14px 0 0; background: var(--surface); box-shadow: var(--shadow); }
+.grip { justify-self: center; width: 32px; height: 4px; border-radius: 2px; background: var(--sunken-hover); }
+.sheet-preview { height: 232px; border-radius: 8px; overflow: hidden; background: var(--page); }
+.sheet-preview svg { display: block; height: 100%; margin: 0 auto; }
+.sheet-head { display: flex; align-items: flex-start; gap: 8px; }
+.sheet-head h2 { flex: 1; font-size: 15px; line-height: 20px; font-weight: 600; }
+.sheet-meta { color: var(--text-3); font-size: 12px; line-height: 16px; }
+.row { display: grid; grid-template-columns: 40px 1fr; gap: 8px; align-items: start; }
+.row > span { color: var(--text-3); font-size: 12px; line-height: 24px; }
+.tokens { display: flex; flex-wrap: wrap; gap: 4px; }
+.token { display: inline-flex; align-items: center; gap: 2px; height: 24px; padding: 0 4px 0 8px; border-radius: 6px; background: var(--sunken); font-size: 12px; }
+.token .icon { width: 12px; height: 12px; color: var(--text-3); }
+.token.new { padding: 0 8px; background: none; box-shadow: inset 0 0 0 1px var(--line); color: var(--text-3); }
+.sheet-actions { display: flex; align-items: center; gap: 8px; padding-top: 4px; }
+.sheet-actions .spacer { flex: 1; }
+.btn { display: inline-flex; align-items: center; justify-content: center; gap: 4px; height: 32px; padding: 0 12px; border-radius: 8px; background: var(--sunken); font-weight: 600; }
+.btn.primary { background: var(--accent); color: #fff; }
+.btn.text { background: none; color: var(--negative); font-weight: 400; padding: 0 4px; }
+</style>
+</head>
+<body>
+<svg style="display:none" aria-hidden="true">
+  <symbol id="i-image" viewBox="0 0 24 24"><rect width="18" height="18" x="3" y="3" rx="2"/><circle cx="9" cy="9" r="2"/><path d="m21 15-3.086-3.086a2 2 0 0 0-2.828 0L6 21"/></symbol>
+  <symbol id="i-frame" viewBox="0 0 24 24"><path d="M5 3a2 2 0 0 0-2 2"/><path d="M19 3a2 2 0 0 1 2 2"/><path d="M21 19a2 2 0 0 1-2 2"/><path d="M5 21a2 2 0 0 1-2-2"/><path d="M9 3h1"/><path d="M9 21h1"/><path d="M14 3h1"/><path d="M14 21h1"/><path d="M3 9v1"/><path d="M21 9v1"/><path d="M3 14v1"/><path d="M21 14v1"/></symbol>
+  <symbol id="i-book" viewBox="0 0 24 24"><path d="M12 7v14"/><path d="M3 18a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1h5a4 4 0 0 1 4 4 4 4 0 0 1 4-4h5a1 1 0 0 1 1 1v13a1 1 0 0 1-1 1h-6a3 3 0 0 0-3 3 3 3 0 0 0-3-3z"/></symbol>
+  <symbol id="i-wand" viewBox="0 0 24 24"><path d="m21.64 3.64-1.28-1.28a1.21 1.21 0 0 0-1.72 0L2.36 18.64a1.21 1.21 0 0 0 0 1.72l1.28 1.28a1.2 1.2 0 0 0 1.72 0L21.64 5.36a1.2 1.2 0 0 0 0-1.72"/><path d="m14 7 3 3"/><path d="M5 6v4"/><path d="M19 14v4"/><path d="M10 2v2"/><path d="M7 8H3"/><path d="M21 16h-4"/><path d="M11 3H9"/></symbol>
+  <symbol id="i-more" viewBox="0 0 24 24"><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/><circle cx="5" cy="12" r="1"/></symbol>
+  <symbol id="i-search" viewBox="0 0 24 24"><path d="m21 21-4.34-4.34"/><circle cx="11" cy="11" r="8"/></symbol>
+  <symbol id="i-sliders" viewBox="0 0 24 24"><path d="M21 4h-7"/><path d="M10 4H3"/><path d="M21 12h-9"/><path d="M8 12H3"/><path d="M21 20h-5"/><path d="M12 20H3"/><path d="M14 2v4"/><path d="M8 10v4"/><path d="M16 18v4"/></symbol>
+  <symbol id="i-plus" viewBox="0 0 24 24"><path d="M5 12h14"/><path d="M12 5v14"/></symbol>
+  <symbol id="i-star" viewBox="0 0 24 24"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></symbol>
+  <symbol id="i-expand" viewBox="0 0 24 24"><path d="M15 3h6v6"/><path d="m21 3-7 7"/><path d="m3 21 7-7"/><path d="M9 21H3v-6"/></symbol>
+  <symbol id="i-chevron-down" viewBox="0 0 24 24"><path d="m6 9 6 6 6-6"/></symbol>
+  <symbol id="i-chevron-left" viewBox="0 0 24 24"><path d="m15 18-6-6 6-6"/></symbol>
+  <symbol id="i-chevron-right" viewBox="0 0 24 24"><path d="m9 18 6-6-6-6"/></symbol>
+  <symbol id="i-cursor" viewBox="0 0 24 24"><path d="M17 22h-1a4 4 0 0 1-4-4V6a4 4 0 0 1 4-4h1"/><path d="M7 22h1a4 4 0 0 0 4-4v-1"/><path d="M7 2h1a4 4 0 0 1 4 4v1"/></symbol>
+  <symbol id="i-check" viewBox="0 0 24 24"><path d="M20 6 9 17l-5-5"/></symbol>
+  <symbol id="i-x" viewBox="0 0 24 24"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></symbol>
+  <symbol id="i-eraser" viewBox="0 0 24 24"><path d="M21 21H8a2 2 0 0 1-1.42-.587l-3.994-3.999a2 2 0 0 1 0-2.828l10-10a2 2 0 0 1 2.829 0l5.999 6a2 2 0 0 1 0 2.828L12.834 21"/><path d="m5.082 11.09 8.828 8.828"/></symbol>
+  <symbol id="i-indent" viewBox="0 0 24 24"><path d="M21 5H11"/><path d="M21 12H11"/><path d="M21 19H11"/><path d="m3 8 4 4-4 4"/></symbol>
+  <symbol id="i-center" viewBox="0 0 24 24"><path d="M21 5H3"/><path d="M17 12H7"/><path d="M19 19H5"/></symbol>
+  <symbol id="i-table" viewBox="0 0 24 24"><path d="M12 3v18"/><rect width="18" height="18" x="3" y="3" rx="2"/><path d="M3 9h18"/><path d="M3 15h18"/></symbol>
+  <symbol id="i-fold" viewBox="0 0 24 24"><path d="M12 22v-6"/><path d="M12 8V2"/><path d="M4 12H2"/><path d="M10 12H8"/><path d="M16 12h-2"/><path d="M22 12h-2"/><path d="m15 19-3-3-3 3"/><path d="m15 5-3 3-3-3"/></symbol>
+  <symbol id="i-contrast" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><path d="M12 18a6 6 0 0 0 0-12v12z"/></symbol>
+</svg>
+
+<div class="stage">
+
+  <!-- 1 素材 · 浏览 -->
+  <div class="frame-wrap">
+    <p class="frame-title">1　素材 · 浏览与插入</p>
+    <div class="frame">
+      <div>
+        <div class="nav">
+          <div class="seg" role="group" aria-label="页面">
+            <button aria-pressed="true"><svg class="icon"><use href="#i-image"/></svg>素材</button>
+            <button aria-pressed="false"><svg class="icon"><use href="#i-frame"/></svg>配图<span class="badge num">7</span></button>
+            <button aria-pressed="false"><svg class="icon"><use href="#i-book"/></svg>知识库</button>
+            <button aria-pressed="false"><svg class="icon"><use href="#i-wand"/></svg>排版</button>
+          </div>
+          <button class="icon-button" aria-label="更多"><svg class="icon"><use href="#i-more"/></svg></button>
+        </div>
+        <div class="tools">
+          <div class="search-row">
+            <div class="search"><svg class="icon"><use href="#i-search"/></svg><span>搜索 2000 张素材</span><button class="icon-button" aria-label="筛选"><svg class="icon"><use href="#i-sliders"/></svg></button></div>
+            <button class="icon-button soft" aria-label="导入素材"><svg class="icon"><use href="#i-plus"/></svg></button>
+          </div>
+          <div class="chips">
+            <button class="chip" aria-pressed="true">全部</button>
+            <button class="chip" aria-pressed="false">收藏</button>
+            <button class="chip" aria-pressed="false">最近</button>
+            <span class="chip-divider"></span>
+            <button class="chip" aria-pressed="false">主体结构<span class="num">250</span></button>
+            <button class="chip" aria-pressed="false">机电安装<span class="num">250</span></button>
+            <button class="chip" aria-pressed="false">市政道路<span class="num">250</span></button>
+            <button class="chip" aria-pressed="false">安全文明<span class="num">250</span></button>
+          </div>
+        </div>
+      </div>
+      <div class="scroll"><div class="gallery" data-gallery="browse"></div></div>
+      <div class="dock">
+        <div class="picked">
+          <span class="picked-name">钢筋绑扎示意图</span>
+          <span class="picked-meta num">3000 × 4000 · 2.1 MB</span>
+          <button class="icon-button" aria-label="收藏"><svg class="icon"><use href="#i-star"/></svg></button>
+          <button class="icon-button" aria-label="查看大图与信息"><svg class="icon"><use href="#i-expand"/></svg></button>
+        </div>
+        <div class="target">
+          <span class="target-icon"><svg class="icon"><use href="#i-cursor"/></svg></span>
+          <div class="target-text">
+            <p class="target-title">插入到光标处</p>
+            <p class="target-sub">施工组织设计.docx · 正文</p>
+          </div>
+          <button class="quiet">自适应 · 居中<svg class="icon"><use href="#i-chevron-down"/></svg></button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 2 配图 -->
+  <div class="frame-wrap">
+    <p class="frame-title">2　配图 · 逐框填入</p>
+    <div class="frame">
+      <div>
+        <div class="nav">
+          <div class="seg" role="group" aria-label="页面">
+            <button aria-pressed="false"><svg class="icon"><use href="#i-image"/></svg>素材</button>
+            <button aria-pressed="true"><svg class="icon"><use href="#i-frame"/></svg>配图<span class="badge num">7</span></button>
+            <button aria-pressed="false"><svg class="icon"><use href="#i-book"/></svg>知识库</button>
+            <button aria-pressed="false"><svg class="icon"><use href="#i-wand"/></svg>排版</button>
+          </div>
+          <button class="icon-button" aria-label="更多"><svg class="icon"><use href="#i-more"/></svg></button>
+        </div>
+        <div class="progress-card">
+          <div class="progress-head"><strong class="num">5 / 12 已填</strong><span>施工组织设计.docx</span></div>
+          <div class="bar"><i></i></div>
+          <div class="current">
+            <button class="icon-button" aria-label="上一个空框"><svg class="icon"><use href="#i-chevron-left"/></svg></button>
+            <div class="current-box">
+              <p class="current-name">6 · 脚手架搭设</p>
+              <p class="current-size num">12.0 × 9.0 厘米 · 横向</p>
+            </div>
+            <button class="icon-button" aria-label="下一个空框"><svg class="icon"><use href="#i-chevron-right"/></svg></button>
+          </div>
+          <div class="fit" role="group" aria-label="适配方式">
+            <button aria-pressed="true"><svg viewBox="0 0 16 12"><rect x="1" y=".5" width="14" height="11" rx="1.5" fill="none" stroke="currentColor"/><rect x="1" y=".5" width="14" height="11" rx="1.5" fill="currentColor" opacity=".35"/></svg>裁切填满</button>
+            <button aria-pressed="false"><svg viewBox="0 0 16 12"><rect x="1" y=".5" width="14" height="11" rx="1.5" fill="none" stroke="currentColor"/><path d="M4 6h8M4 6l2-2M4 6l2 2M12 6l-2-2M12 6l-2 2" fill="none" stroke="currentColor"/></svg>拉伸填满</button>
+            <button aria-pressed="false"><svg viewBox="0 0 16 12"><rect x="1" y=".5" width="14" height="11" rx="1.5" fill="none" stroke="currentColor"/><rect x="5" y="2.5" width="6" height="7" fill="currentColor" opacity=".35"/></svg>完整显示</button>
+          </div>
+          <div class="links"><button>全部占位框</button><button>新建占位框</button><button>文字标记转框</button></div>
+        </div>
+        <div class="section-label"><span>按框名和比例推荐</span><button>改为浏览全部</button></div>
+      </div>
+      <div class="scroll"><div class="gallery" data-gallery="fill"></div></div>
+      <div class="dock">
+        <div class="target filling">
+          <span class="target-icon"><svg class="icon"><use href="#i-frame"/></svg></span>
+          <div class="target-text">
+            <p class="target-title">填入占位框「脚手架搭设」</p>
+            <p class="target-sub">施工组织设计.docx · 12.0 × 9.0 厘米</p>
+          </div>
+          <button class="quiet">清晰<svg class="icon"><use href="#i-chevron-down"/></svg></button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 3 排版 -->
+  <div class="frame-wrap">
+    <p class="frame-title">3　排版 · 列表与就近反馈</p>
+    <div class="frame">
+      <div>
+        <div class="nav">
+          <div class="seg" role="group" aria-label="页面">
+            <button aria-pressed="false"><svg class="icon"><use href="#i-image"/></svg>素材</button>
+            <button aria-pressed="false"><svg class="icon"><use href="#i-frame"/></svg>配图<span class="badge num">7</span></button>
+            <button aria-pressed="false"><svg class="icon"><use href="#i-book"/></svg>知识库</button>
+            <button aria-pressed="true"><svg class="icon"><use href="#i-wand"/></svg>排版</button>
+          </div>
+          <button class="icon-button" aria-label="更多"><svg class="icon"><use href="#i-more"/></svg></button>
+        </div>
+        <div class="scope">
+          <div class="seg" role="group" aria-label="作用范围">
+            <button aria-pressed="false">所选内容</button>
+            <button aria-pressed="true">全文</button>
+          </div>
+          <span class="scope-doc">施工组织设计.docx</span>
+        </div>
+      </div>
+      <div class="scroll">
+        <div class="group">
+          <h3>段落</h3>
+          <button class="op"><svg class="icon"><use href="#i-eraser"/></svg><span>清除格式</span></button>
+          <button class="op"><svg class="icon"><use href="#i-indent"/></svg><span>首行缩进 2 字符</span></button>
+          <button class="op"><svg class="icon"><use href="#i-center"/></svg><span>居中对齐</span></button>
+        </div>
+        <div class="group">
+          <h3>表格</h3>
+          <button class="op"><svg class="icon"><use href="#i-table"/></svg><span>表格满页</span><em class="num">已处理 14 个</em></button>
+          <button class="op"><svg class="icon"><use href="#i-table"/></svg><span>边距清零并固定列宽</span></button>
+          <button class="op"><svg class="icon"><use href="#i-table"/></svg><span>清除空格</span></button>
+          <button class="op"><svg class="icon"><use href="#i-table"/></svg><span>去除底纹</span></button>
+          <button class="op"><svg class="icon"><use href="#i-table"/></svg><span>去除表格线</span></button>
+          <button class="op"><svg class="icon"><use href="#i-table"/></svg><span>左对齐 · 居中 · 右对齐</span></button>
+          <div class="width-row">
+            <span class="field"><small>一栏</small><b class="num">15</b><small>厘米</small></span>
+            <span class="field"><small>多栏</small><b class="num">7</b><small>厘米</small></span>
+            <button class="quiet" style="padding:0 8px">读取</button>
+            <button class="quiet" style="padding:0 8px;background:var(--accent);color:#fff">调整宽度</button>
+          </div>
+        </div>
+        <div class="group">
+          <h3>全文</h3>
+          <button class="op hover"><svg class="icon"><use href="#i-fold"/></svg><span>删除空行</span><em class="num">已处理 37 处</em></button>
+          <button class="op"><svg class="icon"><use href="#i-contrast"/></svg><span>一键去色</span></button>
+        </div>
+      </div>
+      <div class="toast"><svg class="icon"><use href="#i-check"/></svg><span>删除空行：已处理 37 处，保留表格之间 2 处</span><kbd>Ctrl+Z 撤销</kbd></div>
+      <div></div>
+    </div>
+  </div>
+
+  <!-- 4 素材详情 -->
+  <div class="frame-wrap">
+    <p class="frame-title">4　素材详情 · 大图与信息合一</p>
+    <div class="frame">
+      <div>
+        <div class="nav">
+          <div class="seg" role="group" aria-label="页面">
+            <button aria-pressed="true"><svg class="icon"><use href="#i-image"/></svg>素材</button>
+            <button aria-pressed="false"><svg class="icon"><use href="#i-frame"/></svg>配图<span class="badge num">7</span></button>
+            <button aria-pressed="false"><svg class="icon"><use href="#i-book"/></svg>知识库</button>
+            <button aria-pressed="false"><svg class="icon"><use href="#i-wand"/></svg>排版</button>
+          </div>
+          <button class="icon-button" aria-label="更多"><svg class="icon"><use href="#i-more"/></svg></button>
+        </div>
+      </div>
+      <div class="scroll"><div class="gallery" data-gallery="browse" style="padding-top:12px"></div></div>
+      <div></div>
+      <div class="dim"></div>
+      <div class="sheet">
+        <span class="grip"></span>
+        <div class="sheet-preview" data-preview></div>
+        <div class="sheet-head">
+          <div style="flex:1;min-width:0">
+            <h2>钢筋绑扎示意图</h2>
+            <p class="sheet-meta num">3000 × 4000 · JPEG · 2.1 MB · 本文已用 1 次</p>
+          </div>
+          <button class="icon-button" aria-label="收藏"><svg class="icon"><use href="#i-star"/></svg></button>
+          <button class="icon-button" aria-label="关闭"><svg class="icon"><use href="#i-x"/></svg></button>
+        </div>
+        <div class="row"><span>分类</span><div class="tokens"><span class="token">主体结构<svg class="icon"><use href="#i-x"/></svg></span><span class="token new">添加</span></div></div>
+        <div class="row"><span>工序</span><div class="tokens"><span class="token">钢筋绑扎<svg class="icon"><use href="#i-x"/></svg></span><span class="token">隐蔽验收<svg class="icon"><use href="#i-x"/></svg></span><span class="token new">添加</span></div></div>
+        <div class="row"><span>别名</span><div class="tokens"><span class="token">梁柱节点钢筋<svg class="icon"><use href="#i-x"/></svg></span><span class="token new">添加</span></div></div>
+        <div class="sheet-actions">
+          <button class="btn text">移出图库</button>
+          <span class="spacer"></span>
+          <button class="btn">改名</button>
+          <button class="btn primary"><svg class="icon"><use href="#i-plus"/></svg>插入光标处</button>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+// 缩略图替身：色块加几笔线条，只为表现横图、竖图、方图混排时的密度和节奏。
+const scenes = {
+  scaffold: (w, h) => `<path d="M0 ${h * .78}H${w}" stroke="rgb(0 0 0/.28)" stroke-width="2"/>` + Array.from({ length: 6 }, (_, i) => `<path d="M${w * (.18 + i * .13)} ${h * .2}V${h * .78}" stroke="rgb(0 0 0/.3)"/>`).join('') + Array.from({ length: 4 }, (_, i) => `<path d="M${w * .18} ${h * (.3 + i * .14)}H${w * .83}" stroke="rgb(0 0 0/.3)"/>`).join(''),
+  rebar: (w, h) => Array.from({ length: 7 }, (_, i) => `<path d="M${w * (.1 + i * .13)} ${h * .12}V${h * .88}" stroke="rgb(0 0 0/.26)"/>`).join('') + Array.from({ length: 6 }, (_, i) => `<path d="M${w * .1} ${h * (.16 + i * .14)}H${w * .9}" stroke="rgb(0 0 0/.26)"/>`).join(''),
+  pour: (w, h) => `<path d="M0 ${h * .7}H${w}V${h}H0Z" fill="rgb(0 0 0/.12)"/><path d="M${w * .2} ${h * .7}V${h * .28}H${w * .72}V${h * .5}" fill="none" stroke="rgb(0 0 0/.34)" stroke-width="3"/><circle cx="${w * .72}" cy="${h * .58}" r="${h * .06}" fill="rgb(0 0 0/.24)"/>`,
+  pipe: (w, h) => `<path d="M0 ${h * .4}H${w * .6}V${h}" fill="none" stroke="rgb(0 0 0/.3)" stroke-width="${h * .1}"/><path d="M${w * .3} 0V${h * .4}" stroke="rgb(0 0 0/.2)" stroke-width="${h * .06}"/>`,
+  wall: (w, h) => Array.from({ length: 6 }, (_, r) => Array.from({ length: 7 }, (_, c) => `<rect x="${(c - (r % 2) * .5) * w / 6}" y="${h * .14 + r * h * .13}" width="${w / 6 - 2}" height="${h * .11}" fill="rgb(0 0 0/.11)"/>`).join('')).join(''),
+  pit: (w, h) => `<path d="M0 ${h * .3}H${w * .22}L${w * .32} ${h * .8}H${w * .7}L${w * .8} ${h * .3}H${w}" fill="none" stroke="rgb(0 0 0/.34)" stroke-width="2"/><path d="M${w * .32} ${h * .8}H${w * .7}" stroke="rgb(0 0 0/.2)" stroke-width="6"/>`,
+};
+const hues = ['#c9b79c', '#a9bfb4', '#b9c4d3', '#d2c4b0', '#b4bfa6', '#c7b3ad', '#aeb9c2', '#cfc9b6'];
+function art(kind, ratio, hue, height) {
+  const h = height, w = Math.round(height * ratio);
+  return `<svg viewBox="0 0 ${w} ${h}" preserveAspectRatio="xMidYMid slice"><rect width="${w}" height="${h}" fill="${hue}"/>${scenes[kind](w, h)}</svg>`;
+}
+const assets = [
+  ['脚手架搭设示意图', 'scaffold', 4 / 3], ['钢筋绑扎示意图', 'rebar', 3 / 4], ['混凝土浇筑', 'pour', 4 / 3], ['管道安装节点', 'pipe', 1],
+  ['砌体砌筑', 'wall', 16 / 9], ['基坑支护剖面', 'pit', 4 / 3], ['模板支设', 'rebar', 1], ['桥架敷设', 'pipe', 3 / 2],
+  ['外架连墙件', 'scaffold', 3 / 4], ['土方开挖', 'pit', 16 / 9], ['防水卷材铺贴', 'wall', 4 / 3], ['悬挑脚手架', 'scaffold', 1],
+  ['梁柱节点', 'rebar', 4 / 3], ['泵送布置', 'pour', 3 / 4], ['管沟回填', 'pit', 3 / 2], ['填充墙构造柱', 'wall', 4 / 3],
+  ['落地式脚手架', 'scaffold', 16 / 9], ['支吊架安装', 'pipe', 4 / 3], ['楼板钢筋', 'rebar', 3 / 2], ['后浇带', 'pour', 1],
+  ['降水井布置', 'pit', 4 / 3], ['安全通道', 'scaffold', 4 / 3], ['风管安装', 'pipe', 16 / 9], ['墙体拉结筋', 'wall', 3 / 4],
+  ['承台钢筋', 'rebar', 4 / 3], ['养护覆盖', 'pour', 3 / 2], ['卸料平台', 'scaffold', 1], ['边坡喷锚', 'pit', 4 / 3],
+];
+function tile({ name, kind, ratio, index, selected, add, tag }) {
+  const classes = ['tile', selected ? 'selected' : ''].join(' ');
+  const basis = Math.round(96 * ratio);
+  return `<div class="${classes}" style="flex:${ratio} 1 ${basis}px;max-width:${Math.round(basis * 1.6)}px">`
+    + `<span class="thumb">${art(kind, ratio, hues[index % hues.length], 96)}${tag ? `<span class="tag ${tag[1]}">${tag[0]}</span>` : ''}</span>`
+    + (add === 'insert' ? '<span class="add"><svg class="icon"><use href="#i-plus"/></svg></span>' : '')
+    + (add === 'fill' ? '<span class="add fill"><svg class="icon"><use href="#i-plus"/></svg>填入</span>' : '')
+    + `<span class="tile-name">${name}</span></div>`;
+}
+for (const gallery of document.querySelectorAll('[data-gallery="browse"]')) {
+  gallery.innerHTML = assets.map(([name, kind, ratio], index) => tile({ name, kind, ratio, index, selected: index === 1, add: index === 1 ? 'insert' : '', tag: index === 4 || index === 9 ? ['本文已用', ''] : null })).join('');
+}
+const order = [0, 8, 11, 16, 21, 26, 2, 5, 12, 15, 10, 20, 24, 27, 4, 7, 9, 14, 17, 18, 22, 25];
+document.querySelector('[data-gallery="fill"]').innerHTML = order.map((source, position) => {
+  const [name, kind, ratio] = assets[source];
+  return tile({ name, kind, ratio, index: source, selected: position === 0, add: position === 0 ? 'fill' : '', tag: position < 2 ? ['名称匹配', 'match'] : source === 8 ? ['本文已用', ''] : null });
+}).join('');
+document.querySelector('[data-preview]').innerHTML = art('rebar', 3 / 4, hues[1], 232).replace('<svg ', '<svg style="width:174px" ');
+</script>
+</body>
+</html>
