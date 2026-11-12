@@ -1,5 +1,4 @@
-// 一键排版：每项操作一次撤销记录，返回处理数量；有选区时只作用于选区，否则作用于全文。
-// 段落类操作（清除格式、首行缩进、居中对齐）只作用于所选段落或光标所在段落。
+// 一键排版：每项操作一次撤销记录，返回处理数量。批量操作使用所选范围或全文。
 const NO_PROTECTION = -1;
 const MAIN_STORY = 1;
 const WITHIN_TABLE = 12;
@@ -40,7 +39,8 @@ function host() {
 export function getLayoutScope() {
   try {
     const { doc, whole } = host();
-    return { available: true, whole, message: `${doc.Name} · ${whole ? '未选中内容，作用于全文' : '作用于所选内容'}` };
+    const scope = whole ? '首行缩进、居中对齐作用于当前段落，批量排版作用于全文' : '作用于所选内容';
+    return { available: true, whole, message: `${doc.Name} · ${scope}` };
   } catch (error) {
     return { available: false, whole: true, message: error.message };
   }
@@ -115,8 +115,8 @@ const operations = {
     label: '删除空行',
     run({ doc, range }) {
       const paragraphs = range.Paragraphs;
-      const documentEnd = doc.Content.End;
-      const inTable = index => index >= 1 && index <= paragraphs.Count && paragraphs.Item(index).Range.Information(WITHIN_TABLE);
+      const { Start: documentStart, End: documentEnd } = doc.Content;
+      const inTable = position => doc.Range(position, position).Information(WITHIN_TABLE);
       let count = 0;
       let skipped = 0;
       // 从后往前删，前面段落的序号不受影响。
@@ -124,8 +124,9 @@ const operations = {
         const paragraphRange = paragraphs.Item(index).Range;
         if (!BLANK_PARAGRAPH.test(paragraphRange.Text)) continue; // 含分节符、分页符或图片的段落不是空行。
         if (paragraphRange.Information(WITHIN_TABLE) || paragraphRange.End >= documentEnd) continue;
-        // 两个表格之间的空行删除后表格会合并，保留。
-        if (inTable(index - 1) && inTable(index + 1)) { skipped++; continue; }
+        // 从文档定位相邻位置，即使选区只包含这一空行也能看到两侧表格。
+        const { Start: start, End: end } = paragraphRange;
+        if (start > documentStart && inTable(start - 1) && inTable(end)) { skipped++; continue; }
         paragraphRange.Delete();
         count++;
       }
@@ -262,10 +263,11 @@ const operations = {
         if (!rows) { unreadable++; return; }
         const multiColumn = isMultiColumn(table);
         const target = multiColumn ? targets.multi : targets.single;
-        if (rows.every(row => Math.abs(rowWidth(row) - target) < 0.5)) { unchanged++; return; }
-        // 按行等比缩放单元格宽度：只设首选宽度时，固定列宽的表格不会真正改变；按行计算兼容合并单元格。
+        const width = widestRow(rows);
+        if (Math.abs(width - target) < 0.5) { unchanged++; return; }
+        // 跨行单元格只在起始行枚举一次。整表使用同一比例，避免后续行缺计合并单元格而被放大。
+        const factor = target / width;
         for (const row of rows) {
-          const factor = target / rowWidth(row);
           for (const item of row) item.cell.Width = Math.round(item.width * factor * 100) / 100;
         }
         table.PreferredWidthType = PREFERRED_WIDTH_POINTS;
@@ -316,7 +318,7 @@ function rowWidths(table) {
   return readable && rows.size ? [...rows.values()] : null;
 }
 
-const rowWidth = row => row.reduce((total, item) => total + item.width, 0);
+const widestRow = rows => Math.max(...rows.map(row => row.reduce((total, item) => total + item.width, 0)));
 const isMultiColumn = table => table.Range.PageSetup.TextColumns.Count > 1;
 
 export function readTableWidth() {
@@ -328,7 +330,7 @@ export function readTableWidth() {
   const table = tables.Item(1);
   const rows = rowWidths(table);
   if (!rows) throw new Error('无法读取该表格的宽度，表格中有宽度不确定的单元格');
-  const widthPt = Math.max(...rows.map(rowWidth));
+  const widthPt = widestRow(rows);
   return { widthCm: Math.round(widthPt * 2.54 / 72 * 10) / 10, multiColumn: isMultiColumn(table) };
 }
 

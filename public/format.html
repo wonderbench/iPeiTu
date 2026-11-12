@@ -12,17 +12,20 @@
     <div class="format-app">
       <header class="topbar">
         <div class="brand">
-          <span class="wordmark">iPeiTu</span>
+          <img class="wordmark wordmark-image" src="/ipeitu-wordmark.png" alt="iPeiTu" width="60" height="20">
           <h1>排版工具</h1>
         </div>
       </header>
 
-      <main class="format-workspace">
+      <div class="format-feedback">
         <p id="scopeStatus" class="host-status">正在检查 WPS 状态</p>
+        <p id="formatResult" class="action-status" role="status" aria-live="polite" hidden></p>
+      </div>
 
+      <main class="format-workspace">
         <section class="tool-group" aria-labelledby="paragraphTools">
           <h2 id="paragraphTools">段落</h2>
-          <div class="tool-grid">
+          <div class="tool-list">
             <button class="tool-button" type="button" data-operation="clearFormatting" title="清除所选内容的样式、段落格式和字符格式">清除格式</button>
             <button class="tool-button" type="button" data-operation="firstLineIndent" title="所选段落或光标所在段落首行缩进 2 字符">首行缩进</button>
             <button class="tool-button" type="button" data-operation="center" title="所选段落或光标所在段落水平居中">居中对齐</button>
@@ -31,7 +34,7 @@
 
         <section class="tool-group" aria-labelledby="tableTools">
           <h2 id="tableTools">表格</h2>
-          <div class="tool-grid">
+          <div class="tool-list">
             <button class="tool-button" type="button" data-operation="tableFullWidth" title="表格宽度设为页面宽度的 100%">表格满页</button>
             <button class="tool-button" type="button" data-operation="zeroPadding" title="单元格上下左右边距归零，并固定列宽">边距清零</button>
             <button class="tool-button" type="button" data-operation="clearTableSpaces" title="删除表格中的全角空格和首尾空格，英文或数字之间保留一个半角空格">清除空格</button>
@@ -52,11 +55,11 @@
               <input id="multiWidth" type="number" min="1" max="60" step="0.1" value="7" inputmode="decimal">
             </div>
           </div>
-          <div class="tool-grid">
-            <button id="readTableWidth" class="tool-button" type="button" title="读取光标所在表格的宽度，按所在页面的栏数填入对应输入框">读取当前表格</button>
-            <button id="applyTableWidths" class="tool-button" type="button" title="按一栏或多栏把表格调整为目标宽度，各列等比缩放">执行调整</button>
+          <div class="width-actions">
+            <button id="readTableWidth" class="button secondary" type="button" title="读取光标所在表格的宽度，按所在页面的栏数填入对应输入框">读取当前表格</button>
+            <button id="applyTableWidths" class="button primary" type="button" title="按一栏或多栏把表格调整为目标宽度，各列等比缩放">执行调整</button>
           </div>
-          <div class="tool-grid">
+          <div class="tool-list">
             <button class="tool-button" type="button" data-operation="alignTablesLeft" title="表格整体左对齐，左缩进归零">表格左对齐</button>
             <button class="tool-button" type="button" data-operation="alignTablesCenter" title="表格整体水平居中">表格居中</button>
             <button class="tool-button" type="button" data-operation="alignTablesRight" title="表格整体右对齐">表格右对齐</button>
@@ -65,13 +68,11 @@
 
         <section class="tool-group" aria-labelledby="documentTools">
           <h2 id="documentTools">全文</h2>
-          <div class="tool-grid">
+          <div class="tool-list">
             <button class="tool-button" type="button" data-operation="deleteEmptyLines" title="删除空行；跳过表格内、分节符所在及两个表格之间的空行">删除空行</button>
             <button class="tool-button" type="button" data-operation="decolor" title="图片改为灰度，图形填充和线条改为灰色；浮动图形只在未选中内容时处理">一键去色</button>
           </div>
         </section>
-
-        <p id="formatResult" class="action-status" role="status" aria-live="polite" hidden></p>
       </main>
     </div>
   </body>

@@ -252,9 +252,13 @@ export class LanClient {
 
   async forward(request, response, url) {
     this.assertReady();
+    const source = this.config;
     const hasBody = !['GET', 'HEAD'].includes(request.method);
     const upload = url.pathname === '/api/import-file';
     const payload = hasBody ? await readBody(request, upload ? MAX_IMAGE_BYTES : 256 * 1024) : undefined;
+    if (request.headers['x-ipeitu-library'] !== undefined && source !== this.config) {
+      throw new LibraryError('图库来源已切换，请重新选择素材', 409);
+    }
     const upstream = await this.upstream(url.pathname + url.search, {
       method: request.method, body: payload, contentType: hasBody ? request.headers['content-type'] : undefined,
       timeout: upload || url.pathname.endsWith('/image') ? 120_000 : 15_000,

@@ -1,7 +1,8 @@
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { mkdir, readFile, writeFile, rename } from 'node:fs/promises';
 import path from 'node:path';
-import { LibraryError } from './library.js';
+import { EditLocks, LibraryError } from './library.js';
+import { isSnippetFormat, trimSnippetBody } from '../public/knowledge-format.js';
 
 // 标书知识库：通用文字片段，保存在图库目录的 knowledge.json。分类在此维护，正文由用户自行录入。
 export const KNOWLEDGE_CATEGORIES = Object.freeze([
@@ -12,6 +13,8 @@ export const KNOWLEDGE_CATEGORIES = Object.freeze([
 ].map(category => Object.freeze({ type: category.type, sections: Object.freeze(category.sections) })));
 
 export const MAX_SNIPPETS = 5000;
+const EDIT_BUSY = '这条片段正在被编辑，请等对方保存或退出后再试';
+const EDIT_EXPIRED = '编辑锁已过期，请重新打开片段';
 export const SNIPPET_LIMITS = Object.freeze({ title: 100, section: 30, tag: 32, tags: 32, body: 20000 });
 const types = new Set(KNOWLEDGE_CATEGORIES.map(category => category.type));
 const fields = ['title', 'type', 'section', 'tags', 'body'];
@@ -26,10 +29,10 @@ function matchKey(value) {
   return value.normalize('NFKC').toLowerCase();
 }
 
-function hasExactFields(value, allowed, { partial = false } = {}) {
+function hasExactFields(value, allowed, { partial = false, optional = [] } = {}) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
   const keys = Object.keys(value);
-  if (keys.some(key => !allowed.includes(key))) return false;
+  if (keys.some(key => !allowed.includes(key) && !optional.includes(key))) return false;
   return partial ? keys.length > 0 : allowed.every(key => Object.hasOwn(value, key));
 }
 
@@ -57,12 +60,12 @@ function bodyText(value) {
   if (typeof value !== 'string') throw new LibraryError('正文必须是文字');
   if (value.length > SNIPPET_LIMITS.body) throw new LibraryError(`正文最多 ${SNIPPET_LIMITS.body} 个字符`);
   if (bodyControl.test(value)) throw new LibraryError('正文只能包含文字和换行');
-  const body = value.split('\n').map(item => item.trimEnd()).join('\n').replace(/^\n+|\n+$/g, '');
+  const body = trimSnippetBody(value);
   if (!body.trim()) throw new LibraryError('正文不能为空');
   return body;
 }
 
-function validate(input) {
+function validate(input, currentBody) {
   const result = {};
   if (Object.hasOwn(input, 'title')) result.title = line(input.title, '标题', SNIPPET_LIMITS.title);
   if (Object.hasOwn(input, 'type')) {
@@ -72,6 +75,10 @@ function validate(input) {
   if (Object.hasOwn(input, 'section')) result.section = line(input.section, '章节', SNIPPET_LIMITS.section);
   if (Object.hasOwn(input, 'tags')) result.tags = tagList(input.tags);
   if (Object.hasOwn(input, 'body')) result.body = bodyText(input.body);
+  if (Object.hasOwn(input, 'format')) {
+    if (!isSnippetFormat(input.format, result.body ?? currentBody)) throw new LibraryError('片段格式与正文不匹配或超出支持范围');
+    result.format = input.format;
+  }
   return result;
 }
 
@@ -80,7 +87,7 @@ function validTimestamp(value) {
 }
 
 function validRecord(snippet) {
-  if (!hasExactFields(snippet, recordFields) || !uuidPattern.test(snippet.id)) return false;
+  if (!hasExactFields(snippet, recordFields, { optional: ['format'] }) || !uuidPattern.test(snippet.id)) return false;
   if (!validTimestamp(snippet.createdAt) || !validTimestamp(snippet.updatedAt)) return false;
   if (snippet.trashedAt !== null && !validTimestamp(snippet.trashedAt)) return false;
   try {
@@ -96,6 +103,8 @@ export class Knowledge {
     this.directory = path.resolve(directory);
     this.file = path.join(this.directory, 'knowledge.json');
     this.snippets = [];
+    this.trashScope = randomUUID();
+    this.editLocks = new EditLocks();
     this.failure = null;
     this.pending = Promise.resolve();
   }
@@ -151,6 +160,28 @@ export class Knowledge {
     return snippet;
   }
 
+  trashRevision(snippets) {
+    return createHash('sha256').update(this.trashScope)
+      .update(JSON.stringify(snippets.map(({ id, trashedAt }) => [id, trashedAt]))).digest('hex');
+  }
+
+  checkEditLock(id, token) {
+    this.editLocks.check(id, token, EDIT_BUSY, EDIT_EXPIRED);
+  }
+
+  acquireEditLock(id, input) {
+    return this.serialize(() => {
+      if (!hasExactFields(input, [])) throw new LibraryError('开始编辑仅接受空对象');
+      const snippet = this.find(id);
+      if (snippet.trashedAt !== null) throw new LibraryError('片段已在回收站，请先恢复后修改', 410);
+      return { snippet, token: this.editLocks.acquire(id, EDIT_BUSY) };
+    });
+  }
+
+  changeEditLock(id, input) {
+    return this.serialize(() => this.editLocks.change(id, input, EDIT_BUSY, EDIT_EXPIRED));
+  }
+
   list({ q = '', type = '', section = '', view = 'all' } = {}) {
     this.ready();
     if (typeof q !== 'string' || q.length > 512 || lineControl.test(q)) throw new LibraryError('检索词须为不超过 512 个字符的文字');
@@ -179,6 +210,7 @@ export class Knowledge {
       snippets,
       total: this.snippets.filter(snippet => snippet.trashedAt === null).length,
       viewTotal: pool.length,
+      ...(view === 'trash' ? { trashRevision: this.trashRevision(pool) } : {}),
       facets: {
         types: typeCounts,
         sections: [...sectionCounts].map(([key, count]) => {
@@ -192,7 +224,7 @@ export class Knowledge {
 
   create(input) {
     return this.serialize(async () => {
-      if (!hasExactFields(input, fields)) throw new LibraryError('新建片段需要且仅接受 title、type、section、tags、body');
+      if (!hasExactFields(input, fields, { optional: ['format'] })) throw new LibraryError('新建片段需要 title、type、section、tags、body，格式可选');
       if (this.snippets.length >= MAX_SNIPPETS) throw new LibraryError(`知识库最多 ${MAX_SNIPPETS} 个片段`);
       const now = new Date().toISOString();
       const snippet = { id: randomUUID(), ...validate(input), createdAt: now, updatedAt: now, trashedAt: null };
@@ -204,10 +236,19 @@ export class Knowledge {
   update(id, input) {
     return this.serialize(async () => {
       const snippet = this.find(id);
-      if (!hasExactFields(input, fields, { partial: true })) throw new LibraryError('修改片段仅接受 title、type、section、tags、body 中的字段');
+      if (!hasExactFields(input, fields, { partial: true, optional: ['format', 'editToken'] })
+        || !Object.keys(input).some(key => key !== 'editToken')) throw new LibraryError('修改片段包含未知字段或没有提供字段');
+      const { editToken } = input;
+      if (Object.hasOwn(input, 'editToken') && (typeof editToken !== 'string' || !uuidPattern.test(editToken))) {
+        throw new LibraryError('请提供有效的编辑锁令牌');
+      }
       if (snippet.trashedAt !== null) throw new LibraryError('片段已在回收站，请先恢复后修改', 410);
-      const updated = { ...snippet, ...validate(input), updatedAt: new Date().toISOString() };
+      this.checkEditLock(id, editToken);
+      const changes = validate(input, snippet.body);
+      const updated = { ...snippet, ...changes, updatedAt: new Date().toISOString() };
+      if (updated.body !== snippet.body && !changes.format) delete updated.format;
       await this.persist(this.snippets.map(item => item.id === id ? updated : item));
+      if (editToken) this.editLocks.delete(id);
       return updated;
     });
   }
@@ -217,9 +258,32 @@ export class Knowledge {
       const snippet = this.find(id);
       if (!hasExactFields(input, ['trashed']) || typeof input.trashed !== 'boolean') throw new LibraryError('回收站设置仅接受 trashed 布尔值');
       if ((snippet.trashedAt !== null) === input.trashed) return snippet;
+      this.checkEditLock(id);
       const updated = { ...snippet, trashedAt: input.trashed ? new Date().toISOString() : null };
       await this.persist(this.snippets.map(item => item.id === id ? updated : item));
       return updated;
+    });
+  }
+
+  purgeTrash(input) {
+    return this.serialize(async () => {
+      if (!hasExactFields(input, ['revision'], { optional: ['ids', 'all'] }) || typeof input.revision !== 'string'
+        || !/^[0-9a-f]{64}$/.test(input.revision)) throw new LibraryError('请提供有效的回收站版本');
+      const { ids, revision } = input;
+      const hasIds = Object.hasOwn(input, 'ids');
+      const hasAll = Object.hasOwn(input, 'all');
+      if (hasIds === hasAll || (hasAll && input.all !== true)) throw new LibraryError('请指定要永久删除的片段，或明确选择清空回收站');
+      if (hasIds && (!Array.isArray(ids) || !ids.length || ids.length > MAX_SNIPPETS
+        || ids.some(id => typeof id !== 'string' || !uuidPattern.test(id)) || new Set(ids).size !== ids.length)) {
+        throw new LibraryError('请提供有效且不重复的片段编号');
+      }
+      const trash = this.snippets.filter(snippet => snippet.trashedAt !== null);
+      if (revision !== this.trashRevision(trash)) throw new LibraryError('回收站内容已变化，请刷新后重新确认', 409);
+      const trashedIds = new Set(trash.map(snippet => snippet.id));
+      if (ids?.some(id => !trashedIds.has(id))) throw new LibraryError('所选片段已不在回收站，请刷新后重新确认', 409);
+      const removed = ids ? new Set(ids) : trashedIds;
+      if (removed.size) await this.persist(this.snippets.filter(snippet => !removed.has(snippet.id)));
+      return { purged: removed.size };
     });
   }
 }

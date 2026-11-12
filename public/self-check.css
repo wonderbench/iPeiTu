@@ -1,0 +1,11 @@
+.self-check {
+  display: grid;
+  align-content: start;
+  gap: 12px;
+  padding: 12px;
+  max-width: 680px;
+}
+.self-check-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.self-check-output { display: grid; gap: 8px; min-width: 0; }
+.self-check-output label { font-weight: 600; }
+.self-check-output textarea { width: 100%; padding: 8px 10px; }

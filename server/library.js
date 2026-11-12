@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { mkdir, readFile, readdir, writeFile, rename, lstat, opendir, open, stat, realpath } from 'node:fs/promises';
+import { mkdir, readFile, readdir, writeFile, rename, lstat, opendir, open, stat, realpath, unlink } from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
 import sharp from 'sharp';
@@ -35,6 +35,60 @@ export class LibraryError extends Error {
     super(message);
     this.status = status;
   }
+}
+
+const EDIT_LOCK_MS = 120_000;
+
+export class EditLocks extends Map {
+  check(id, token, busy, expired) {
+    const lock = this.get(id);
+    if (lock?.expiresAt <= Date.now()) this.delete(id);
+    else if (lock) {
+      if (lock.token !== token) throw new LibraryError(busy, 423);
+      return lock;
+    }
+    if (token !== undefined) throw new LibraryError(expired, 409);
+    return null;
+  }
+
+  acquire(id, busy) {
+    this.check(id, undefined, busy);
+    const token = randomUUID();
+    this.set(id, { token, expiresAt: Date.now() + EDIT_LOCK_MS });
+    return token;
+  }
+
+  change(id, input, busy, expired) {
+    const fields = input?.release === true ? ['token', 'release'] : ['token'];
+    if (!hasExactFields(input, fields) || typeof input.token !== 'string' || !clientIdPattern.test(input.token)) {
+      throw new LibraryError('编辑锁请求无效');
+    }
+    if (input.release) {
+      if (this.get(id)?.token === input.token) this.delete(id);
+    } else {
+      this.check(id, input.token, busy, expired).expiresAt = Date.now() + EDIT_LOCK_MS;
+    }
+    return { ok: true };
+  }
+}
+
+const assetEditBusy = ({ name }) => `「${name}」的素材信息正在编辑，请等对方保存或退出后再试`;
+const ASSET_EDIT_EXPIRED = '素材信息编辑锁已过期，请重新打开素材信息';
+
+function metadataEditToken(input) {
+  if (!Object.hasOwn(input, 'editToken')) return undefined;
+  if (typeof input.editToken !== 'string' || !clientIdPattern.test(input.editToken)) {
+    throw new LibraryError('请提供有效的编辑锁令牌');
+  }
+  return input.editToken;
+}
+
+function batchIds(ids) {
+  if (!Array.isArray(ids) || !ids.length || ids.length > MAX_BATCH_ASSETS || new Set(ids).size !== ids.length
+    || ids.some(id => typeof id !== 'string')) {
+    throw new LibraryError(`请选择 1–${MAX_BATCH_ASSETS} 张不重复的图片`);
+  }
+  return ids;
 }
 
 export function defaultDataDirectory() {
@@ -176,8 +230,11 @@ export class Library {
   constructor(directory) {
     this.directory = path.resolve(directory);
     this.assets = [];
+    this.trashScope = randomUUID();
+    this.pendingPurge = [];
     this.usage = { version: 1, favorites: [], recent: [] };
     this.clientUsage = new Map();
+    this.editLocks = new EditLocks();
     this.pending = Promise.resolve();
     this.quality = new InsertionQuality(this.directory);
   }
@@ -207,8 +264,16 @@ export class Library {
       || new Set(index.assets.map(asset => asset.id)).size !== index.assets.length) {
       throw new LibraryError('图库索引结构损坏，无法安全读取', 500);
     }
+    const pendingPurge = Object.hasOwn(index, 'pendingPurge') ? index.pendingPurge : [];
+    if (!Array.isArray(pendingPurge) || (index.version < 3 && pendingPurge.length)
+      || !pendingPurge.every(item => hasExactFields(item, ['id', 'format'])
+        && typeof item.id === 'string' && idPattern.test(item.id) && formats.has(item.format))
+      || new Set([...index.assets, ...pendingPurge].map(asset => asset.id)).size !== index.assets.length + pendingPurge.length) {
+      throw new LibraryError('图库待清理记录损坏，无法安全读取', 500);
+    }
+    library.pendingPurge = pendingPurge;
     // Refuse damaged personal state before attempting any historical index migration.
-    await library.loadUsage(index.assets);
+    await library.loadUsage([...index.assets, ...pendingPurge]);
     if (index.version < 3) {
       const backup = path.join(library.directory, `index-v${index.version}-backup-${Date.now()}-${randomUUID()}.json`);
       await writeFile(backup, original, { flag: 'wx' });
@@ -217,6 +282,7 @@ export class Library {
     } else {
       library.assets = index.assets;
     }
+    await library.finishPurge();
     return library;
   }
 
@@ -242,11 +308,13 @@ export class Library {
     return result;
   }
 
-  async persist(assets) {
+  async persist(assets, pendingPurge = this.pendingPurge) {
     const temporary = path.join(this.directory, `index-${randomUUID()}.tmp`);
-    await writeFile(temporary, `${JSON.stringify({ version: 3, assets }, null, 2)}\n`, { flag: 'wx' });
+    const index = { version: 3, assets, ...(pendingPurge.length ? { pendingPurge } : {}) };
+    await writeFile(temporary, `${JSON.stringify(index, null, 2)}\n`, { flag: 'wx' });
     await rename(temporary, path.join(this.directory, 'index.json'));
     this.assets = assets;
+    this.pendingPurge = pendingPurge;
   }
 
   async persistUsage(usage) {
@@ -266,7 +334,9 @@ export class Library {
     }
     let usage;
     try { usage = JSON.parse(original); } catch { usage = null; }
-    if (!validUsage(usage, this.assets)) {
+    // A concurrent read can finish after a serialized write has already populated the cache.
+    if (this.clientUsage.has(client)) return this.clientUsage.get(client);
+    if (!validUsage(usage, [...this.assets, ...this.pendingPurge])) {
       throw new LibraryError(`客户端 ${client} 的收藏与最近记录已损坏，请保留 clients 目录中的原文件并恢复备份`, 500);
     }
     this.clientUsage.set(client, usage);
@@ -294,6 +364,11 @@ export class Library {
 
   get activeTotal() {
     return this.assets.filter(asset => asset.deletedAt === null).length;
+  }
+
+  trashRevision(assets) {
+    return createHash('sha256').update(this.trashScope)
+      .update(JSON.stringify(assets.map(({ id, deletedAt }) => [id, deletedAt]))).digest('hex');
   }
 
   list(query = '', { category = '', tags = [], uncategorized = false, view = 'all', orientation = '' } = {}, usage = this.usage) {
@@ -340,7 +415,27 @@ export class Library {
       }
       facets[field] = [...counts.values()].sort((a, b) => a.name.localeCompare(b.name, 'zh-CN'));
     }
-    return { assets, total: activeAssets.length, viewTotal: viewAssets.length, facets };
+    return {
+      assets, total: activeAssets.length, viewTotal: viewAssets.length, facets,
+      ...(view === 'trash' ? { trashRevision: this.trashRevision(facetAssets) } : {}),
+    };
+  }
+
+  acquireEditLock(id, input, client = null) {
+    return this.serialize(async () => {
+      if (!hasExactFields(input, [])) throw new LibraryError('开始编辑仅接受空对象');
+      const asset = this.getAsset(id);
+      const usage = await this.usageFor(client);
+      const token = this.editLocks.acquire(id, assetEditBusy(asset));
+      return { asset: displayAsset(asset, usage), token };
+    });
+  }
+
+  changeEditLock(id, input) {
+    return this.serialize(() => {
+      const busy = input?.release === true ? '' : assetEditBusy(this.getAsset(id));
+      return this.editLocks.change(id, input, busy, ASSET_EDIT_EXPIRED);
+    });
   }
 
   updateAsset(id, input, client = null) {
@@ -348,15 +443,18 @@ export class Library {
       const asset = this.getAsset(id);
       const usage = await this.usageFor(client);
       if (!input || typeof input !== 'object' || Array.isArray(input)) throw new LibraryError('素材整理内容须为 JSON 对象');
-      const fields = Object.keys(input);
+      const token = metadataEditToken(input);
+      const fields = Object.keys(input).filter(field => field !== 'editToken');
       if (!fields.length || fields.some(field => !Object.hasOwn(fieldLabels, field))) {
         throw new LibraryError('仅可修改名称、别名、分类和标签，且至少提供一项');
       }
+      this.editLocks.check(id, token, assetEditBusy(asset), ASSET_EDIT_EXPIRED);
       const changes = {};
       for (const field of fields) changes[field] = field === 'name'
         ? metadataText(input[field], field, 255) : metadataList(input[field], field);
       const updated = { ...asset, ...changes };
       await this.persist(this.assets.map(item => item.id === id ? updated : item));
+      if (token) this.editLocks.delete(id);
       return displayAsset(updated, usage);
     });
   }
@@ -369,11 +467,7 @@ export class Library {
         || Object.keys(input).some(key => key !== 'ids' && !operations.includes(key))) {
         throw new LibraryError('批量整理仅接受 ids、addCategories、removeCategories、addTags、removeTags');
       }
-      const { ids } = input;
-      if (!Array.isArray(ids) || !ids.length || ids.length > MAX_BATCH_ASSETS || new Set(ids).size !== ids.length
-        || ids.some(id => typeof id !== 'string')) {
-        throw new LibraryError(`请选择 1–${MAX_BATCH_ASSETS} 张不重复的图片`);
-      }
+      const ids = batchIds(input.ids);
       const changes = {};
       for (const key of operations) {
         if (Object.hasOwn(input, key)) changes[key] = metadataList(input[key], key.endsWith('Tags') ? 'tags' : 'categories');
@@ -386,6 +480,7 @@ export class Library {
       const updates = new Map();
       for (const id of ids) {
         const asset = this.getAsset(id);
+        this.editLocks.check(id, undefined, assetEditBusy(asset));
         const categories = remove(mergeMetadata(asset.categories, changes.addCategories ?? [], 'categories'), changes.removeCategories);
         const tags = remove(mergeMetadata(asset.tags, changes.addTags ?? [], 'tags'), changes.removeTags);
         updates.set(id, { ...asset, categories, tags });
@@ -429,7 +524,10 @@ export class Library {
   setTrash(id, input, client = null) {
     return this.serialize(async () => {
       const asset = this.getAsset(id, { includeDeleted: true });
-      if (!hasExactFields(input, ['trashed']) || typeof input.trashed !== 'boolean') throw new LibraryError('移出设置仅接受 trashed 布尔值');
+      const fields = input && Object.hasOwn(input, 'editToken') ? ['trashed', 'editToken'] : ['trashed'];
+      if (!hasExactFields(input, fields) || typeof input.trashed !== 'boolean') throw new LibraryError('移出设置需要 trashed 布尔值');
+      const token = metadataEditToken(input);
+      this.editLocks.check(id, token, assetEditBusy(asset), ASSET_EDIT_EXPIRED);
       const usage = await this.usageFor(client);
       if ((asset.deletedAt !== null) === input.trashed) return displayAsset(asset, usage);
       if (!input.trashed) {
@@ -443,8 +541,95 @@ export class Library {
       }
       const updated = { ...asset, deletedAt: input.trashed ? new Date().toISOString() : null };
       await this.persist(this.assets.map(item => item.id === id ? updated : item));
+      if (token) this.editLocks.delete(id);
       return displayAsset(updated, usage);
     });
+  }
+
+  trashAssets(input) {
+    return this.serialize(async () => {
+      if (!hasExactFields(input, ['ids'])) throw new LibraryError('批量移出仅接受 ids 字段');
+      const ids = batchIds(input.ids);
+      const active = ids.map(id => this.getAsset(id, { includeDeleted: true })).filter(asset => asset.deletedAt === null);
+      for (const asset of active) this.editLocks.check(asset.id, undefined, assetEditBusy(asset));
+      const pending = new Set(active.map(asset => asset.id));
+      if (pending.size) {
+        const deletedAt = new Date().toISOString();
+        await this.persist(this.assets.map(asset => pending.has(asset.id) ? { ...asset, deletedAt } : asset));
+      }
+      return { trashed: ids.length };
+    });
+  }
+
+  purgeAssets(input) {
+    return this.serialize(async () => {
+      let assets;
+      if (hasExactFields(input, ['all', 'revision']) && input.all === true
+        && typeof input.revision === 'string' && idPattern.test(input.revision)) {
+        assets = this.assets.filter(asset => asset.deletedAt !== null);
+        if (input.revision !== this.trashRevision(assets)) {
+          throw new LibraryError('回收站内容已变化，请刷新后重新确认', 409);
+        }
+      } else {
+        if (!hasExactFields(input, ['ids'])) throw new LibraryError('请指定要永久删除的图片，或提供清空回收站的确认版本');
+        assets = batchIds(input.ids).map(id => this.getAsset(id, { includeDeleted: true }));
+      }
+      if (assets.some(asset => asset.deletedAt === null)) {
+        throw new LibraryError('只能永久删除回收站中的素材，请刷新列表后重试', 409);
+      }
+      if (!assets.length) return { purged: 0, cleanupPending: this.pendingPurge.length > 0 };
+      const ids = new Set(assets.map(asset => asset.id));
+      const pending = assets.map(({ id, format }) => ({ id, format }));
+      // 在同一次索引写入中移除记录并登记待清理文件，重启后仍可继续清理。
+      await this.persist(this.assets.filter(asset => !ids.has(asset.id)), [...this.pendingPurge, ...pending]);
+      return { purged: ids.size, cleanupPending: !(await this.finishPurge()) };
+    });
+  }
+
+  async finishPurge() {
+    if (!this.pendingPurge.length) return true;
+    try {
+      for (const [folder, extension] of [['images', null], ['thumbnails', 'jpeg'], ['insertion', 'png']]) {
+        const directory = path.join(this.directory, folder);
+        const details = await lstat(directory);
+        if (!details.isDirectory() || details.isSymbolicLink()) {
+          throw new LibraryError('素材文件目录无效，无法安全清理', 500);
+        }
+        for (const { id, format } of this.pendingPurge) {
+          try { await unlink(path.join(directory, `${id}.${extension ?? format}`)); } catch (error) {
+            if (error.code !== 'ENOENT') throw error;
+          }
+        }
+      }
+      const ids = new Set(this.pendingPurge.map(item => item.id));
+      const prune = async (client, usage) => {
+        const favorites = usage.favorites.filter(id => !ids.has(id));
+        const recent = usage.recent.filter(entry => !ids.has(entry.id));
+        if (favorites.length !== usage.favorites.length || recent.length !== usage.recent.length) {
+          await this.persistUsageFor(client, { ...usage, favorites, recent });
+        }
+      };
+      await prune(null, this.usage);
+      const clientDirectory = path.join(this.directory, 'clients');
+      const details = await lstat(clientDirectory).catch(error => {
+        if (error.code !== 'ENOENT') throw error;
+        return null;
+      });
+      if (details) {
+        if (!details.isDirectory() || details.isSymbolicLink()) {
+          throw new LibraryError('客户端记录目录无效，无法安全清理', 500);
+        }
+        for (const filename of await readdir(clientDirectory)) {
+          const client = filename.endsWith('.json') ? filename.slice(0, -5) : '';
+          if (clientIdPattern.test(client)) await prune(client, await this.usageFor(client));
+        }
+      }
+      await this.persist(this.assets, []);
+      return true;
+    } catch (error) {
+      console.error('iPeiTu 待清理素材处理失败，将在服务重启或再次永久删除时重试', error);
+      return false;
+    }
   }
 
   getAsset(id, { includeDeleted = false } = {}) {
@@ -504,6 +689,9 @@ export class Library {
       throw new LibraryError(`无法读取图片：仅支持 JPEG、PNG、WebP，单图不超过 6400 万像素；BMP 请先转换为 PNG。${error.message}`);
     }
     const id = createHash('sha256').update(buffer).digest('hex');
+    if (this.pendingPurge.some(item => item.id === id) && !(await this.finishPurge())) {
+      throw new LibraryError('此图片正在等待永久删除后的清理，请稍后重试', 409);
+    }
     const normalized = metadata.format === 'webp' || (metadata.orientation >= 2 && metadata.orientation <= 8);
     const existing = this.assets.find(asset => asset.id === id);
     if (existing) {
@@ -511,6 +699,9 @@ export class Library {
       const aliases = restoring ? existing.aliases
         : mergeMetadata(existing.aliases, matchKey(existing.name) === matchKey(name) ? [] : [name], 'aliases');
       const mergedCategories = restoring ? existing.categories : mergeMetadata(existing.categories, categories, 'categories');
+      if (aliases.length !== existing.aliases.length || mergedCategories.length !== existing.categories.length) {
+        this.editLocks.check(id, undefined, assetEditBusy(existing));
+      }
       // Restore missing managed files on reimport, as the missing-file message directs.
       await this.writeImages(id, metadata.format, buffer, thumbnail, image, normalized);
       if (existing.deletedAt !== null || aliases.length !== existing.aliases.length || mergedCategories.length !== existing.categories.length || existing.normalized !== normalized) {
