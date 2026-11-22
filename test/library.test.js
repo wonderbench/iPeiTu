@@ -1,10 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, writeFile, readFile, rm, symlink, unlink, readdir, rename, realpath } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
+import { mkdtemp, mkdir, writeFile, readFile, rm, symlink, unlink, readdir, rename, realpath, stat, utimes } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import sharp from 'sharp';
-import { Library, MAX_IMAGE_BYTES } from '../server/library.js';
+import { Library, MAX_IMAGE_BYTES, writeReplacing } from '../server/library.js';
 
 async function setup(t) {
   const root = await mkdtemp(path.join(os.tmpdir(), 'ipeitu-library-'));
@@ -780,4 +781,162 @@ test('batch updates change nothing when any image is missing, trashed, over a li
     await assert.rejects(library.updateAssets(input), JSON.stringify(input)?.slice(0, 60));
   }
   assert.notDeepEqual(before, full);
+});
+
+// 受管文件：原图、缩略图，以及 EXIF 旋转或 WebP 素材的 PNG 插入副本。
+function managedFiles(directory, asset) {
+  const files = [path.join(directory, 'images', `${asset.id}.${asset.format}`), path.join(directory, 'thumbnails', `${asset.id}.jpeg`)];
+  if (asset.normalized || asset.format === 'webp') files.push(path.join(directory, 'insertion', `${asset.id}.png`));
+  return files;
+}
+
+// 先把文件时间设到过去，再比较修改时间与文件编号：重写（写临时文件再重命名）会同时改变两者，不受各系统 mtime 精度影响。
+const PAST = new Date('2020-01-02T03:04:05.000Z');
+async function agedSnapshot(files) {
+  for (const file of files) await utimes(file, PAST, PAST);
+  return Promise.all(files.map(async file => {
+    const details = await stat(file);
+    return { mtimeMs: details.mtimeMs, ino: details.ino, size: details.size };
+  }));
+}
+async function snapshot(files) {
+  return Promise.all(files.map(async file => {
+    const details = await stat(file);
+    return { mtimeMs: details.mtimeMs, ino: details.ino, size: details.size };
+  }));
+}
+
+function rotatedJpeg(color = '#336655') {
+  return sharp({ create: { width: 64, height: 32, channels: 3, background: color } }).withMetadata({ orientation: 6 }).jpeg().toBuffer();
+}
+
+test('duplicate reimport with every managed file present merges metadata without rewriting files', async t => {
+  const { directory, library } = await setup(t);
+  const bytes = await rotatedJpeg();
+  assert.equal((await library.importFile('原名.jpeg', bytes, '旧分类')).imported, 1);
+  const asset = library.assets[0];
+  assert.equal(asset.normalized, true);
+  const files = managedFiles(directory, asset);
+  assert.equal(files.length, 3);
+  const before = await agedSnapshot(files);
+  assert.equal(before[0].mtimeMs, PAST.getTime());
+  assert.deepEqual(await library.importFile('别名.jpeg', bytes, '新分类'), { imported: 0, duplicates: 1, restored: 0, failed: [], total: 1 });
+  assert.deepEqual(await snapshot(files), before, '三个受管文件都未被重写');
+  assert.deepEqual(library.getAsset(asset.id).aliases, ['别名.jpeg']);
+  assert.deepEqual(library.getAsset(asset.id).categories, ['旧分类', '新分类']);
+  assert.equal(library.getAsset(asset.id).normalized, true);
+  const indexBytes = await readFile(path.join(directory, 'index.json'));
+  assert.deepEqual(await library.importFile('原名.jpeg', bytes, '新分类'), { imported: 0, duplicates: 1, restored: 0, failed: [], total: 1 });
+  assert.deepEqual(await readFile(path.join(directory, 'index.json')), indexBytes, '没有新别名或分类时不改索引');
+  assert.deepEqual(await snapshot(files), before);
+  assert.deepEqual((await Library.open(directory)).getAsset(asset.id), library.getAsset(asset.id));
+});
+
+test('duplicate reimport regenerates every managed file when any one of them is missing', async t => {
+  const { directory, library } = await setup(t);
+  const bytes = await rotatedJpeg('#225588');
+  await library.importFile('照片.jpeg', bytes);
+  const asset = library.assets[0];
+  const files = managedFiles(directory, asset);
+  for (const missing of files) {
+    await agedSnapshot(files);
+    await unlink(missing);
+    assert.equal((await library.importFile('照片.jpeg', bytes)).duplicates, 1);
+    const after = await snapshot(files);
+    assert.ok(after.every(item => item.mtimeMs !== PAST.getTime() && item.size > 0), `${path.basename(path.dirname(missing))} 缺失时走完整导入`);
+  }
+  assert.deepEqual(await readFile(files[0]), bytes);
+  assert.equal((await sharp(files[1]).metadata()).format, 'jpeg');
+  const insertion = await sharp(files[2]).metadata();
+  assert.deepEqual([insertion.format, insertion.width, insertion.height], ['png', 32, 64]);
+  // 缩略图被替换成空文件时同样视为缺失。
+  await writeFile(files[1], '');
+  assert.equal((await library.importFile('照片.jpeg', bytes)).duplicates, 1);
+  assert.ok((await stat(files[1])).size > 0);
+  // 原图内容被改坏（大小不变）时按原图字节比对发现，重新导入即修复。
+  await writeFile(files[0], Buffer.alloc(bytes.length, 0));
+  assert.equal((await library.importFile('照片.jpeg', bytes)).duplicates, 1);
+  assert.deepEqual(await readFile(files[0]), bytes);
+});
+
+test('reimporting a trashed image with intact files restores it without rewriting and keeps metadata', async t => {
+  const { directory, library } = await setup(t);
+  const bytes = await image('#884422');
+  await library.importFile('来源.png', bytes, '来源分类');
+  const id = library.assets[0].id;
+  await library.updateAsset(id, { aliases: ['人工别名'] });
+  await library.setTrash(id, { trashed: true });
+  const files = managedFiles(directory, library.getAsset(id, { includeDeleted: true }));
+  const before = await agedSnapshot(files);
+  assert.deepEqual(await library.importFile('另一来源.png', bytes, '另一分类'), { imported: 0, duplicates: 0, restored: 1, failed: [], total: 1 });
+  assert.deepEqual(await snapshot(files), before);
+  const restored = library.getAsset(id);
+  assert.equal(restored.deletedAt, null);
+  assert.deepEqual(restored.aliases, ['人工别名'], '恢复时不追加来源名');
+  assert.deepEqual(restored.categories, ['来源分类'], '恢复时不追加来源分类');
+});
+
+test('a legacy record without normalized takes the full import path and records the field', async t => {
+  const { directory, library } = await setup(t);
+  const bytes = await image('#447766');
+  await library.importFile('旧记录.png', bytes);
+  const { normalized, ...legacy } = library.assets[0];
+  assert.equal(normalized, false);
+  await writeFile(path.join(directory, 'index.json'), JSON.stringify({ version: 3, assets: [legacy] }));
+  const reopened = await Library.open(directory);
+  assert.equal(reopened.assets[0].normalized, undefined);
+  const files = managedFiles(directory, legacy);
+  await agedSnapshot(files);
+  assert.equal((await reopened.importFile('旧记录.png', bytes)).duplicates, 1);
+  assert.ok((await snapshot(files)).every(item => item.mtimeMs !== PAST.getTime()), '旧记录重新生成受管文件');
+  assert.equal(reopened.assets[0].normalized, false);
+  assert.equal((await Library.open(directory)).assets[0].normalized, false);
+});
+
+test('failed replacements of images, index.json and usage.json leave no temporary files behind', async t => {
+  const { directory, library } = await setup(t);
+  const temporaryFiles = async folder => (await readdir(folder)).filter(name => name.endsWith('.tmp'));
+  // 目标是非空目录时，Linux 与 Windows 上的重命名都会失败。
+  const blockWithDirectory = async target => {
+    await mkdir(target, { recursive: true });
+    await writeFile(path.join(target, '占位.txt'), 'x');
+  };
+  const bytes = await image('#123456');
+  const id = createHash('sha256').update(bytes).digest('hex');
+  const imagePath = path.join(directory, 'images', `${id}.png`);
+  await blockWithDirectory(imagePath);
+  await assert.rejects(library.importFile('被占用.png', bytes));
+  assert.deepEqual(await temporaryFiles(path.join(directory, 'images')), []);
+  assert.equal(library.assets.length, 0);
+  await rm(imagePath, { recursive: true });
+
+  const indexPath = path.join(directory, 'index.json');
+  await blockWithDirectory(indexPath);
+  await assert.rejects(library.importFile('索引失败.png', bytes));
+  assert.deepEqual(await temporaryFiles(directory), []);
+  assert.equal(library.assets.length, 0, '索引写入失败时不更新内存');
+  await rm(indexPath, { recursive: true });
+  await library.importFile('图片.png', bytes);
+
+  const usagePath = path.join(directory, 'usage.json');
+  await blockWithDirectory(usagePath);
+  await assert.rejects(library.setFavorite(id, { favorite: true }));
+  assert.deepEqual(await temporaryFiles(directory), []);
+  assert.equal(library.list().assets[0].favorite, false);
+  await rm(usagePath, { recursive: true });
+  assert.equal((await library.setFavorite(id, { favorite: true })).favorite, true);
+});
+
+test('temporary file cleanup keeps the original error and never deletes a file it did not create', async t => {
+  const { directory } = await setup(t);
+  const target = path.join(directory, '目标.json');
+  const existing = path.join(directory, '已存在.tmp');
+  await writeFile(existing, '别人的文件');
+  await assert.rejects(writeReplacing(existing, target, '新内容'), { code: 'EEXIST' });
+  assert.equal(await readFile(existing, 'utf8'), '别人的文件');
+  const temporary = path.join(directory, '本次.tmp');
+  const failure = Object.assign(new Error('模拟重命名失败'), { code: 'EBUSY' });
+  await assert.rejects(writeReplacing(temporary, target, '新内容', { rename: async () => { throw failure; } }), error => error === failure);
+  await assert.rejects(stat(temporary), { code: 'ENOENT' });
+  await assert.rejects(stat(target), { code: 'ENOENT' });
 });

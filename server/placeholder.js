@@ -3,6 +3,7 @@ import { lstat, mkdir, rename, unlink, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import sharp from 'sharp';
 import { LibraryError } from './library.js';
+import { touchCache } from './cache-prune.js';
 
 // 0.5–50 厘米，与排版设置的范围一致。
 export const MIN_BOX_PT = 14;
@@ -68,7 +69,8 @@ export class Placeholders {
     await this.ensureDirectory();
     const key = createHash('sha256').update(JSON.stringify([RULE_VERSION, box.name, box.widthPt, box.heightPt])).digest('hex');
     const filename = path.join(this.directory, `${key}.png`);
-    if (!(await this.validCache(filename, width, height))) {
+    // 命中时刷新修改时间；刷新时文件已被缓存清理删除则按未命中重新生成。
+    if (!(await this.validCache(filename, width, height)) || !(await touchCache(filename))) {
       const image = await sharp(Buffer.from(placeholderSvg(box, width, height))).png().toBuffer();
       const temporary = `${filename}.${randomUUID()}.tmp`;
       try {

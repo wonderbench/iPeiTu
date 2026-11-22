@@ -4,6 +4,7 @@ import path from 'node:path';
 import sharp from 'sharp';
 import { LibraryError, MAX_IMAGE_BYTES, MAX_IMAGE_PIXELS } from './library.js';
 import { densityPolicy, logicalSize, preserveNativeDensity } from './image-density.js';
+import { touchCache } from './cache-prune.js';
 
 const RULE_VERSION = 'v2';
 const profiles = { clear: { edge: 2400, quality: 90 }, balanced: { edge: 1600, quality: 80 } };
@@ -154,6 +155,8 @@ export class InsertionQuality {
     try {
       cached = await boundedRead(this.directory, filename, MAX_IMAGE_BYTES);
       if (!(await this.validCache(cached, expected))) throw new LibraryError('图片压缩缓存校验失败', 500);
+      // 读取与校验完成后再刷新修改时间；文件此时已被缓存清理删除则按不存在处理，下面重新生成。
+      if (!(await touchCache(filename))) throw Object.assign(new Error('压缩缓存已被清理'), { code: 'ENOENT' });
     } catch (error) {
       if (error.code !== 'ENOENT' && !(error instanceof LibraryError && /大小|缓存校验/.test(error.message))) throw error;
       if (error.code !== 'ENOENT') console.warn('iPeiTu 压缩缓存已损坏，正在从原图重建:', filename);

@@ -70,7 +70,9 @@ function remoteRoute(method, pathname) {
 // 默认使用单调时钟，系统时间回拨不会让某个地址长期不被记录；测试可注入 now 与 warn。
 export class AuthFailureLog {
   constructor({ windowMs = 60_000, maxAddresses = 256, now = () => performance.now(), warn = message => console.warn(message) } = {}) {
-    if (!(windowMs > 0) || !Number.isSafeInteger(maxAddresses) || maxAddresses < 1) throw new Error('认证失败日志的窗口与地址上限必须为正数');
+    if (!Number.isFinite(windowMs) || windowMs <= 0 || !Number.isSafeInteger(maxAddresses) || maxAddresses < 1) {
+      throw new Error('认证失败日志的窗口须为有限正数，地址上限须为正整数');
+    }
     this.windowMs = windowMs;
     this.maxAddresses = maxAddresses;
     this.now = now;

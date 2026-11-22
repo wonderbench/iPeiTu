@@ -5,6 +5,7 @@ import sharp from 'sharp';
 import { LibraryError, MAX_IMAGE_PIXELS } from './library.js';
 import { validateProfile } from './insertion-quality.js';
 import { MIN_BOX_PT, MAX_BOX_PT } from './placeholder.js';
+import { touchCache } from './cache-prune.js';
 
 // cover 裁切填满，fill 拉伸填满，contain 完整显示并补白。
 export const FIT_MODES = ['cover', 'fill', 'contain'];
@@ -49,7 +50,7 @@ export class Fitter {
     if (!details.isDirectory() || details.isSymbolicLink()) throw new LibraryError('适配图目录类型无效，请检查图库目录', 500);
   }
 
-  async create(id, input) {
+  async create(id, input, retried = false) {
     const fit = validateFit(input);
     const source = await this.library.insertion(id, 'original');
     const pixels = fitPixels(source, fit, fit.mode, PROFILE_DPI[fit.profile]);
@@ -61,7 +62,8 @@ export class Fitter {
     await this.ensureDirectory();
     const key = createHash('sha256').update(JSON.stringify([RULE_VERSION, id, fit.mode, pixels.width, pixels.height, format])).digest('hex');
     const filename = path.join(this.directory, `${key}.${format === 'png' ? 'png' : 'jpg'}`);
-    if (!(await this.validCache(filename, pixels, format))) {
+    // 命中时刷新修改时间；刷新时文件已被缓存清理删除则按未命中重新生成。
+    if (!(await this.validCache(filename, pixels, format)) || !(await touchCache(filename))) {
       let image = sharp(source.path, { limitInputPixels: MAX_IMAGE_PIXELS, failOn: 'warning' }).rotate()
         .resize({ width: pixels.width, height: pixels.height, fit: fit.mode, position: 'centre', background: { r: 255, g: 255, b: 255, alpha: 1 } })
         // JPEG 和 PNG 使用同一分辨率标记，确保 WPS 按相同的精度调整尺寸。
@@ -77,7 +79,12 @@ export class Fitter {
       }
     }
     const current = this.library.getAsset(id);
-    const bytes = (await lstat(filename)).size;
+    let bytes;
+    try { bytes = (await lstat(filename)).size; } catch (error) {
+      // 清理在刷新时间前一刻已决定删除该文件时仍可能落空：重新生成一次。
+      if (error.code === 'ENOENT' && !retried) return this.create(id, input, true);
+      throw error;
+    }
     return { path: filename, name: current.name, mode: fit.mode, profile: fit.profile, widthPt: fit.widthPt, heightPt: fit.heightPt, ...pixels, format, bytes };
   }
 

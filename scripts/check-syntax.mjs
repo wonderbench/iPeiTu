@@ -17,6 +17,10 @@ function collect(directory) {
 }
 
 const files = ['server', 'public'].flatMap(name => collect(path.join(root, name))).sort();
+if (!files.length) {
+  console.error('语法检查没有找到任何 .js 文件，请确认 server/ 与 public/ 目录存在且未被移动');
+  process.exit(1);
+}
 let failed = 0;
 for (const file of files) {
   const result = spawnSync(process.execPath, ['--check', file], { encoding: 'utf8' });

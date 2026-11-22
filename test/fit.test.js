@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, rm, stat } from 'node:fs/promises';
+import { unlinkSync } from 'node:fs';
+import { mkdtemp, readFile, rm, stat, unlink, utimes } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import sharp from 'sharp';
@@ -71,8 +72,66 @@ test('透明图输出 PNG 并保留透明；相同请求复用缓存', async t =
   const before = await stat(first.path);
   const again = await fitter.create(id, input);
   assert.equal(again.path, first.path);
-  assert.equal((await stat(again.path)).mtimeMs, before.mtimeMs);
+  assert.equal((await stat(again.path)).ino, before.ino, '复用缓存不重写文件');
   assert.equal(again.bytes, before.size);
+});
+
+// 很久以前的时间：缓存命中后修改时间应被刷新到接近现在。
+const PAST = new Date('2020-01-02T03:04:05.000Z');
+const recent = mtimeMs => mtimeMs > Date.now() - 60_000;
+
+test('缓存命中时不重写文件，只把修改时间刷新到现在', async t => {
+  const { library, fitter } = await setup(t);
+  const id = await add(library, '图.png', await halves());
+  const input = { mode: 'cover', widthPt: '100', heightPt: '100' };
+  const first = await fitter.create(id, input);
+  const content = await readFile(first.path);
+  await utimes(first.path, PAST, PAST);
+  const before = await stat(first.path);
+  assert.equal(before.mtimeMs, PAST.getTime());
+  const again = await fitter.create(id, input);
+  const after = await stat(again.path);
+  assert.equal(again.path, first.path);
+  assert.equal(after.ino, before.ino);
+  assert.deepEqual(await readFile(again.path), content);
+  assert.ok(recent(after.mtimeMs), '命中后修改时间更新为当前时间');
+});
+
+test('命中后文件已被清理时重新生成，不把 ENOENT 抛给调用方', async t => {
+  const { library, fitter } = await setup(t);
+  const id = await add(library, '图.png', await halves());
+  const input = { mode: 'cover', widthPt: '100', heightPt: '100' };
+  const first = await fitter.create(id, input);
+  // 校验通过后、刷新时间前文件被删除。
+  const validCache = fitter.validCache.bind(fitter);
+  let removeAfterCheck = true;
+  t.mock.method(fitter, 'validCache', async (...args) => {
+    const valid = await validCache(...args);
+    if (removeAfterCheck) { removeAfterCheck = false; await unlink(args[0]); }
+    return valid;
+  });
+  const rebuilt = await fitter.create(id, input);
+  assert.equal(rebuilt.path, first.path);
+  assert.equal(rebuilt.bytes, (await stat(rebuilt.path)).size);
+  assert.equal((await sharp(rebuilt.path).metadata()).width, first.width);
+  // 刷新时间之后、读取字节数之前文件被删除：也重新生成一次。
+  const insertion = library.insertion.bind(library);
+  const getAsset = library.getAsset.bind(library);
+  let sourceResolved = false;
+  let removeBeforeSize = true;
+  t.mock.method(library, 'insertion', async (...args) => {
+    sourceResolved = false;
+    const result = await insertion(...args);
+    sourceResolved = true;
+    return result;
+  });
+  t.mock.method(library, 'getAsset', (...args) => {
+    if (sourceResolved && removeBeforeSize) { removeBeforeSize = false; unlinkSync(first.path); }
+    return getAsset(...args);
+  });
+  const retried = await fitter.create(id, input);
+  assert.equal(removeBeforeSize, false, '确实在读取字节数前删除了文件');
+  assert.equal(retried.bytes, (await stat(retried.path)).size);
 });
 
 test('适配图统一写入 120 dpi 分辨率标记（JPEG 与 PNG）', async t => {
