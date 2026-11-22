@@ -1,0 +1,192 @@
+<title>iPeiTu 蓝色方案样机</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<style>
+/* 布局：上方一行说明，下面三个 360px 的任务窗格样机并排，窄屏时逐个堆叠。样机内部固定为插件自己的浅色方案。 */
+:root {
+  --bg: #eef1f5; --fg: #1f2933; --muted: #5b6673; --rule: #d5dbe3; --note-bg: #ffffff;
+  --ui: "Microsoft YaHei UI", "Microsoft YaHei", "PingFang SC", "Segoe UI", sans-serif;
+  /* 插件方案（样机内使用，不随主题变化） */
+  --p-work: #f7f7f7; --p-panel: #ffffff; --p-text: #1f2329; --p-text2: #4a5560; --p-text3: #6b7682;
+  --p-line: #ebeef5; --p-accent: #0b6fcc; --p-accent-hover: #095ba8; --p-tint: #e6f4ff; --p-band: #d0ebff;
+  --p-bar-a: #0b6fcc; --p-bar-b: #0094ff; --p-white: #ffffff; --p-neg: #c0392b; --p-thumb: #eef2f6;
+}
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) { --bg: #14181d; --fg: #e6eaef; --muted: #9aa5b1; --rule: #2c343d; --note-bg: #1c2229; color-scheme: dark } }
+:root[data-theme="dark"] { --bg: #14181d; --fg: #e6eaef; --muted: #9aa5b1; --rule: #2c343d; --note-bg: #1c2229; color-scheme: dark }
+* { box-sizing: border-box; }
+body { background: var(--bg); color: var(--fg); font-family: var(--ui); line-height: 1.6; }
+.page { max-width: 1200px; margin: 0 auto; padding-block: 24px 40px; padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px)); display: grid; gap: 24px; }
+h1 { margin: 0; font-size: 22px; font-weight: 600; text-wrap: balance; }
+.lead { margin: 4px 0 0; color: var(--muted); max-width: 65ch; }
+.frames { display: flex; flex-wrap: wrap; gap: 24px; align-items: flex-start; }
+figure { margin: 0; display: grid; gap: 8px; width: min(360px, 100%); }
+figcaption { font-size: 13px; color: var(--muted); }
+figcaption b { color: var(--fg); font-weight: 600; }
+.notes { display: grid; gap: 8px; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); margin: 0; padding: 0; list-style: none; }
+.notes li { background: var(--note-bg); border: 1px solid var(--rule); border-radius: 8px; padding: 12px 16px; font-size: 13px; min-width: 0; }
+.notes b { display: block; font-size: 14px; }
+.sw { display: inline-block; width: 12px; height: 12px; border-radius: 3px; vertical-align: -1px; margin-right: 4px; border: 1px solid var(--rule); }
+
+/* —— 样机：任务窗格 —— */
+.pane { height: 720px; display: grid; grid-template-rows: auto minmax(0, 1fr) auto; background: var(--p-work); color: var(--p-text); font-size: 14px; line-height: 20px; border-radius: 8px; overflow: hidden; border: 1px solid var(--rule); }
+.bar { display: flex; align-items: center; justify-content: space-between; gap: 8px; height: 44px; padding: 0 12px; background: linear-gradient(90deg, var(--p-bar-a), var(--p-bar-b)); color: var(--p-white); box-shadow: 0 2px 8px rgb(0 0 0 / 12%); position: relative; z-index: 1; }
+.bar .brand { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
+.bar .word { font-size: 16px; font-weight: 600; }
+.bar .sub { font-size: 12px; opacity: .9; white-space: nowrap; }
+.bar .acts { display: flex; gap: 8px; }
+.bar button { height: 28px; padding: 0 10px; border: 0; border-radius: 6px; background: var(--p-white); color: var(--p-accent); font: inherit; font-size: 13px; font-weight: 500; }
+.bar .src { background: rgb(255 255 255 / 18%); color: var(--p-white); border-radius: 999px; font-size: 12px; height: 22px; padding: 0 8px; font-weight: 400; }
+.work { overflow: auto; padding: 12px; display: grid; gap: 12px; align-content: start; }
+.panel { background: var(--p-panel); border-radius: 8px; padding: 12px; display: grid; gap: 8px; }
+.search { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px; }
+.input { height: 32px; border: 1px solid var(--p-line); border-radius: 6px; padding: 0 12px; display: flex; align-items: center; color: var(--p-text3); font-size: 12px; background: var(--p-panel); }
+.btn { height: 32px; padding: 0 12px; border-radius: 6px; border: 1px solid var(--p-line); background: var(--p-panel); color: var(--p-text); font: inherit; font-size: 13px; }
+.btn.primary { border-color: var(--p-accent); background: var(--p-accent); color: var(--p-white); }
+.chips { display: flex; gap: 4px; overflow: hidden; }
+.chip { flex: none; height: 26px; padding: 0 10px; border-radius: 4px; font-size: 12px; display: flex; align-items: center; gap: 4px; color: var(--p-text2); background: var(--p-work); }
+.chip.on { background: var(--p-tint); color: var(--p-accent); font-weight: 600; }
+.chip i { font-style: normal; color: var(--p-text3); font-weight: 400; font-variant-numeric: tabular-nums; }
+.toolbar { display: flex; align-items: center; justify-content: space-between; gap: 8px; min-height: 28px; }
+.tabs { display: flex; gap: 4px; }
+.tab { height: 28px; padding: 0 8px; border-radius: 4px; font-size: 13px; display: flex; align-items: center; color: var(--p-text2); }
+.tab.on { background: var(--p-tint); color: var(--p-accent); font-weight: 600; }
+.count { font-size: 12px; color: var(--p-text3); font-variant-numeric: tabular-nums; }
+.link { color: var(--p-accent); font-size: 12px; }
+.grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+.card { min-width: 0; display: grid; gap: 4px; }
+.thumb { position: relative; aspect-ratio: 4 / 3; border-radius: 6px; background: var(--p-thumb); overflow: hidden; }
+.thumb::before { content: ""; position: absolute; inset: 14% 18%; border-radius: 3px; background: var(--c, #9db4c8); }
+.thumb.tall::before { inset: 8% 32%; }
+.card.sel .thumb { outline: 2px solid var(--p-accent); outline-offset: -2px; }
+.add { position: absolute; right: 4px; bottom: 4px; width: 28px; height: 28px; border-radius: 4px; background: var(--p-panel); color: var(--p-accent); display: grid; place-items: center; font-size: 18px; line-height: 1; box-shadow: 0 1px 3px rgb(0 0 0 / 16%); }
+.card.sel .add { background: var(--p-accent); color: var(--p-white); }
+.name { font-size: 13px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.dim { font-size: 12px; color: var(--p-text3); font-variant-numeric: tabular-nums; }
+.foot { background: var(--p-panel); border-top: 1px solid var(--p-line); padding: 8px 12px; display: grid; gap: 8px; }
+.sel-row { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.sel-row .mini { flex: none; width: 48px; height: 36px; border-radius: 4px; background: var(--p-thumb); position: relative; }
+.sel-row .mini::before { content: ""; position: absolute; inset: 6px 8px; border-radius: 2px; background: #c8a27a; }
+.sel-row .txt { min-width: 0; flex: 1; }
+.target { display: flex; align-items: center; gap: 8px; padding: 6px 8px; border-radius: 6px; background: var(--p-tint); color: var(--p-accent); font-size: 12px; }
+.target::before { content: ""; flex: none; width: 6px; height: 6px; border-radius: 50%; background: var(--p-accent); }
+.band { margin: -12px -12px 0; padding: 8px 12px; background: var(--p-band); color: var(--p-text); font-size: 13px; font-weight: 600; border-radius: 8px 8px 0 0; display: flex; justify-content: space-between; align-items: center; }
+.band span { font-weight: 400; font-size: 12px; color: var(--p-text2); }
+.tools { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+.tool { height: 36px; border-radius: 6px; background: var(--p-work); display: flex; align-items: center; padding: 0 12px; font-size: 13px; }
+.scope { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--p-text2); }
+.scope::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: var(--p-accent); }
+.fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+.field { display: grid; gap: 4px; font-size: 13px; color: var(--p-text2); }
+.field .input { color: var(--p-text); font-size: 13px; }
+.result { font-size: 13px; color: var(--p-accent); }
+.snip { display: grid; gap: 2px; padding: 8px 44px 8px 12px; border-radius: 6px; position: relative; background: var(--p-panel); }
+.snip.on { background: var(--p-tint); }
+.snip .t { font-size: 13px; font-weight: 600; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.snip.on .t { color: var(--p-accent); }
+.snip .e { font-size: 12px; color: var(--p-text2); overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.snip .add { top: 50%; bottom: auto; margin-top: -14px; right: 8px; box-shadow: none; border: 1px solid var(--p-line); }
+.list { display: grid; gap: 4px; margin: 0 -4px; }
+.body { font-size: 13px; color: var(--p-text2); max-height: 84px; overflow: hidden; }
+.body p { margin: 0; text-indent: 2em; }
+.dialog { margin: 0 4px; background: var(--p-panel); border-radius: 8px; box-shadow: 0 8px 24px rgb(0 0 0 / 14%); overflow: hidden; }
+.dialog .h { padding: 12px 16px; font-weight: 600; border-bottom: 1px solid var(--p-line); }
+.dialog .b { padding: 20px 16px 16px; font-size: 13px; color: var(--p-text2); }
+.dialog .f { padding: 12px 16px; display: flex; justify-content: flex-end; gap: 8px; border-top: 1px solid var(--p-line); }
+</style>
+
+<div class="page">
+  <header>
+    <h1>iPeiTu 任务窗格 · 蓝色方案样机</h1>
+    <p class="lead">按后台设计规范融入后的三个窗格，宽 360 px。素材为色块示意，文字和数量是示例数据。这是静态样机，按钮不可点击。</p>
+  </header>
+
+  <div class="frames">
+    <figure>
+      <div class="pane" aria-label="素材库样机">
+        <div class="bar">
+          <div class="brand"><span class="word">iPeiTu</span><span class="src" style="display:inline-flex;align-items:center">本机</span></div>
+          <div class="acts"><button type="button" id="mockBox" tabindex="-1">占位框</button><button type="button" id="mockImport" tabindex="-1">导入素材</button></div>
+        </div>
+        <div class="work">
+          <div class="panel">
+            <div class="search"><div class="input">按名称、别名或工序标签检索</div><button class="btn" type="button" id="mockFilter" tabindex="-1">筛选</button></div>
+            <div class="chips"><span class="chip on">全部分类</span><span class="chip">土方工程 <i>24</i></span><span class="chip">脚手架 <i>18</i></span><span class="chip">模板 <i>31</i></span></div>
+          </div>
+          <div class="panel">
+            <div class="toolbar">
+              <div class="tabs"><span class="tab on">全部</span><span class="tab">收藏</span><span class="tab">最近</span><span class="tab">回收站</span></div>
+              <span class="count">117 张</span>
+            </div>
+            <div class="grid">
+              <div class="card sel"><div class="thumb" style="--c:#c8a27a"><span class="add">+</span></div><div class="name">沟槽开挖及支护.jpg</div><div class="dim">1600 × 1200</div></div>
+              <div class="card"><div class="thumb" style="--c:#8fa9bf"><span class="add">+</span></div><div class="name">落地式脚手架搭设.png</div><div class="dim">1920 × 1440</div></div>
+              <div class="card"><div class="thumb tall" style="--c:#a9b8a0"><span class="add">+</span></div><div class="name">塔吊基础节点详图.png</div><div class="dim">900 × 1600</div></div>
+              <div class="card"><div class="thumb" style="--c:#b9b1c9"><span class="add">+</span></div><div class="name">钢筋绑扎与验收.jpg</div><div class="dim">1280 × 960</div></div>
+              <div class="card"><div class="thumb" style="--c:#c9b98f"><span class="add">+</span></div><div class="name">模板支撑体系.jpg</div><div class="dim">1600 × 1200</div></div>
+              <div class="card"><div class="thumb" style="--c:#9cbcbb"><span class="add">+</span></div><div class="name">混凝土浇筑与养护.jpg</div><div class="dim">1440 × 1080</div></div>
+            </div>
+          </div>
+        </div>
+        <div class="foot">
+          <div class="sel-row"><div class="mini"></div><div class="txt"><div class="name" style="font-weight:600">沟槽开挖及支护.jpg</div><div class="dim">1600 × 1200 · JPEG · 842 KB</div></div><span class="link">排版设置</span></div>
+          <div class="target">插入到：技术标-第三章.docx</div>
+        </div>
+      </div>
+      <figcaption><b>素材库</b>　检索与分类是一块面板，视图切换和张数固定在图库上方，底部说明图片会插到哪里。</figcaption>
+    </figure>
+
+    <figure>
+      <div class="pane" aria-label="排版工具样机">
+        <div class="bar"><div class="brand"><span class="word">iPeiTu</span><span class="sub">排版工具</span></div></div>
+        <div class="work">
+          <div class="panel" style="padding:8px 12px"><div class="scope">技术标-第三章.docx · 未选中内容，批量排版作用于全文</div></div>
+          <div class="panel"><div class="band">段落<span>作用于所选或当前段落</span></div><div class="tools"><div class="tool">清除格式</div><div class="tool">首行缩进</div><div class="tool">居中对齐</div></div></div>
+          <div class="panel"><div class="band">表格</div><div class="tools"><div class="tool">表格满页</div><div class="tool">边距清零</div><div class="tool">清除空格</div><div class="tool">去除底纹</div><div class="tool">去除表格线</div></div></div>
+          <div class="panel"><div class="band">表格宽度</div>
+            <div class="fields"><div class="field">一栏（厘米）<div class="input">15</div></div><div class="field">多栏（厘米）<div class="input">7</div></div></div>
+            <div style="display:flex;gap:8px;flex-wrap:wrap"><button class="btn primary" type="button" id="mockApply" tabindex="-1">执行调整</button><button class="btn" type="button" id="mockRead" tabindex="-1">读取当前表格</button></div>
+          </div>
+          <div class="dialog">
+            <div class="h">将对全文执行「去除表格线」</div>
+            <div class="f"><button class="btn" type="button" id="mockCancel" tabindex="-1">取消</button><button class="btn primary" type="button" id="mockRun" tabindex="-1">执行</button></div>
+          </div>
+        </div>
+        <div class="foot"><div class="result">表格宽度：已调整 6 个表格（一栏 5、多栏 1）；已符合 2 个</div></div>
+      </div>
+      <figcaption><b>排版工具</b>　每组操作是一块面板，标题用浅蓝标题条；主操作实底，次级操作普通按钮；下方示意全文操作的确认框。</figcaption>
+    </figure>
+
+    <figure>
+      <div class="pane" aria-label="知识库样机">
+        <div class="bar"><div class="brand"><span class="word">iPeiTu</span><span class="sub">知识库</span></div><div class="acts"><button type="button" id="mockNew" tabindex="-1">新建片段</button></div></div>
+        <div class="work">
+          <div class="panel">
+            <div class="input">按标题、章节、标签或正文检索</div>
+            <div class="chips"><span class="chip on">房建施工 <i>42</i></span><span class="chip">市政道路管网 <i>17</i></span><span class="chip">通用措施 <i>26</i></span></div>
+          </div>
+          <div class="panel">
+            <div class="toolbar"><div class="tabs"><span class="tab on">全部</span><span class="tab">回收站</span></div><span class="count">42 个片段</span></div>
+            <div class="list">
+              <div class="snip on"><div class="t">落地式双排脚手架搭设工艺</div><div class="e">脚手架工程 · 立杆基础应平整夯实，垫板通长铺设…</div><span class="add" style="background:var(--p-accent);color:var(--p-white);border-color:var(--p-accent)">+</span></div>
+              <div class="snip"><div class="t">大体积混凝土温控措施</div><div class="e">混凝土工程 · 采用低水化热水泥，分层浇筑…</div><span class="add">+</span></div>
+              <div class="snip"><div class="t">深基坑土方开挖顺序</div><div class="e">土方工程 · 遵循分层、分段、对称、限时的原则…</div><span class="add">+</span></div>
+              <div class="snip"><div class="t">屋面卷材防水施工要点</div><div class="e">防水工程 · 基层含水率不大于 9%，阴阳角做圆弧…</div><span class="add">+</span></div>
+            </div>
+          </div>
+        </div>
+        <div class="foot">
+          <div class="name" style="font-weight:600">落地式双排脚手架搭设工艺</div>
+          <div class="body"><p>立杆基础应平整夯实，垫板通长铺设，立杆底部设置底座。纵向扫地杆距底座上皮不大于 200 mm，横向扫地杆紧靠其下方固定。</p></div>
+          <div class="target">插入到：技术标-第三章.docx · 小标题从标题 3 开始</div>
+        </div>
+      </div>
+      <figcaption><b>知识库</b>　外壳与素材库一致；选中的片段用浅蓝铺底加蓝色标题，与分类、视图切换是同一种选中态。</figcaption>
+    </figure>
+  </div>
+
+  <ul class="notes">
+    <li><b>取自规范</b>浅灰工作区 <span class="sw" style="background:#f7f7f7"></span>#F7F7F7 上放白色面板，圆角 8 px；选中项用 10% 蓝色铺底；标题条用 <span class="sw" style="background:#d0ebff"></span>#D0EBFF；顶栏带投影。</li>
+    <li><b>为窄窗格调整的</b>顶栏高 44 px（规范为 60 px）；尺寸按 4 px 节奏取整；没有侧栏、页面标签和分页。</li>
+    <li><b>蓝色加深了</b>文字和按钮用 <span class="sw" style="background:#0b6fcc"></span>#0B6FCC（白底上对比度 5.05）。规范的 #0094FF 是 3.14、#409EFF 是 2.78，小字不够清晰。</li>
+    <li><b>顶栏渐变收窄了</b>改为 <span class="sw" style="background:#0b6fcc"></span>#0B6FCC → <span class="sw" style="background:#0094ff"></span>#0094FF。规范的右端 #59C5F4 上白字对比度只有 1.96。</li>
+  </ul>
+</div>
