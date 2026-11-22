@@ -6,7 +6,7 @@ import { access, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promise
 import os from 'node:os';
 import path from 'node:path';
 import sharp from 'sharp';
-import { startServer } from '../server/http.js';
+import { AuthFailureLog, remoteRoutes, startServer } from '../server/http.js';
 import { Library } from '../server/library.js';
 import { normalizeServerUrl } from '../server/lan-client.js';
 
@@ -75,6 +75,30 @@ function call(base, pathname, { method = 'GET', headers = {}, body } = {}) {
 
 const remote = (key = KEY, client = CLIENT_A) => ({ authorization: `Bearer ${key}`, 'x-ipeitu-client': client });
 const jsonRequest = (method, value) => ({ method, headers: { 'content-type': 'application/json' }, body: JSON.stringify(value) });
+const ASSET = 'a'.repeat(64);
+const SNIPPET = randomUUID();
+const REMOTE_DENIED = '局域网客户端不能使用该接口';
+
+// 白名单每一项的示例请求；白名单新增一项而这里没有对应示例时，清单一致性测试会失败。
+const remoteSamples = [
+  ['GET', '/api/health'], ['GET', '/api/library'], ['POST', '/api/import-file'], ['POST', '/api/assets/batch'],
+  ['PATCH', `/api/assets/${ASSET}`], ['PATCH', `/api/assets/${ASSET}/favorite`], ['POST', `/api/assets/${ASSET}/recent`],
+  ['PATCH', `/api/assets/${ASSET}/trash`], ['GET', `/api/assets/${ASSET}/fit`], ['GET', `/api/assets/${ASSET}/insertion`],
+  ['GET', `/api/assets/${ASSET}/fit/file`], ['GET', `/api/assets/${ASSET}/insertion/file`], ['GET', `/api/assets/${ASSET}/image`],
+  ['GET', `/api/assets/${ASSET}/thumbnail`], ['GET', '/api/knowledge'], ['POST', '/api/knowledge'],
+  ['PATCH', `/api/knowledge/${SNIPPET}`], ['PATCH', `/api/knowledge/${SNIPPET}/trash`],
+];
+
+// 持有正确密钥也不能使用的接口：本机专用接口、永久删除、方法不符与路径变形。
+const remoteForbidden = [
+  ['GET', '/'], ['GET', '/taskpane.html'], ['POST', '/api/import-jobs'], ['GET', `/api/import-jobs/${SNIPPET}`], ['POST', '/api/import'],
+  ['POST', '/api/placeholders'], ['GET', '/api/connection'], ['PUT', '/api/connection'], ['DELETE', '/api/connection'],
+  ['POST', '/api/assets/batch/purge'], ['POST', '/api/assets/batch/trash'], ['POST', '/api/knowledge/trash/purge'],
+  ['DELETE', `/api/assets/${ASSET}`], ['DELETE', '/api/library'], ['DELETE', `/api/knowledge/${SNIPPET}`],
+  ['GET', '/api/assets/batch'], ['PUT', `/api/assets/${ASSET}/favorite`], ['POST', '/api/health'], ['HEAD', '/api/health'],
+  ['GET', '/api/library/'], ['GET', '/API/library'], ['GET', '/api/assets/../connection'], ['PATCH', `/api/assets/${ASSET}%2Ftrash`],
+  ['PATCH', `/api/assets/${ASSET.toUpperCase()}`], ['GET', `/api/assets/${ASSET}/image/`], ['GET', '/api/unknown'],
+];
 
 test('normalizes server addresses and refuses loopback or unsupported forms', () => {
   assert.equal(normalizeServerUrl('192.168.1.10'), 'http://192.168.1.10:39831', '未写端口时使用默认端口');
@@ -136,9 +160,18 @@ test('LAN server accepts only keyed relay requests from other addresses', { skip
   const health = await call(base, '/api/health', { headers: remote() });
   assert.equal(health.status, 200);
   assert.deepEqual(Object.keys(health.json).sort(), ['api', 'lan', 'service', 'total', 'version'], '远程不返回进程号与安装路径');
-  for (const [method, pathname] of [['GET', '/'], ['GET', '/taskpane.html'], ['POST', '/api/import-jobs'], ['POST', '/api/import'],
-    ['POST', '/api/placeholders'], ['GET', '/api/connection'], ['PUT', '/api/connection']]) {
-    assert.equal((await call(base, pathname, { method, headers: remote() })).status, 403, `${method} ${pathname}`);
+  for (const [method, pathname] of remoteForbidden) {
+    const response = await call(base, pathname, { method, headers: remote() });
+    assert.equal(response.status, 403, `${method} ${pathname}`);
+    if (method !== 'HEAD') assert.equal(response.json?.error, REMOTE_DENIED, `${method} ${pathname}`);
+  }
+  // 未带密钥或密钥错误时先得到 401，不因白名单泄露接口是否存在。
+  for (const [method, pathname] of [['POST', '/api/assets/batch/purge'], ['DELETE', `/api/assets/${ASSET}`], ['GET', '/api/connection'],
+    ['GET', '/taskpane.html'], ['GET', '/api/unknown'], ['GET', '/api/library']]) {
+    assert.equal((await call(base, pathname, { method })).status, 401, `无密钥 ${method} ${pathname}`);
+    const wrong = await call(base, pathname, { method, headers: remote(randomBytes(32).toString('base64url')) });
+    assert.equal(wrong.status, 401, `密钥错误 ${method} ${pathname}`);
+    assert.equal(wrong.json?.error, '访问密钥不正确');
   }
 
   const bytes = await png('#336699');
@@ -169,6 +202,95 @@ test('LAN server accepts only keyed relay requests from other addresses', { skip
   assert.equal(listB.json.viewTotal, 0, '另一台电脑的收藏不受影响');
   assert.equal((await call(upstream.base, '/api/library?view=favorites')).json.viewTotal, 0, '服务器本机的收藏不受影响');
   await access(path.join(directory, 'clients', `${CLIENT_A}.json`));
+});
+
+test('the remote allowlist matches its sample requests one to one', () => {
+  for (const route of remoteRoutes) {
+    assert.ok(remoteSamples.some(([method, pathname]) => method === route.method && route.pattern.test(pathname)),
+      `白名单 ${route.method} ${route.pattern} 缺少示例请求`);
+  }
+  for (const [method, pathname] of remoteSamples) {
+    assert.equal(remoteRoutes.filter(route => route.method === method && route.pattern.test(pathname)).length, 1, `${method} ${pathname}`);
+  }
+  for (const [method, pathname] of remoteForbidden) {
+    const { pathname: normalized } = new URL(pathname, 'http://lan.invalid');
+    assert.equal(remoteRoutes.some(route => route.method === method && route.pattern.test(normalized)), false, `${method} ${pathname}`);
+  }
+  assert.equal(Object.isFrozen(remoteRoutes), true);
+});
+
+test('every allowlisted endpoint reaches its route for a keyed remote client', { skip }, async t => {
+  const directory = await temporary(t);
+  const upstream = await serve(t, { host: '0.0.0.0', accessKey: KEY, dataDirectory: directory });
+  for (const [method, pathname] of remoteSamples) {
+    const options = method === 'GET' ? { method, headers: remote() }
+      : { method, headers: { ...remote(), 'content-type': 'application/json' }, body: '{}' };
+    const response = await call(upstream.remoteBase, pathname, options);
+    assert.notEqual(response.status, 401, `${method} ${pathname}`);
+    assert.notEqual(response.status, 403, `${method} ${pathname}：${response.json?.error}`);
+    assert.notEqual(response.json?.error, REMOTE_DENIED, `${method} ${pathname}`);
+    assert.notEqual(response.json?.error, '接口不存在', `${method} ${pathname} 在白名单中却没有对应路由`);
+  }
+});
+
+test('authentication failures are logged at most once per address per window', () => {
+  let time = 0;
+  const lines = [];
+  const log = new AuthFailureLog({ windowMs: 60_000, maxAddresses: 3, now: () => time, warn: line => lines.push(line) });
+  for (let attempt = 0; attempt < 5; attempt++) log.record('10.0.0.5');
+  assert.equal(lines.length, 1, '连续错误只记录一行');
+  assert.match(lines[0], /10\.0\.0\.5 未提供正确的访问密钥$/);
+  time = 59_999;
+  log.record('10.0.0.5');
+  assert.equal(lines.length, 1, '窗口内继续抑制');
+  time = 60_000;
+  log.record('10.0.0.5');
+  assert.equal(lines.length, 2, '窗口过后再次记录');
+  assert.match(lines[1], /10\.0\.0\.5/);
+  assert.match(lines[1], /另有 5 次同类拒绝未逐条记录/);
+  time = 60_001;
+  log.record('10.0.0.5');
+  assert.equal(lines.length, 2);
+  time = 120_000;
+  log.record('10.0.0.5');
+  assert.match(lines[2], /另有 1 次/, '每次记录后抑制计数重新开始');
+
+  log.record('10.0.0.6');
+  assert.equal(lines.length, 4, '不同地址各自记录');
+  assert.doesNotMatch(lines[3], /另有/);
+  log.record('10.0.0.7');
+  log.record('10.0.0.8');
+  assert.equal(log.entries.size, 3, '地址数不超过上限');
+  assert.equal(log.entries.has('10.0.0.5'), false, '淘汰最早记录的地址');
+  assert.deepEqual([...log.entries.keys()], ['10.0.0.6', '10.0.0.7', '10.0.0.8']);
+  for (let index = 0; index < 1000; index++) log.record(`10.1.${index >> 8}.${index & 255}`);
+  assert.equal(log.entries.size, 3, '被大量地址扫描时仍有上限');
+  assert.equal(lines.length, 1006);
+
+  assert.throws(() => new AuthFailureLog({ windowMs: 0 }), /正数/);
+  assert.throws(() => new AuthFailureLog({ maxAddresses: 0 }), /正数/);
+});
+
+test('the LAN server rate-limits warnings for repeated wrong keys', { skip }, async t => {
+  const directory = await temporary(t);
+  let time = 0;
+  const lines = [];
+  const authLog = new AuthFailureLog({ windowMs: 60_000, now: () => time, warn: line => lines.push(line) });
+  const upstream = await serve(t, { host: '0.0.0.0', accessKey: KEY, dataDirectory: directory, authLog });
+  const wrongKey = randomBytes(32).toString('base64url');
+  for (let attempt = 0; attempt < 4; attempt++) {
+    assert.equal((await call(upstream.remoteBase, '/api/health', { headers: remote(wrongKey) })).status, 401);
+  }
+  assert.equal((await call(upstream.remoteBase, '/api/assets/batch/purge', { method: 'POST' })).status, 401);
+  assert.equal(lines.length, 1, '同一来源的连续认证失败只记录一行');
+  assert.match(lines[0], /^iPeiTu 局域网访问被拒绝：\S+ 未提供正确的访问密钥$/);
+  assert.equal((await call(upstream.remoteBase, '/api/health', { headers: remote() })).status, 200, '正确密钥不受限频影响');
+  assert.equal(lines.length, 1);
+  time = 60_000;
+  assert.equal((await call(upstream.remoteBase, '/api/health', { headers: remote(wrongKey) })).status, 401);
+  assert.equal(lines.length, 2);
+  assert.match(lines[1], /另有 4 次同类拒绝未逐条记录/);
+  await assert.rejects(startServer({ port: 0, dataDirectory: directory, authLog: { record() {} } }), /AuthFailureLog/);
 });
 
 test('a client relays the library, caches insertion files and uploads folder imports to the LAN server', { skip }, async t => {
