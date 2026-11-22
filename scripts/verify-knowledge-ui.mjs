@@ -141,22 +141,53 @@ export async function verifyKnowledge({ page, base, choose }) {
   assert.equal(await page.locator('.card-add').isDisabled(), true, '浏览器模式禁止插入');
   assert.match(await page.locator('.card-add').getAttribute('title'), /浏览器模式/);
 
-  // 章节输入框的联想菜单：输入时列出该类别的章节，点选写入输入框。
+  // 章节联想菜单（public/select-picker.js 把原生 datalist 换成自绘菜单）：点击输入框列出该类别的全部章节，
+  // 输入文字按子串过滤，点选或方向键加 Enter 写入输入框并收起，Esc 只收起菜单，自由文字不受候选限制。
   await page.locator('#newSnippet').click();
   await choose(page, 'snippetType', '市政道路管网');
-  await page.locator('#snippetSection').fill('');
-  // 章节联想是原生 datalist，浏览器的候选弹层无法在自动化中点选；这里断言候选内容随类别切换，再输入完整章节。
-  const sectionOptions = () => page.locator('#sectionOptions option').evaluateAll(options => options.map(option => option.value));
-  assert.equal(await page.locator('#snippetSection').getAttribute('list'), 'sectionOptions', '章节输入框绑定联想列表');
-  const roadSections = await sectionOptions();
-  assert.ok(roadSections.length > 0, '该类别有章节候选');
-  assert.ok(roadSections.includes('交通导改'), '候选包含该类别的章节');
-  assert.equal(roadSections.includes('混凝土工程'), false, '候选不含其他类别的章节');
+  const section = page.locator('#snippetSection');
+  const sectionMenu = page.locator('#snippetSectionMenu');
+  const sectionTexts = () => sectionMenu.locator('[role="option"]').allTextContents();
+  const roadSections = ['路基工程', '路面工程', '开槽埋管', '顶管施工', '检查井', '交通导改', '绿化工程'];
+  assert.equal(await section.getAttribute('list'), null, '原生联想列表已由自绘菜单取代');
+  await section.fill('');
+  await section.click();
+  await sectionMenu.waitFor({ state: 'visible' });
+  assert.deepEqual(await sectionTexts(), roadSections, '点击后列出该类别的全部章节');
+  assert.equal((await sectionTexts()).includes('混凝土工程'), false, '候选不含其他类别的章节');
+  await section.fill('');
+  await section.pressSequentially('交通');
+  await sectionMenu.waitFor({ state: 'visible' });
+  assert.deepEqual(await sectionTexts(), ['交通导改'], '输入文字按子串过滤候选');
+  await sectionMenu.locator('[role="option"]', { hasText: '交通导改' }).click();
+  assert.equal(await section.inputValue(), '交通导改', '点选候选写入章节');
+  assert.equal(await sectionMenu.isHidden(), true, '点选后菜单收起');
+
   await choose(page, 'snippetType', '房建施工');
-  assert.ok((await sectionOptions()).includes('混凝土工程'), '切换类别后候选随之更换');
+  await section.fill('');
+  await section.click();
+  await sectionMenu.waitFor({ state: 'visible' });
+  const buildingSections = await sectionTexts();
+  assert.ok(buildingSections.includes('混凝土工程'), '切换类别后候选随之更换');
+  assert.equal(buildingSections.includes('交通导改'), false, '候选不含原类别的章节');
+  await page.keyboard.press('Escape');
+  assert.equal(await sectionMenu.isHidden(), true, 'Esc 收起菜单');
+  assert.equal(await page.locator('#snippetDialog').isVisible(), true, 'Esc 只收起菜单，不关闭对话框');
+
   await choose(page, 'snippetType', '市政道路管网');
-  assert.ok((await sectionOptions()).includes('交通导改'), '切换回来后候选恢复');
-  await page.locator('#snippetSection').fill('交通导改');
+  await section.fill('');
+  await section.click();
+  await sectionMenu.waitFor({ state: 'visible' });
+  await page.keyboard.press('ArrowDown');
+  await page.keyboard.press('ArrowDown');
+  await page.keyboard.press('Enter');
+  assert.equal(await section.inputValue(), '路面工程', '方向键加 Enter 选择候选');
+  assert.equal(await sectionMenu.isHidden(), true, '键盘选择后菜单收起');
+
+  await section.fill('自拟章节');
+  assert.equal(await sectionMenu.isHidden(), true, '没有匹配的候选时不显示菜单');
+  assert.equal(await section.inputValue(), '自拟章节', '章节可以填写候选以外的文字');
+  await section.fill('交通导改');
   await fillEditor({ title: '交通导改方案', section: '交通导改', body: '设置围挡与警示标志。' });
   await visibleText('#resultCount', '2 段');
 
