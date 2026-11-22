@@ -74,5 +74,17 @@
         <p id="formatResult" class="action-status" role="status" aria-live="polite" hidden></p>
       </main>
     </div>
+
+    <dialog id="wholeDocumentDialog" class="compact-dialog" aria-labelledby="wholeDocumentTitle">
+      <form method="dialog">
+        <div class="dialog-heading">
+          <h2 id="wholeDocumentTitle"></h2>
+        </div>
+        <div class="dialog-actions">
+          <button class="button secondary" type="submit" value="cancel">取消</button>
+          <button class="button primary" type="submit" value="confirm">执行</button>
+        </div>
+      </form>
+    </dialog>
   </body>
 </html>

@@ -37,7 +37,12 @@ function createHost(options = {}) {
     set Style(value) { paragraph.style = value; },
     Range: {
       get Text() { return paragraph.text; },
+      get Start() { return offsetAfter(paragraph) - paragraph.text.length; },
       get End() { return offsetAfter(paragraph); },
+      get ShapeRange() {
+        if (paragraph.shapeError) throw new Error('宿主不支持 ShapeRange');
+        return { Count: paragraph.shapes ?? 0 };
+      },
       Information(type) { assert.equal(type, 12); return paragraph.inTable; },
       Delete() { state.paragraphs.splice(state.paragraphs.indexOf(paragraph), 1); },
     },
@@ -51,6 +56,14 @@ function createHost(options = {}) {
     },
     Shapes: collection(options.shapes ?? []),
     Range(start, end) {
+      if (start === end) {
+        // 零长度范围：定位到所在段落，只用于判断是否在表格内。
+        const found = state.paragraphs.find(item => {
+          const from = offsetAfter(item) - item.text.length;
+          return start >= from && start < offsetAfter(item);
+        });
+        return { Start: start, End: end, Information(type) { assert.equal(type, 12); return Boolean(found?.inTable); } };
+      }
       let offset = 0;
       const cell = state.cells.find(item => {
         if (start >= offset && end <= offset + item.text.length) return true;
@@ -70,7 +83,8 @@ function createHost(options = {}) {
   const selected = options.selected;
   const selectionRange = selected
     ? {
-      Start: 0, End: 9, StoryType: options.story ?? 1, Paragraphs: paragraphs,
+      Start: 0, End: 9, StoryType: options.story ?? 1,
+      Paragraphs: selected.paragraphs ? collection(selected.paragraphs.map(index => paragraphObject(state.paragraphs[index]))) : paragraphs,
       Tables: collection(selected.tables ? selected.tables.map(index => state.tables[index]) : state.tables),
       InlineShapes: collection(selected.inline ?? []),
       ParagraphFormat: Object.assign(state.selected, { Reset() { state.paragraphReset++; } }),
@@ -97,7 +111,7 @@ function createHost(options = {}) {
 test('作用范围：未选中内容为全文，选中时只作用于所选内容；不可编辑时不可用', () => {
   assert.equal(getLayoutScope().available, false);
   createHost();
-  assert.deepEqual(getLayoutScope(), { available: true, whole: true, message: '标书.docx · 未选中内容，作用于全文' });
+  assert.deepEqual(getLayoutScope(), { available: true, whole: true, message: '标书.docx · 首行缩进、居中对齐作用于当前段落，批量排版作用于全文' });
   createHost({ selected: {} });
   assert.equal(getLayoutScope().message, '标书.docx · 作用于所选内容');
   for (const [options, message] of [[{ noDocument: true }, /先打开/], [{ document: { ReadOnly: true } }, /只读/],
@@ -155,6 +169,30 @@ test('删除空行：删除空白段落，保留表格内、分节符、文档�
   assert.deepEqual(state.paragraphs.map(item => item.text), ['正文一\r', '表格一\r', '\r', '\r', '表格二\r', '\f\r', '结尾\r', '\r']);
   assert.deepEqual([result.count, result.skipped], [3, 1]);
   assert.equal(result.message, '删除空行：已处理 3 处；表格之间的空行保留 1 处');
+});
+
+test('删除空行：选区只含两个表格之间的空行时，从文档定位两侧仍能识别并保留', () => {
+  const state = createHost({
+    paragraphs: [{ text: '表格一', inTable: true }, '', { text: '表格二', inTable: true }, '', '结尾'],
+    selected: { paragraphs: [1] },
+  });
+  const result = runLayoutOperation('deleteEmptyLines');
+  assert.deepEqual(state.paragraphs.map(item => item.text), ['表格一', '', '表格二', '', '结尾']);
+  assert.deepEqual([result.count, result.skipped], [0, 1]);
+  assert.equal(result.message, '删除空行：没有需要处理的内容；表格之间的空行保留 1 处');
+});
+
+test('删除空行：锚定浮动对象或无法确认的空行保留并单独计数，普通空行照常删除', () => {
+  const state = createHost({ paragraphs: [
+    '正文', { text: '', shapes: 1 }, { text: '', shapeError: true }, '',
+    { text: '表格一', inTable: true }, '', { text: '表格二', inTable: true },
+    { text: '', shapes: 2 }, '结尾', '',
+  ] });
+  const result = runLayoutOperation('deleteEmptyLines');
+  assert.deepEqual(state.paragraphs.map(item => item.text), ['正文', '', '', '表格一', '', '表格二', '', '结尾', '']);
+  assert.deepEqual(state.paragraphs.map(item => item.shapes ?? 0), [0, 1, 0, 0, 0, 0, 2, 0, 0], '带浮动对象的空段落原样保留');
+  assert.deepEqual([result.count, result.skipped, result.extraSkipped], [1, 1, 3]);
+  assert.equal(result.message, '删除空行：已处理 1 处；表格之间的空行保留 1 处；锚定浮动对象或无法确认的空行保留 3 处');
 });
 
 test('表格满页、边距清零、去除底纹、去除表格线作用于全部表格或所选表格', () => {
@@ -278,6 +316,19 @@ test('表格宽度：按一栏或多栏的目标宽度逐行等比缩放，已�
   assert.deepEqual(unknown.cells.map(cell => cell.Width), [9999999, 100], '读不出宽度的表格不改');
   assert.equal(result.message, '表格宽度：已调整 2 个表格（一栏 1、多栏 1）；已符合 1 个；无法读取宽度 1 个');
   assert.deepEqual(state.undo, [['start', 'iPeiTu 排版：表格宽度'], ['end']]);
+});
+
+test('表格宽度：含纵向合并单元格的表格整表统一比例，被合并跨过的行不被放大', () => {
+  const state = createHost();
+  // 第 1 行 [100 跨两行, 100, 100]；第 2 行只有 [100, 100]（第一列被上一行跨过，不再枚举）。
+  const merged = widthTable({ rows: [[100, 100, 100], [100, 100]] });
+  state.tables.push(merged);
+  runLayoutOperation('standardizeWidths', { singleCm: 15, multiCm: 7 });
+  const factor = (15 * 72 / 2.54) / 300;
+  assert.deepEqual(merged.cells.map(cell => cell.Width), merged.cells.map(() => merged.cells[0].Width), '各格宽度按同一比例缩放');
+  near(merged.cells[0].Width, 100 * factor, '统一缩放比例');
+  near(rowSum(merged, 1), 15 * 72 / 2.54, '最宽一行达到目标宽度');
+  near(rowSum(merged, 2), 200 * factor, '较短的行不被放大到目标宽度');
 });
 
 test('目标宽度无效时在开始撤销记录前拒绝', () => {

@@ -7,6 +7,11 @@ const multiWidth = document.getElementById('multiWidth');
 const readButton = document.getElementById('readTableWidth');
 const applyButton = document.getElementById('applyTableWidths');
 const buttons = Array.from(document.querySelectorAll('[data-operation]'));
+const dialog = document.getElementById('wholeDocumentDialog');
+const dialogTitle = document.getElementById('wholeDocumentTitle');
+// 未选中内容时会作用于全文的批量操作，执行前需确认；首行缩进与居中只改当前段落，清除格式未选中时禁用。
+const WHOLE_DOCUMENT_OPERATIONS = new Set(['deleteEmptyLines', 'tableFullWidth', 'zeroPadding', 'clearTableSpaces',
+  'removeShading', 'removeBorders', 'decolor', 'standardizeWidths', 'alignTablesLeft', 'alignTablesCenter', 'alignTablesRight']);
 const WIDTH_STORAGE_KEY = 'ipeitu.tableWidths.v1';
 
 function showResult(message, error = false) {
@@ -51,13 +56,38 @@ function saveWidths() {
   }
 }
 
-for (const button of buttons) {
-  button.addEventListener('click', () => {
-    if (!button.disabled) run(() => runLayoutOperation(button.dataset.operation).message);
+function confirmWholeDocument(label) {
+  dialogTitle.textContent = `将对全文执行「${label}」`;
+  dialog.returnValue = '';
+  return new Promise(resolve => {
+    // Esc 关闭时 returnValue 为空，按取消处理。
+    dialog.addEventListener('close', () => resolve(dialog.returnValue === 'confirm'), { once: true });
+    dialog.showModal();
   });
 }
 
-applyButton.addEventListener('click', () => run(() => {
+// 作用范围为全文时先确认；确认期间用户可能改了选区，执行前重新读取。
+async function runConfirmed(operation, label, action) {
+  if (WHOLE_DOCUMENT_OPERATIONS.has(operation) && getLayoutScope().whole) {
+    if (!await confirmWholeDocument(label)) return;
+    if (!getLayoutScope().whole) {
+      showResult('选择范围已变化，未执行，请重新点击', true);
+      refresh();
+      return;
+    }
+  }
+  run(action);
+}
+
+for (const button of buttons) {
+  button.addEventListener('click', () => {
+    if (button.disabled) return;
+    const operation = button.dataset.operation;
+    runConfirmed(operation, button.textContent.trim(), () => runLayoutOperation(operation).message);
+  });
+}
+
+applyButton.addEventListener('click', () => runConfirmed('standardizeWidths', '表格宽度', () => {
   const message = runLayoutOperation('standardizeWidths', widths()).message;
   saveWidths();
   return message;
