@@ -41,7 +41,7 @@
 
 ## 界面
 
-- 中文 UI。界面以素材为主体，4px 间距节奏，灰白中性色，单一深青强调色，焦点状态明确，不用装饰性渐变或表情图标。
+- 中文 UI。界面以素材为主体，4px 间距节奏，浅灰工作区上放白色面板，单一蓝色强调色。文字、图标和实底按钮用加深的蓝 `#0B6FCC`（白底上对比度 5.05），较浅的 `#0094FF` 在白底小字上对比度不足，只用于顶栏渐变。选中态统一为浅蓝铺底加蓝色文字，纯悬停用中性灰。仅顶栏使用渐变，其余不用装饰性渐变或表情图标。焦点状态明确，在白底、浅蓝底和蓝色顶栏上都要看得见。
 - Avoid unnecessary secondary labels and descriptions. Let the layout do the explaining.
 
 unslop 由 Damir Sokolovsky（[@heydamir](https://x.com/heydamir)）创作，采用 [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/)。本项目设计规则参考其方法，来源：https://github.com/heydamir/unslop。

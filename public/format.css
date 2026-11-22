@@ -1,23 +1,27 @@
-/* 排版工具按作用对象分组，操作结果留在窗格顶部。 */
+/* 排版工具按作用对象分组：每组是浅灰工作区上的白色面板，组标题用浅蓝标题条，操作结果留在窗格顶部。 */
 .format-app {
   display: grid; grid-template-rows: auto auto minmax(0, 1fr);
-  height: 100vh; height: 100dvh; background: var(--card);
+  height: 100vh; height: 100dvh; background: var(--page);
 }
 .format-workspace, .format-feedback { width: 100%; max-width: 720px; margin-inline: auto; }
 .format-workspace {
   display: grid; align-content: start; gap: 12px; padding: 0 12px 16px; overflow: auto;
 }
-.format-feedback { display: grid; gap: 6px; padding: 12px 12px 8px; }
+.format-feedback { display: grid; gap: 8px; padding: 12px 12px 8px; }
 .format-feedback :is(.host-status, .action-status) {
-  width: fit-content; max-width: 100%; padding: 6px 10px;
-  border-radius: var(--radius); background: var(--raised);
+  width: fit-content; max-width: 100%; padding: 4px 8px;
+  border-radius: var(--radius); background: var(--card);
 }
-.tool-group { display: grid; gap: 8px; min-width: 0; }
-.tool-group + .tool-group { padding-top: 12px; border-top: 1px solid var(--line); }
-.tool-group h2 { padding-inline: 10px; color: var(--text-secondary); }
-.tool-list { display: grid; gap: 2px; }
+.format-feedback .host-status.ready { background: var(--accent-tint); }
+.tool-group { display: grid; gap: 8px; min-width: 0; padding-bottom: 12px; border-radius: var(--panel-radius); background: var(--card); }
+.tool-group > :not(h2, .tool-list) { margin-inline: 12px; }
+.tool-group h2 {
+  padding: 8px 12px; border-radius: var(--panel-radius) var(--panel-radius) 0 0;
+  background: var(--accent-band); color: var(--text);
+}
+.tool-list { display: grid; gap: 4px; margin-inline: 4px; }
 .tool-button {
-  min-width: 0; min-height: 36px; padding: 6px 10px;
+  min-width: 0; min-height: 36px; padding: 8px;
   border: 0; border-radius: var(--radius);
   background: transparent; color: var(--text); line-height: 20px; text-align: left;
   transition: background-color 120ms var(--ease);
@@ -27,7 +31,6 @@
 .tool-button:focus-visible { outline-offset: -2px; }
 .tool-button:disabled { color: var(--text-muted); opacity: 0.65; }
 .width-actions { display: flex; flex-wrap: wrap; gap: 8px; }
-.width-actions .button { border-radius: var(--pill-radius); }
 .format-feedback .action-status { font-size: 13px; line-height: 20px; }
 @media (min-width: 800px) {
   .format-workspace, .format-feedback { padding-inline: 24px; }

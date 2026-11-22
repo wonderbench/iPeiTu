@@ -11,18 +11,20 @@
 }
 .snippet-item:hover .snippet-card { background: var(--raised); }
 .snippet-card:focus-visible { outline-offset: -2px; }
-.snippet-item .snippet-card[aria-pressed="true"] { background: var(--selected-neutral); color: var(--text); }
+/* 选中：浅蓝底，标题改为蓝色 */
+.snippet-item .snippet-card[aria-pressed="true"] { background: var(--accent-tint); color: var(--text); }
+.snippet-card[aria-pressed="true"] .snippet-title { color: var(--accent); }
 .snippet-card .trash-check {
   position: absolute; top: 50%; right: 12px; transform: translateY(-50%);
-  display: grid; place-items: center; width: 18px; height: 18px;
+  display: grid; place-items: center; width: 20px; height: 20px;
   border: 1px solid var(--control-line); border-radius: 50%;
   background: var(--card); color: transparent;
 }
-.snippet-card[aria-pressed="true"] .trash-check { border-color: var(--text); background: var(--text); color: white; }
+.snippet-card[aria-pressed="true"] .trash-check { border-color: var(--accent); background: var(--accent); color: var(--on-accent); }
 .trash-check .icon { width: 12px; height: 12px; }
-.knowledge-trash-tools { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding: 0; }
-.knowledge-trash-tools .button { min-height: 34px; font-size: 12px; }
-#toggleTrashMulti[aria-pressed="true"] { background: var(--selected-neutral); font-weight: 600; }
+.knowledge-trash-tools { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 0; }
+.knowledge-trash-tools .button { min-height: 32px; font-size: 12px; }
+#toggleTrashMulti[aria-pressed="true"] { border-color: var(--accent-band); background: var(--accent-tint); color: var(--accent); font-weight: 600; }
 .snippet-card > span { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 .snippet-title { font-size: 13px; line-height: 20px; font-weight: 600; }
 .snippet-excerpt { color: var(--text-secondary); font-size: 12px; line-height: 16px; }
@@ -43,7 +45,7 @@
 .preview-actions .text-button { font-size: 12px; line-height: 20px; }
 .management-view #restoreSnippet {
   min-width: 72px; min-height: 36px; padding: 6px 16px;
-  border: 1px solid var(--control-line); border-radius: var(--pill-radius);
+  border: 1px solid var(--control-line); border-radius: var(--radius);
   font-size: 13px; font-weight: 600;
 }
 .insert-options { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 8px 16px; }

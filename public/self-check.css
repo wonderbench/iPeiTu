@@ -6,6 +6,10 @@
   max-width: 680px;
 }
 .self-check-actions { display: flex; flex-wrap: wrap; gap: 8px; }
-.self-check-output { display: grid; gap: 8px; min-width: 0; }
-.self-check-output label { font-weight: 600; }
-.self-check-output textarea { width: 100%; padding: 8px 10px; }
+/* 自检报告：白色面板，标题用浅蓝标题条 */
+.self-check-output { display: grid; gap: 8px; min-width: 0; padding: 0 12px 12px; border-radius: var(--panel-radius); background: var(--card); }
+.self-check-output label {
+  margin-inline: -12px; padding: 8px 12px; border-radius: var(--panel-radius) var(--panel-radius) 0 0;
+  background: var(--accent-band); color: var(--text); font-weight: 600;
+}
+.self-check-output textarea { width: 100%; padding: 8px 12px; }
