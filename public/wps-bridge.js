@@ -17,6 +17,11 @@ export const FIT_MODES = ['cover', 'fill', 'contain'];
 const replacementTargets = new WeakMap();
 const fillTargets = new WeakMap();
 
+function sizeReadback(expectedWidth, expectedHeight, width, height) {
+  const describe = (w, h) => `${Number(w).toFixed(2)} × ${Number(h).toFixed(2)} 磅`;
+  return `预期 ${describe(expectedWidth, expectedHeight)}，实测 ${describe(width, height)}`;
+}
+
 function editableDocument(app, action = '插入') {
   if (!app) throw new Error('请在 WPS 文字中打开 iPeiTu 素材库');
   if (app.Documents.Count === 0) throw new Error('请先打开需要配图的 WPS 文字文档');
@@ -303,10 +308,15 @@ export function replacePicture(asset, expectedTarget) {
     }
     picture.LockAspectRatio = LOCK_ASPECT_RATIO;
     picture.Width = snapshot.width;
-    if (!Number.isFinite(picture.Width) || !Number.isFinite(picture.Height) || picture.Height <= 0
-      || Math.abs(picture.Width - snapshot.width) > 0.1
-      || Math.abs(picture.Height - snapshot.width * nativeHeight / nativeWidth) > 0.1) {
-      throw new Error('WPS 未能按原宽度等比例调整新图片');
+    const actualWidth = picture.Width;
+    const actualHeight = picture.Height;
+    const expectedHeight = actualWidth * nativeHeight / nativeWidth;
+    // WPS 会量化宽高，且插入时和缩放后的读数可能来自不同的尺寸精度。
+    const heightTolerance = Math.min(3, Math.max(1, expectedHeight * 0.01));
+    if (!Number.isFinite(actualWidth) || actualWidth <= 0 || !Number.isFinite(actualHeight) || actualHeight <= 0
+      || Math.abs(actualWidth - snapshot.width) > 1
+      || Math.abs(actualHeight - expectedHeight) > heightTolerance) {
+      throw new Error(`WPS 未能按原宽度等比例调整新图片（${sizeReadback(snapshot.width, expectedHeight, actualWidth, actualHeight)}）`);
     }
     picture.Range.Font = font;
     // 此时原图已经向后移动。只删除原 COM 对象，绝不删除捕获时的数值范围。
@@ -453,8 +463,11 @@ function placeBox(range, { empty, original }, image, target, progress) {
   picture.Width = target.widthPt;
   picture.Height = target.heightPt;
   picture.LockAspectRatio = LOCK_ASPECT_RATIO;
-  if (!(Math.abs(picture.Width - target.widthPt) <= 0.1 && Math.abs(picture.Height - target.heightPt) <= 0.1)) {
-    throw new Error('WPS 未能按框的尺寸设置占位图');
+  // 部分 WPS 版本的内嵌图片宽高只保留整数磅，写入时会截去小数。
+  const matches = (actual, expected) => Math.abs(actual - expected) <= 0.1 || actual === Math.trunc(expected);
+  const { Width: actualWidth, Height: actualHeight } = picture;
+  if (!matches(actualWidth, target.widthPt) || !matches(actualHeight, target.heightPt)) {
+    throw new Error(`WPS 未能按框的尺寸设置占位图（${sizeReadback(target.widthPt, target.heightPt, actualWidth, actualHeight)}）`);
   }
   const marker = placeholderMarker(target.name);
   picture.AlternativeText = marker;
@@ -652,8 +665,10 @@ export function fillPlaceholder(image, expectedTarget, filled) {
     picture.Width = snapshot.width;
     picture.Height = snapshot.height;
     picture.LockAspectRatio = LOCK_ASPECT_RATIO;
-    if (!(Math.abs(picture.Width - snapshot.width) <= 0.1 && Math.abs(picture.Height - snapshot.height) <= 0.1)) {
-      throw new Error('WPS 未能按占位框尺寸设置图片');
+    // WPS 会按图片分辨率量化尺寸，340 磅在 120 dpi 下可能回读为 339.6 磅。
+    const { Width: actualWidth, Height: actualHeight } = picture;
+    if (!(Math.abs(actualWidth - snapshot.width) < 1 && Math.abs(actualHeight - snapshot.height) < 1)) {
+      throw new Error(`WPS 未能按占位框尺寸设置图片（${sizeReadback(snapshot.width, snapshot.height, actualWidth, actualHeight)}）`);
     }
     const marker = placeholderMarker(snapshot.name, filled);
     picture.AlternativeText = marker;

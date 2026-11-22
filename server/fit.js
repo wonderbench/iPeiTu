@@ -10,7 +10,7 @@ import { MIN_BOX_PT, MAX_BOX_PT } from './placeholder.js';
 export const FIT_MODES = ['cover', 'fill', 'contain'];
 // 框尺寸已知，按打印分辨率出图；原图档也设上限，避免小框嵌入整张大图。
 const PROFILE_DPI = { original: 300, clear: 220, balanced: 150 };
-const RULE_VERSION = 'v1';
+const RULE_VERSION = 'v2';
 const numberPattern = /^\d{1,4}(?:\.\d{1,3})?$/;
 
 export function validateFit(input) {
@@ -64,7 +64,8 @@ export class Fitter {
     if (!(await this.validCache(filename, pixels, format))) {
       let image = sharp(source.path, { limitInputPixels: MAX_IMAGE_PIXELS, failOn: 'warning' }).rotate()
         .resize({ width: pixels.width, height: pixels.height, fit: fit.mode, position: 'centre', background: { r: 255, g: 255, b: 255, alpha: 1 } })
-        .toColourspace('srgb');
+        // JPEG 和 PNG 使用同一分辨率标记，确保 WPS 按相同的精度调整尺寸。
+        .toColourspace('srgb').withDensity(120);
       image = format === 'png' ? image.png({ compressionLevel: 9 }) : image.jpeg({ quality: 90 });
       const buffer = await image.toBuffer();
       const temporary = `${filename}.${randomUUID()}.tmp`;
