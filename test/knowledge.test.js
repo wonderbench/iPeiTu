@@ -159,3 +159,93 @@ test('a failed knowledge.json replacement leaves no temporary file and keeps the
   await writeFile(file, original);
   assert.equal((await knowledge.create(input({ title: '恢复后保存' }))).title, '恢复后保存');
 });
+
+test('permanent delete of trashed snippets requires the current trash revision and only trashed ids', async t => {
+  const directory = await temporary(t);
+  const knowledge = await Knowledge.open(directory);
+  const active = await knowledge.create(input({ title: '保留' }));
+  const first = await knowledge.create(input({ title: '删除一' }));
+  const second = await knowledge.create(input({ title: '删除二' }));
+  await knowledge.setTrash(first.id, { trashed: true });
+  const { trashRevision } = knowledge.list({ view: 'trash' });
+  assert.match(trashRevision, /^[0-9a-f]{64}$/);
+  assert.equal(Object.hasOwn(knowledge.list(), 'trashRevision'), false, '只有回收站视图返回版本');
+  assert.equal(knowledge.list({ view: 'trash', q: '不匹配' }).trashRevision, trashRevision, '版本不受检索影响');
+  const file = path.join(directory, 'knowledge.json');
+  const before = await readFile(file);
+
+  for (const bad of [null, [], {}, { revision: 'x', all: true }, { revision: trashRevision }, { revision: trashRevision, all: false },
+    { revision: trashRevision, all: true, ids: [first.id] }, { revision: trashRevision, ids: [] }, { revision: trashRevision, ids: ['not-an-id'] },
+    { revision: trashRevision, ids: [first.id, first.id] }, { revision: trashRevision, ids: first.id }, { revision: trashRevision, all: true, extra: 1 }]) {
+    await assert.rejects(knowledge.purgeTrash(bad), { status: 400 }, JSON.stringify(bad));
+  }
+  await assert.rejects(knowledge.purgeTrash({ revision: trashRevision, ids: [active.id] }), { status: 409, message: /已不在回收站/ });
+  await assert.rejects(knowledge.purgeTrash({ revision: 'a'.repeat(64), all: true }), { status: 409, message: /已变化/ });
+  assert.deepEqual(await readFile(file), before, '拒绝时不写文件');
+  await knowledge.setTrash(second.id, { trashed: true });
+  const changed = await readFile(file);
+  await assert.rejects(knowledge.purgeTrash({ revision: trashRevision, all: true }), { status: 409 }, '回收站变化后旧版本失效');
+  await assert.rejects(knowledge.purgeTrash({ revision: trashRevision, ids: [first.id] }), { status: 409 }, '按编号删除也核对版本');
+  assert.deepEqual(await readFile(file), changed);
+  assert.equal(knowledge.snippets.length, 3, '拒绝时不删除');
+
+  let revision = knowledge.list({ view: 'trash' }).trashRevision;
+  assert.deepEqual(await knowledge.purgeTrash({ revision, ids: [first.id] }), { purged: 1 });
+  assert.deepEqual(knowledge.snippets.map(snippet => snippet.id).sort(), [active.id, second.id].sort());
+  revision = knowledge.list({ view: 'trash' }).trashRevision;
+  assert.deepEqual(await knowledge.purgeTrash({ revision, all: true }), { purged: 1 });
+  revision = knowledge.list({ view: 'trash' }).trashRevision;
+  assert.deepEqual(await knowledge.purgeTrash({ revision, all: true }), { purged: 0 }, '空回收站清空无副作用');
+  const saved = JSON.parse(await readFile(file, 'utf8'));
+  assert.deepEqual(saved.snippets.map(snippet => snippet.id), [active.id]);
+  assert.deepEqual((await Knowledge.open(directory)).snippets, knowledge.snippets);
+  assert.notEqual((await Knowledge.open(directory)).list({ view: 'trash' }).trashRevision, revision, '服务重启后旧版本失效');
+});
+
+test('formatted snippets validate the format against the saved body and persist it across restart', async t => {
+  const directory = await temporary(t);
+  const knowledge = await Knowledge.open(directory);
+  const body = '施工准备\n检查模板与支撑';
+  const format = [
+    { paragraph: { Alignment: 1, LineSpacingRule: 4, LineSpacing: 20 }, runs: [{ start: 0, end: 4, font: { Bold: true, Size: 14, NameFarEast: '黑体' } }], heading: true },
+    { paragraph: { CharacterUnitFirstLineIndent: 2 }, runs: [{ start: 0, end: 2, font: { Color: 255 } }, { start: 4, end: 6, font: { Underline: 1 } }] },
+  ];
+  const created = await knowledge.create(input({ body: `\n${body}  \n`, format }));
+  assert.equal(created.body, body, '格式按裁剪后的正文核对');
+  assert.deepEqual(created.format, format);
+  assert.deepEqual((await Knowledge.open(directory)).snippets[0].format, format);
+
+  const plain = { paragraph: {}, runs: [] };
+  const invalid = [
+    'format', [], [format[0]], [...format, plain],
+    [{ ...format[0], paragraph: { Unknown: 1 } }, format[1]],
+    [{ ...format[0], paragraph: { LineSpacingRule: 4 } }, format[1]],
+    [{ ...format[0], paragraph: { FirstLineIndent: 10, CharacterUnitFirstLineIndent: 2 } }, format[1]],
+    [{ ...format[0], runs: [{ start: 0, end: 5, font: { Bold: true } }] }, format[1]],
+    [{ ...format[0], runs: [{ start: 0, end: 2, font: { Size: 0 } }] }, format[1]],
+    [{ ...format[0], runs: [{ start: 0, end: 2, font: { Bold: true } }, { start: 1, end: 3, font: { Bold: true } }] }, format[1]],
+    [{ ...format[0], runs: [{ start: 0, end: 2, font: { Name: '<script>' } }] }, format[1]],
+    [{ ...format[0], heading: false }, format[1]],
+    [{ ...format[0], extra: 1 }, format[1]],
+    [plain, plain],
+  ];
+  for (const bad of invalid) {
+    await assert.rejects(knowledge.create(input({ body, format: bad })), { status: 400, message: /片段格式/ }, JSON.stringify(bad).slice(0, 80));
+    await assert.rejects(knowledge.update(created.id, { format: bad }), { status: 400 });
+  }
+  assert.deepEqual(knowledge.snippets[0].format, format, '无效格式不改变已保存的格式');
+
+  const reformatted = await knowledge.update(created.id, { format: [format[0], plain] });
+  assert.deepEqual(reformatted.format, [format[0], plain], '只改格式时按当前正文核对');
+  await assert.rejects(knowledge.update(created.id, { body: '只有一段', format }), { status: 400 }, '格式与新正文段数不符');
+  const retitled = await knowledge.update(created.id, { title: '改标题' });
+  assert.deepEqual(retitled.format, [format[0], plain], '正文不变时保留格式');
+  const rewritten = await knowledge.update(created.id, { body: '改写后的正文' });
+  assert.equal(Object.hasOwn(rewritten, 'format'), false, '正文改变且未提供新格式时去掉旧格式');
+  const saved = JSON.parse(await readFile(path.join(directory, 'knowledge.json'), 'utf8'));
+  assert.equal(Object.hasOwn(saved.snippets[0], 'format'), false);
+
+  await writeFile(path.join(directory, 'knowledge.json'), JSON.stringify({ version: 1, snippets: [{ ...created, format: [plain, plain] }] }));
+  const damaged = await Knowledge.open(directory);
+  assert.throws(() => damaged.list(), { status: 500, message: /结构损坏/ }, '文件中的无效格式按结构损坏处理');
+});

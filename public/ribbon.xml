@@ -12,6 +12,9 @@
         <group id="ipeituContent" label="标书内容">
           <button id="ipeituOpenKnowledge" label="知识库" size="large" onAction="OpenKnowledgeBase" screentip="插入标书通用片段" supertip="打开知识库：按工程类别和章节检索工艺工法、各类措施等通用片段，插入光标处" />
         </group>
+        <group id="ipeituDiagnostics" label="诊断">
+          <button id="ipeituOpenSelfCheck" label="WPS 实机自检" size="large" onAction="OpenSelfCheck" screentip="检查当前 WPS 的插件功能" supertip="在独立临时文档中测试插图、占位框、表格和标题样式，并生成自检报告" />
+        </group>
       </tab>
     </tabs>
   </ribbon>

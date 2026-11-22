@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import sharp from 'sharp';
 
-export async function verifyPlaceholders({ page }) {
+export async function verifyPlaceholders({ page, choose }) {
   async function visibleText(selector, text) {
     await page.waitForFunction(({ selector, text }) => document.querySelector(selector)?.textContent.includes(text), { selector, text });
   }
@@ -63,7 +63,7 @@ export async function verifyPlaceholders({ page }) {
   await page.locator('#insertBox').click();
   await visibleText('#boxError', '请填写框名');
   await page.locator('#boxName').fill('临时');
-  await page.locator('#boxSize').selectOption('cell');
+  await choose(page, 'boxSize', '填满单元格');
   await page.locator('#insertBox').click();
   await visibleText('#boxError', '不在表格');
   assert.equal(await page.evaluate(() => window.boxShapes.length), 0, '校验失败不写入文档');
@@ -77,7 +77,7 @@ export async function verifyPlaceholders({ page }) {
     await route.fulfill({ response, json: { ...data, path: `C:\\test\\box-${generated.length}.png` } });
   });
   await page.locator('#boxName').fill('脚手架搭设');
-  await page.locator('#boxSize').selectOption('landscape');
+  await choose(page, 'boxSize', '横向 12 × 9 厘米');
   await page.locator('#insertBox').click();
   await visibleText('#actionStatus', '已插入占位框「脚手架搭设」12.0 × 9.0 厘米');
   const shapeAt = index => page.evaluate(i => {
@@ -91,7 +91,7 @@ export async function verifyPlaceholders({ page }) {
   assert.deepEqual([metadata.format, metadata.width, metadata.height], ['png', 453, 340], '服务端生成的占位图按框的比例');
   await visibleText('#boxCount', '文档中 1 个占位框');
 
-  await page.locator('#boxSize').selectOption('custom');
+  await choose(page, 'boxSize', '自定义');
   assert.equal(await page.locator('#boxCustomSize').isVisible(), true);
   await page.locator('#boxName').fill('基础');
   await page.locator('#boxWidthCm').fill('6');
@@ -201,14 +201,14 @@ export async function verifyPlaceholders({ page }) {
   assert.equal(await page.locator('#documentActions').isVisible(), false, '选中占位框时不显示替换');
   assert.equal(await page.locator('.card-add').first().getAttribute('title'), '填入占位框');
   assert.match(await page.locator('.card-add').first().getAttribute('aria-label'), /到占位框「脚手架搭设」/);
-  await page.locator('#fitMode').selectOption('contain');
+  await choose(page, 'fitMode', '完整显示');
   assert.equal(await page.evaluate(() => localStorage.getItem('ipeitu.fit.v1')), 'contain', '适配方式保存在本机');
   // 比例接近优先：框为 4:3，400 × 300 的图排到前面；关闭后恢复图库原顺序。
   const firstName = () => page.locator('.asset-name').first().textContent();
   const originalFirst = await firstName();
   await page.locator('#ratioSort').click();
   assert.equal(await page.locator('#ratioSort').getAttribute('aria-pressed'), 'true');
-  assert.equal(await firstName(), '桥架施工.png');
+  assert.equal(await firstName(), '桥架施工', '卡片显示去掉扩展名的文件名');
   await page.locator('#ratioSort').click();
   assert.equal(await firstName(), originalFirst);
   await page.locator('#searchBoxName').click();

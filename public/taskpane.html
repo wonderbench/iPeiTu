@@ -11,9 +11,14 @@
     <!-- Icons from lucide (ISC License), https://lucide.dev -->
     <svg class="sprite" aria-hidden="true">
       <symbol id="i-plus" viewBox="0 0 24 24"><path d="M5 12h14"/><path d="M12 5v14"/></symbol>
+      <symbol id="i-close" viewBox="0 0 24 24"><path d="m6 6 12 12M18 6 6 18"/></symbol>
+      <symbol id="i-monitor" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="13" rx="2"/><path d="M12 17v4m-4 0h8"/></symbol>
       <symbol id="i-search" viewBox="0 0 24 24"><path d="m21 21-4.34-4.34"/><circle cx="11" cy="11" r="8"/></symbol>
       <symbol id="i-sliders" viewBox="0 0 24 24"><path d="M21 4h-7"/><path d="M10 4H3"/><path d="M21 12h-9"/><path d="M8 12H3"/><path d="M21 20h-5"/><path d="M12 20H3"/><path d="M14 2v4"/><path d="M8 10v4"/><path d="M16 18v4"/></symbol>
       <symbol id="i-star" viewBox="0 0 24 24"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></symbol>
+      <symbol id="i-grid" viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></symbol>
+      <symbol id="i-clock" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></symbol>
+      <symbol id="i-trash" viewBox="0 0 24 24"><path d="M4 7h16m-14 0 1 13h10l1-13M9 7V4h6v3m-5 4v5m4-5v5"/></symbol>
       <symbol id="i-check" viewBox="0 0 24 24"><path d="M20 6 9 17l-5-5"/></symbol>
       <symbol id="i-image" viewBox="0 0 24 24"><rect width="18" height="18" x="3" y="3" rx="2" ry="2"/><circle cx="9" cy="9" r="2"/><path d="m21 15-3.086-3.086a2 2 0 0 0-2.828 0L6 21"/></symbol>
       <symbol id="i-expand" viewBox="0 0 24 24"><path d="M15 3h6v6"/><path d="m21 3-7 7"/><path d="m3 21 7-7"/><path d="M9 21H3v-6"/></symbol>
@@ -21,19 +26,19 @@
       <symbol id="i-square-dashed" viewBox="0 0 24 24"><path d="M5 3a2 2 0 0 0-2 2"/><path d="M19 3a2 2 0 0 1 2 2"/><path d="M21 19a2 2 0 0 1-2 2"/><path d="M5 21a2 2 0 0 1-2-2"/><path d="M9 3h1"/><path d="M9 21h1"/><path d="M14 3h1"/><path d="M14 21h1"/><path d="M3 9v1"/><path d="M21 9v1"/><path d="M3 14v1"/><path d="M21 14v1"/></symbol>
     </svg>
 
-    <div class="app">
+    <div class="app gallery-app">
       <header class="topbar">
         <div class="brand">
-          <span class="wordmark">iPeiTu</span>
+          <img class="wordmark wordmark-image" src="/ipeitu-wordmark.png" alt="iPeiTu" width="60" height="20">
+          <h1>素材库</h1>
           <button id="sourceButton" class="source-button" type="button" aria-haspopup="dialog" aria-controls="connectionDialog" title="图库来源">本机</button>
-          <h1>标书配图库</h1>
         </div>
         <div class="topbar-actions">
           <button id="toggleBoxes" class="button secondary" type="button" aria-expanded="false" aria-controls="boxPanel">
             <svg class="icon" aria-hidden="true"><use href="#i-square-dashed"/></svg>
             <span>占位框</span>
           </button>
-          <button id="toggleImport" class="button secondary" type="button" aria-expanded="false" aria-controls="importPanel">
+          <button id="toggleImport" class="button secondary toolbar-action" type="button" aria-expanded="false" aria-controls="importPanel">
             <svg class="icon" aria-hidden="true"><use href="#i-plus"/></svg>
             <span>导入素材</span>
           </button>
@@ -43,7 +48,7 @@
       <main id="workspace" class="workspace">
         <section id="importPanel" class="import-panel" aria-labelledby="importTitle" hidden>
           <div class="section-heading">
-            <h2 id="importTitle">添加本地图片</h2>
+            <h2 id="importTitle" class="visually-hidden">添加本地图片</h2>
             <span id="importScope" class="meta">仅保存在本机</span>
           </div>
           <div class="file-import">
@@ -80,7 +85,7 @@
               <input id="boxName" name="name" type="text" maxlength="100" autocomplete="off" placeholder="例如：脚手架搭设" required>
             </div>
             <div class="field-group">
-              <label for="boxSize">尺寸</label>
+              <label id="boxSizeLabel" for="boxSize">尺寸</label>
               <select id="boxSize" name="size">
                 <option value="line">整行宽 · 4:3</option>
                 <option value="landscape">横向 12 × 9 厘米</option>
@@ -122,54 +127,59 @@
         </section>
 
         <section class="library" aria-labelledby="libraryTitle">
-          <div class="library-tools">
-            <div class="search-block">
-              <label class="visually-hidden" for="searchInput">检索名称、别名或工序</label>
-              <div class="search-field">
-                <svg class="icon" aria-hidden="true"><use href="#i-search"/></svg>
-                <input id="searchInput" type="search" autocomplete="off" spellcheck="false" placeholder="名称、别名或工序" title="多个关键词用空格分隔" aria-controls="assetGrid">
-                <button id="clearSearch" type="button" class="text-button" hidden>清空</button>
+          <nav id="libraryViews" class="view-switcher gallery-nav" aria-label="素材视图">
+            <button id="viewAll" type="button" data-view="all" aria-pressed="true"><svg class="icon" aria-hidden="true"><use href="#i-grid"/></svg>全部</button>
+            <button id="viewFavorites" type="button" data-view="favorites" aria-pressed="false"><svg class="icon" aria-hidden="true"><use href="#i-star"/></svg>收藏</button>
+            <button id="viewRecent" type="button" data-view="recent" aria-pressed="false"><svg class="icon" aria-hidden="true"><use href="#i-clock"/></svg>最近</button>
+            <button id="viewTrash" type="button" data-view="trash" aria-pressed="false"><svg class="icon" aria-hidden="true"><use href="#i-trash"/></svg>回收站</button>
+          </nav>
+          <div class="gallery-content">
+            <div class="library-tools">
+              <div class="search-block">
+                <label class="visually-hidden" for="searchInput">检索名称、别名或工序</label>
+                <div class="search-field">
+                  <svg class="icon" aria-hidden="true"><use href="#i-search"/></svg>
+                  <input id="searchInput" type="search" autocomplete="off" spellcheck="false" placeholder="名称、别名或工序" title="多个关键词用空格分隔" aria-controls="assetGrid">
+                  <button id="clearSearch" type="button" class="text-button" hidden>清空</button>
+                </div>
+                <button id="openFilters" class="button secondary" type="button" aria-haspopup="dialog" aria-controls="filterDialog" disabled>
+                  <svg class="icon" aria-hidden="true"><use href="#i-sliders"/></svg>
+                  <span>筛选</span>
+                </button>
               </div>
-              <button id="openFilters" class="button secondary" type="button" aria-haspopup="dialog" aria-controls="filterDialog" disabled>
-                <svg class="icon" aria-hidden="true"><use href="#i-sliders"/></svg>
-                <span>筛选</span>
-              </button>
-            </div>
-            <div id="categoryChips" class="category-chips" role="group" aria-label="分类" hidden></div>
-            <div id="activeFilters" class="active-filters" hidden>
-              <span id="filterSummary" class="meta"></span>
-              <button id="clearFilters" class="text-button" type="button">清除筛选</button>
-            </div>
-            <div class="view-row">
-              <div id="libraryViews" class="view-switcher" role="group" aria-label="素材视图">
-                <button id="viewAll" type="button" data-view="all" aria-pressed="true">全部</button>
-                <button id="viewFavorites" type="button" data-view="favorites" aria-pressed="false">收藏</button>
-                <button id="viewRecent" type="button" data-view="recent" aria-pressed="false">最近</button>
-                <button id="viewTrash" type="button" data-view="trash" aria-pressed="false">回收站</button>
+              <div class="gallery-filters">
+                <div id="categoryChips" class="category-chips" role="group" aria-label="分类" hidden></div>
+                <div class="library-heading">
+                  <h2 id="libraryTitle" class="visually-hidden">本地素材</h2>
+                  <span id="resultCount" class="meta figures" aria-live="polite">正在读取</span>
+                  <button id="toggleMulti" class="text-button toggle-text" type="button" aria-pressed="false">多选</button>
+                  <button id="clearAssetTrash" class="text-button trash-action" type="button" aria-haspopup="dialog" aria-controls="trashDialog" hidden disabled>清空回收站</button>
+                </div>
               </div>
-              <div class="library-heading">
-                <h2 id="libraryTitle" class="visually-hidden">本地素材</h2>
-                <span id="resultCount" class="meta figures" aria-live="polite">正在读取</span>
-                <button id="toggleMulti" class="text-button toggle-text" type="button" aria-pressed="false">多选</button>
+              <div id="activeFilters" class="active-filters" hidden>
+                <span id="filterSummary" class="meta"></span>
+                <button id="clearFilters" class="text-button" type="button">清除筛选</button>
+              </div>
+              <div id="batchBar" class="batch-bar" hidden>
+                <span id="batchCount" class="meta figures" aria-live="polite">已选 0 张</span>
+                <button id="batchSelectAll" class="text-button" type="button">全选当前</button>
+                <button id="batchEdit" class="text-button" type="button" disabled>设置分类与标签</button>
+                <button id="batchTrash" class="text-button trash-action" type="button" aria-haspopup="dialog" aria-controls="trashDialog" disabled>移到回收站</button>
               </div>
             </div>
-            <div id="batchBar" class="batch-bar" hidden>
-              <span id="batchCount" class="meta figures" aria-live="polite">已选 0 张</span>
-              <button id="batchSelectAll" class="text-button" type="button">全选当前</button>
-              <button id="batchEdit" class="text-button" type="button" disabled>设置分类与标签</button>
+            <div id="libraryState" class="empty-state" role="status">
+              <p id="stateTitle" class="state-title">正在读取图库</p>
+              <p id="stateDescription" class="supporting" hidden></p>
+              <button id="stateAction" class="button secondary" type="button" hidden>重试</button>
             </div>
+            <div id="assetGrid" class="asset-grid" aria-label="图片列表" aria-busy="true"></div>
           </div>
-          <div id="libraryState" class="empty-state" role="status">
-            <p id="stateTitle" class="state-title">正在读取图库</p>
-            <p id="stateDescription" class="supporting" hidden></p>
-            <button id="stateAction" class="button secondary" type="button" hidden>重试</button>
-          </div>
-          <div id="assetGrid" class="asset-grid" aria-label="图片列表" aria-busy="true"></div>
         </section>
       </main>
 
       <footer class="selection-bar" aria-label="当前选择">
-        <div class="title-block">
+        <p id="multiSelectionSummary" class="multi-selection-summary" role="status" hidden></p>
+        <div id="assetDetails" class="title-block">
           <div class="selected-asset">
             <button id="previewButton" class="preview-button" type="button" aria-label="放大预览所选图片" title="放大预览" disabled>
               <img id="selectedThumbnail" alt="" hidden>
@@ -219,29 +229,58 @@
         <div id="documentActions" class="document-actions" hidden>
           <button id="replaceButton" class="button secondary" type="button" disabled>替换选中图</button>
         </div>
+        <button id="moveToTrash" class="text-button trash-action" type="button" aria-haspopup="dialog" aria-controls="trashDialog" hidden>移到回收站</button>
         <button id="restoreButton" class="button primary" type="button" hidden disabled>恢复到图库</button>
+        <button id="purgeButton" class="text-button trash-action" type="button" aria-haspopup="dialog" aria-controls="trashDialog" hidden>永久删除</button>
         <p id="hostStatus" class="host-status">正在检查 WPS 状态</p>
         <p id="actionStatus" class="action-status" role="status" aria-live="polite" hidden></p>
       </footer>
     </div>
 
-    <dialog id="clearMarkersDialog" class="compact-dialog" aria-labelledby="clearMarkersTitle">
+    <dialog id="folderImportDialog" aria-labelledby="folderImportTitle">
+      <form id="folderImportForm" novalidate>
+        <div class="dialog-heading">
+          <h2 id="folderImportTitle">导入文件夹</h2>
+          <button class="dialog-close" type="button" aria-label="关闭"><svg class="icon" aria-hidden="true"><use href="#i-close"/></svg></button>
+        </div>
+        <p id="folderImportScope" class="supporting"></p>
+        <div class="layout-fields">
+          <div class="folder-picker-actions">
+            <button id="browseFolder" class="button secondary" type="button">浏览文件夹</button>
+            <button id="useFolderPath" class="text-button" type="button" hidden>改用路径</button>
+          </div>
+          <div id="folderPathField" class="field-group">
+            <label for="folderPath">本机文件夹路径</label>
+            <input id="folderPath" type="text" autocomplete="off" spellcheck="false" placeholder="粘贴完整的文件夹路径">
+          </div>
+          <p id="folderSelection" class="folder-selection supporting" role="status" hidden></p>
+        </div>
+        <p id="folderImportError" class="form-error" role="alert" hidden></p>
+        <div class="dialog-actions">
+          <button id="cancelFolderImport" class="text-button dialog-cancel" type="button">取消</button>
+          <button id="confirmFolderImport" class="button primary" type="submit" disabled>确认导入</button>
+        </div>
+      </form>
+    </dialog>
+
+    <dialog id="clearMarkersDialog" aria-labelledby="clearMarkersTitle">
       <form method="dialog">
         <div class="dialog-heading">
           <h2 id="clearMarkersTitle">清除占位框标记</h2>
+          <button class="dialog-close" type="button" aria-label="关闭"><svg class="icon" aria-hidden="true"><use href="#i-close"/></svg></button>
         </div>
         <p id="clearMarkersText" class="supporting"></p>
         <div class="dialog-actions">
-          <button class="button secondary" type="submit" value="cancel">取消</button>
+          <button class="text-button dialog-cancel" type="submit" value="cancel">取消</button>
           <button id="confirmClearMarkers" class="button primary" type="submit" value="confirm">清除标记</button>
         </div>
       </form>
     </dialog>
 
-    <dialog id="previewDialog" aria-labelledby="previewTitle">
+    <dialog id="previewDialog" class="image-dialog" aria-labelledby="previewTitle">
       <div class="dialog-heading">
         <h2 id="previewTitle">图片预览</h2>
-        <button id="closePreview" class="button secondary" type="button">关闭</button>
+        <button id="closePreview" class="dialog-close" type="button" aria-label="关闭"><svg class="icon" aria-hidden="true"><use href="#i-close"/></svg></button>
       </div>
       <div class="preview-stage">
         <img id="previewImage" alt="">
@@ -250,11 +289,14 @@
       <p id="previewMeta" class="meta figures"></p>
     </dialog>
 
-    <dialog id="layoutDialog" class="layout-dialog" aria-labelledby="layoutTitle">
+    <dialog id="layoutDialog" aria-labelledby="layoutTitle">
       <form id="layoutForm" novalidate>
         <div class="dialog-heading">
           <h2 id="layoutTitle">插图排版</h2>
-          <button id="resetLayout" class="text-button" type="button">恢复默认</button>
+          <div class="dialog-tools">
+            <button id="resetLayout" class="text-button" type="button">恢复默认</button>
+            <button class="dialog-close" type="button" aria-label="关闭"><svg class="icon" aria-hidden="true"><use href="#i-close"/></svg></button>
+          </div>
         </div>
         <div class="layout-fields">
           <div class="field-group">
@@ -307,37 +349,43 @@
         </div>
         <p id="layoutError" class="form-error" role="alert" hidden></p>
         <div class="dialog-actions">
-          <button id="cancelLayout" class="button secondary" type="button">取消</button>
+          <button id="cancelLayout" class="text-button dialog-cancel" type="button">取消</button>
           <button id="saveLayout" class="button primary" type="submit">保存设置</button>
         </div>
       </form>
     </dialog>
 
-    <dialog id="filterDialog" class="compact-dialog" aria-labelledby="filterTitle">
+    <dialog id="filterDialog" class="filter-dialog" aria-labelledby="filterTitle">
       <form id="filterForm">
         <div class="dialog-heading">
           <h2 id="filterTitle">筛选素材</h2>
+          <button id="closeFilters" class="dialog-close" type="button" aria-label="关闭">
+            <svg class="icon" aria-hidden="true"><use href="#i-close"/></svg>
+          </button>
         </div>
         <fieldset class="tag-fieldset orientation-fieldset">
           <legend>比例</legend>
           <div id="filterOrientations" class="orientation-options"></div>
         </fieldset>
         <fieldset class="tag-fieldset">
-          <legend>工序标签 · 须同时包含</legend>
+          <legend>工序标签 <span class="meta">· 须同时包含</span></legend>
           <div id="filterTags" class="tag-options"></div>
         </fieldset>
         <div class="dialog-actions">
-          <button id="cancelFilters" class="button secondary" type="button">取消</button>
+          <button id="cancelFilters" class="text-button dialog-cancel" type="button">取消</button>
           <button id="applyFilters" class="button primary" type="submit">应用筛选</button>
         </div>
       </form>
     </dialog>
 
-    <dialog id="batchDialog" class="compact-dialog" aria-labelledby="batchTitle">
+    <dialog id="batchDialog" aria-labelledby="batchTitle">
       <form id="batchForm" novalidate>
         <div class="dialog-heading">
           <h2 id="batchTitle">批量设置分类与标签</h2>
-          <span id="batchDialogCount" class="meta figures"></span>
+          <div class="dialog-tools">
+            <span id="batchDialogCount" class="meta figures"></span>
+            <button class="dialog-close" type="button" aria-label="关闭"><svg class="icon" aria-hidden="true"><use href="#i-close"/></svg></button>
+          </div>
         </div>
         <div class="layout-fields">
           <div class="field-group">
@@ -359,17 +407,32 @@
         </div>
         <p id="batchError" class="form-error" role="alert" hidden></p>
         <div class="dialog-actions">
-          <button id="cancelBatch" class="button secondary" type="button">取消</button>
+          <button id="cancelBatch" class="text-button dialog-cancel" type="button">取消</button>
           <button id="applyBatch" class="button primary" type="submit">应用到所选图片</button>
         </div>
       </form>
     </dialog>
 
-    <dialog id="metadataDialog" class="compact-dialog" aria-labelledby="metadataTitle">
+    <dialog id="trashDialog" aria-labelledby="trashTitle" aria-describedby="trashDescription">
+      <form id="trashForm">
+        <div class="dialog-heading">
+          <h2 id="trashTitle">移到回收站</h2>
+          <button class="dialog-close" type="button" aria-label="关闭"><svg class="icon" aria-hidden="true"><use href="#i-close"/></svg></button>
+        </div>
+        <p id="trashDescription" class="supporting"></p>
+        <p id="trashError" class="form-error" role="alert" hidden></p>
+        <div class="dialog-actions">
+          <button id="cancelTrash" class="text-button dialog-cancel" type="button" autofocus>取消</button>
+          <button id="confirmTrash" class="button primary" type="submit">确认移出</button>
+        </div>
+      </form>
+    </dialog>
+
+    <dialog id="metadataDialog" aria-labelledby="metadataTitle">
       <form id="metadataForm" novalidate>
         <div class="dialog-heading">
           <h2 id="metadataTitle">素材信息</h2>
-          <span class="meta">不改动原始文件</span>
+          <button class="dialog-close" type="button" aria-label="关闭"><svg class="icon" aria-hidden="true"><use href="#i-close"/></svg></button>
         </div>
         <div class="layout-fields">
           <div class="field-group">
@@ -389,27 +452,36 @@
             <textarea id="assetTags" name="tags" rows="2" placeholder="例如：管道安装"></textarea>
           </div>
         </div>
-        <p class="metadata-hint">留空即清除；未设置分类的图片归入“未分类”</p>
+        <p class="metadata-hint">编辑不会改动原始文件。留空即清除，未设置分类的图片归入「未分类」。</p>
         <p id="metadataError" class="form-error" role="alert" hidden></p>
         <div class="dialog-actions">
           <button id="trashButton" class="text-button trash-button" type="button">移出图库</button>
-          <button id="cancelMetadata" class="button secondary" type="button">取消</button>
+          <button id="cancelMetadata" class="text-button dialog-cancel" type="button">取消</button>
           <button id="saveMetadata" class="button primary" type="submit">保存信息</button>
         </div>
       </form>
     </dialog>
 
-    <dialog id="connectionDialog" class="compact-dialog" aria-labelledby="connectionTitle">
+    <dialog id="connectionDialog" aria-labelledby="connectionTitle">
       <form id="connectionForm" novalidate>
         <div class="dialog-heading">
           <h2 id="connectionTitle">图库来源</h2>
-          <span id="connectionCurrent" class="meta"></span>
+          <button id="closeConnection" class="dialog-close" type="button" aria-label="关闭">
+            <svg class="icon" aria-hidden="true"><use href="#i-close"/></svg>
+          </button>
         </div>
-        <p id="connectionServing" class="metadata-hint" hidden>本机正作为局域网图库服务器，其他电脑连接本机</p>
+        <div class="connection-status">
+          <span class="connection-device"><svg class="icon" aria-hidden="true"><use href="#i-monitor"/></svg></span>
+          <div class="connection-copy">
+            <strong id="connectionCurrent"></strong>
+            <p id="connectionServing" class="meta" hidden>局域网内的其他电脑可连接这台电脑</p>
+          </div>
+          <span id="connectionShared" class="source-badge" hidden>共享中</span>
+        </div>
         <div class="layout-fields">
           <div class="field-group">
             <label for="serverUrl">局域网服务器地址</label>
-            <input id="serverUrl" name="url" type="text" maxlength="200" autocomplete="off" spellcheck="false" placeholder="192.168.1.10">
+            <input id="serverUrl" name="url" type="text" maxlength="200" autocomplete="off" spellcheck="false" placeholder="例如 192.168.1.10" autofocus>
           </div>
           <div class="field-group">
             <label for="accessKey">访问密钥</label>
@@ -419,8 +491,8 @@
         <p id="connectionError" class="form-error" role="alert" hidden></p>
         <div class="dialog-actions">
           <button id="useLocal" class="text-button" type="button">使用本机图库</button>
-          <button id="cancelConnection" class="button secondary" type="button">取消</button>
-          <button id="connectServer" class="button primary" type="submit">连接</button>
+          <button id="cancelConnection" class="text-button dialog-cancel" type="button">取消</button>
+          <button id="connectServer" class="button primary" type="submit">连接图库</button>
         </div>
       </form>
     </dialog>

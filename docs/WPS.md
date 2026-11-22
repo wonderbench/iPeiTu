@@ -4,11 +4,11 @@
 
 ## 启动与注册
 
-日常使用双击项目目录中的“安装.cmd”，它依次检查 Node.js、安装依赖、调用 `scripts/install-wps.ps1` 注册加载项、在当前用户注册表的自动启动项（`HKCU\Software\Microsoft\Windows\CurrentVersion\Run` 下的 `iPeiTu`）中写入启动命令，并启动服务。服务由 `scripts/service.ps1` 管理：
+日常使用双击项目目录中的“安装.cmd”，它依次准备 Node.js（先找状态目录 `runtime` 中的便携版和系统 PATH 中的 Node.js 24 或更新版本，都没有时从 `https://nodejs.org/dist/` 下载固定版本的便携包，校验 SHA-256 后才解压，首次安装需要联网）、安装依赖、调用 `scripts/install-wps.ps1` 注册加载项、在当前用户注册表的自动启动项（`HKCU\Software\Microsoft\Windows\CurrentVersion\Run` 下的 `iPeiTu`）中写入启动命令，并启动服务。服务由 `scripts/service.ps1` 管理：
 
 - 启动：先请求 `/api/health`，已是 iPeiTu 时不再启动；端口被其他程序监听时报告进程名并退出（退出码 2）；否则经 WMI（`Win32_Process.Create`，隐藏窗口）启动 `node server\index.js --port … --data-dir … --log …`，进程与安装窗口及调用方没有句柄继承关系；服务自己把日志追加到 `%LOCALAPPDATA%\iPeiTu\logs\service-端口.log`，健康检查通过后把进程号写入 `service-端口.json`。
 - 停止：候选进程来自健康检查和状态文件，只有命令行包含本目录 `server\index.js` 的进程才会结束；其他进程报告“不是本目录启动的 iPeiTu 服务”并保留。
-- 卸载（`scripts/remove.ps1`）：停止服务，只删除命令指向本目录 `service.ps1` 的 `iPeiTu` 自动启动项，再调用 `scripts/uninstall-wps.ps1`；图库目录不动。
+- 卸载（`scripts/remove.ps1`）：停止服务，只删除命令指向本目录 `service.ps1` 的 `iPeiTu` 自动启动项，再调用 `scripts/uninstall-wps.ps1`；图库目录和状态目录下的便携版 `runtime` 不动。
 - 三个脚本都支持 `-ConfigDirectory`、`-StateDirectory`、`-Port`，安装与卸载另支持 `-RunKey`；自动化测试用临时目录、临时端口和临时注册表键运行，不触碰真实配置。
 
 开发时也可以手动启动。在项目目录先安装依赖并启动本地服务：
@@ -65,7 +65,7 @@ npm run wps:uninstall
   - `Range` 的 `InsertAfter`、`Duplicate`、`Paragraphs`、`ParagraphFormat.Reset`、`Font.Reset`、`ListFormat.RemoveNumbers`、`Information`、`Select`；`Document.Range`。
   - `Paragraph` 的 `Style` 和 `OutlineLevel`，以及 `Document.Styles.Item` 和 `Style.NameLocal`。
 - 用内置样式编号查找标题 1—9 和正文的本地名称。先重置继承的段落与字符格式，再按名称设置样式。写入后回读样式名称和大纲级别，校验成功后才计入已插入标题。
-- 这一做法取自 `origin/Jzc` 分支，该分支的文档记录了在 Windows WPS `12.1.0.29690` 上标题 3、4、5 的实测。`main` 上的这份代码尚未实机核对，清单见 [V03-PLAN.md](V03-PLAN.md) 第 14 项。
+- Windows WPS `12.1.0.29690` 实测通过标题 3、4、5 的插入和重新收录，正文首行缩进 2 字符，段中插入保留两侧文字和对齐，一次撤销可恢复。另实测从标题 6 开始时，超出上限的层级归为标题 9。这些读数来自 `Jzc` 分支的代码，该分支已于 2026-11-22 合入 `main`；合并后的代码尚未在 WPS 上重测。
 
 ## 占位框
 
@@ -78,7 +78,7 @@ npm run wps:uninstall
 - 文字标记转换：用 `Document.Content.Text` 判断有无标记，逐段读取 `Paragraph.Range.Text` 定位，再用 `Document.Range(start, end)` 核对原文、删除并放框；放框与插入占位框共用同一段逻辑。清除标记把已填框的 `AlternativeText` 置空并回读。
 - 填入：只在完整选中一张带标记的内嵌图片时可用。在原框前插入适配图，解除比例锁定后按原框宽高设定并回读，允许 WPS 产生不足 1 磅的尺寸偏差。随后写入带素材 ID 与适配方式的标记，复制原框字符格式，核对原框位置后只删除原框对象。核对失败时移除新图并保留原框。
 - 适配图由本机服务按框的尺寸生成（`GET /api/assets/{id}/fit`），保存在图库目录的 `fitted` 中。JPEG 和 PNG 统一写入 120 dpi 分辨率标记供 WPS 调整内嵌尺寸，输出像素仍由质量档与素材分辨率决定。
-- 上面三处尺寸容差取自 `origin/Jzc` 分支，该分支的文档记录了 Windows WPS `12.1.0.29690` 上的读数：255.7 × 340.7 磅回读为 255 × 340 磅，340 磅的框首次填图时宽度变为约 339.6 磅，换图时高度回读有偏差。`main` 上的这份代码尚未实机核对。
+- 尺寸容差（回读整数磅、0.1 磅内误差、不足 1 磅偏差、换图高度 1% 偏差）对应 WPS `12.1.0.29690` 上的读数，见下文“验收状态与清单”：255.7 × 340.7 磅回读为 255 × 340 磅，340 磅的框首次填图时宽度变为约 339.6 磅，换图时高度回读有偏差。读数取自 `Jzc` 分支的代码；合并后的代码尚未重测。
 - 替代文字在保存、关闭、重开后能否保留，尚未在真实 WPS 验证，见 [V03-PLAN.md](V03-PLAN.md) 的实机待验清单。
 
 ## 验收状态与清单
@@ -99,6 +99,12 @@ npm run wps:uninstall
 实机测试仅使用新建测试文档，不覆盖用户现有标书。若验收发现宿主差异，应修复后更新测试和此记录。
 
 v0.2 新增排版的逐项自动化与实机结果见 [V02-ACCEPTANCE.md](V02-ACCEPTANCE.md)。
+
+2026-11-09，在 Windows WPS `12.1.0.29690` 的空白测试文稿中复现占位框尺寸校验失败。设置 `255.7 × 340.7` 磅后回读为 `255 × 340` 磅。兼容整数磅回读后，实机验证竖向 9 × 12 厘米、整行宽 4:3 均可插入并出现在占位框列表。
+
+同一版本中，12 × 9 厘米占位框首次填图时，宽度由 340 磅变为约 339.6 磅。统一分辨率标记后，在测试文稿用合成素材交替填入 JPEG 和透明 PNG，验证裁切填满、完整显示和拉伸填满均成功。连续换图的回读尺寸、位置、图片数量和正文保持一致。
+
+普通换图也在该版本实测。横向 JPEG 换竖向 JPEG、JPEG 换透明 PNG 原先因高度回读偏差中止。调整校验后两组均成功，宽度最大偏差约 0.12 磅，图片位置、正文、图题和图片数量保持一致，一次撤销即可恢复原图。
 
 ## 一手依据
 

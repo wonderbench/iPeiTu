@@ -72,6 +72,39 @@ export async function verifyLan({ page, base, temporary }) {
     await page.setViewportSize({ width: 420, height: 800 });
     assert.equal(await noOverflow(), true, '420 宽无横向溢出');
 
+    // 局域网客户端可移入回收站与恢复；永久删除和清空回收站只能在服务器本机操作，服务器返回 403 与说明。
+    const localOnly = '只能在服务器那台电脑上操作';
+    await page.locator('.asset-card', { hasText: '局域网样图' }).click();
+    await page.locator('#moveToTrash').click();
+    await page.locator('#trashDialog').waitFor({ state: 'visible' });
+    assert.match(await page.locator('#trashDescription').textContent(), /移到回收站/);
+    await page.locator('#confirmTrash').click();
+    await visibleText('#actionStatus', '已将 1 张素材移到回收站');
+    await page.locator('#viewTrash').click();
+    await visibleText('#resultCount', '1 张');
+    await page.locator('.asset-card', { hasText: '局域网样图' }).click();
+    await page.locator('#purgeButton').click();
+    assert.match(await page.locator('#trashDescription').textContent(), /从共享图库永久删除/);
+    await page.locator('#confirmTrash').click();
+    await visibleText('#trashError', localOnly);
+    await page.locator('#cancelTrash').click();
+    await page.locator('#clearAssetTrash').click();
+    await page.locator('#confirmTrash').click();
+    await visibleText('#trashError', localOnly);
+    await page.locator('#cancelTrash').click();
+    assert.equal(upstream.library.list('', { view: 'trash' }).assets.length, 1, '远程永久删除被拒绝，服务器回收站不变');
+    await page.locator('.asset-card', { hasText: '局域网样图' }).click();
+    await page.locator('#restoreButton').click();
+    await visibleText('#actionStatus', '已恢复到图库');
+    await page.locator('#viewAll').click();
+    await visibleText('#resultCount', '1 张');
+    const knowledgeTrash = await (await fetch(`${base}/api/knowledge?view=trash`)).json();
+    const knowledgePurge = await fetch(`${base}/api/knowledge/trash/purge`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ all: true, revision: knowledgeTrash.trashRevision }),
+    });
+    assert.equal(knowledgePurge.status, 403, '远程清空知识库回收站被拒绝');
+    assert.match((await knowledgePurge.json()).error, new RegExp(localOnly));
+
     await page.goto(`${base}/knowledge.html`);
     await page.locator('#sourceBadge').waitFor({ state: 'visible' });
     await visibleText('#stateTitle', '知识库还没有片段');

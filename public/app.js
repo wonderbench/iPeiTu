@@ -7,16 +7,25 @@ import { normalizeLayoutOptions, normalizeQualityProfile } from './layout-option
 import { loadLayoutPreferences, saveLayoutPreferences } from './layout-preferences.js';
 import { createImportController } from './import-controller.js';
 import { createBoxController } from './box-controller.js';
+import { enhancePickers } from './select-picker.js';
+import { createViewRefresh } from './view-refresh.js';
+
+const pickers = enhancePickers();
+const management = new URLSearchParams(location.search).get('manage') === '1';
+document.documentElement.classList.toggle('management-view', management);
 
 const element = (id) => document.getElementById(id);
 const ui = Object.fromEntries([
   'toggleImport', 'importPanel', 'chooseFiles', 'fileInput', 'directoryForm',
   'directoryInput', 'importDirectory', 'importProgress', 'importFailures',
+  'folderImportDialog', 'folderImportForm', 'folderImportScope', 'browseFolder', 'useFolderPath',
+  'folderPathField', 'folderPath', 'folderSelection', 'folderImportError', 'cancelFolderImport', 'confirmFolderImport',
   'failureSummary', 'failureList', 'searchInput', 'clearSearch', 'resultCount',
   'libraryState', 'stateTitle', 'stateDescription', 'stateAction', 'assetGrid',
   'previewButton', 'selectedThumbnail', 'previewPlaceholder', 'selectedName',
+  'assetDetails', 'multiSelectionSummary',
   'selectedMeta', 'hostStatus', 'actionStatus', 'previewDialog',
-  'previewTitle', 'closePreview', 'previewImage', 'previewError', 'previewMeta',
+  'previewTitle', 'previewImage', 'previewError', 'previewMeta',
   'layoutSettingsButton', 'layoutDialog', 'layoutForm', 'widthMode', 'widthCm',
   'maxHeightCm', 'layoutMode', 'includeCaption', 'captionFields', 'captionText', 'qualityProfile',
   'layoutError', 'saveLayout', 'cancelLayout', 'resetLayout',
@@ -25,6 +34,8 @@ const ui = Object.fromEntries([
   'toggleMulti', 'batchBar', 'batchCount', 'batchSelectAll', 'batchEdit', 'batchDialog', 'batchForm',
   'batchDialogCount', 'batchAddCategories', 'batchRemoveCategories', 'batchAddTags', 'batchRemoveTags',
   'batchError', 'applyBatch', 'cancelBatch', 'workspace',
+  'moveToTrash', 'purgeButton', 'batchTrash', 'clearAssetTrash', 'trashDialog', 'trashForm', 'trashTitle',
+  'trashDescription', 'trashError', 'cancelTrash', 'confirmTrash',
   'editMetadata', 'metadataDialog', 'metadataForm', 'assetName', 'assetAliases',
   'assetCategories', 'assetTags', 'metadataError', 'saveMetadata', 'cancelMetadata',
   'libraryViews', 'viewAll', 'viewFavorites', 'viewRecent', 'favoriteButton',
@@ -38,7 +49,7 @@ const ui = Object.fromEntries([
   'unfilledOnly', 'findMarkers', 'clearMarkers', 'markerResult', 'markerSummary', 'markerList',
   'convertMarkers', 'clearMarkersDialog', 'clearMarkersText',
   'sourceButton', 'importScope', 'connectionDialog', 'connectionForm', 'connectionCurrent', 'connectionServing',
-  'serverUrl', 'accessKey', 'connectionError', 'useLocal', 'cancelConnection', 'connectServer',
+  'connectionShared', 'serverUrl', 'accessKey', 'connectionError', 'useLocal', 'cancelConnection', 'connectServer',
 ].map((id) => [id, element(id)]));
 
 function icon(name) {
@@ -82,16 +93,29 @@ const emptyFilters = () => ({ category: '', uncategorized: false, tags: [], orie
 const ORIENTATION_LABELS = { landscape: '横图', portrait: '竖图', square: '方图' };
 let filters = emptyFilters();
 let libraryFacets = { categories: [], tags: [], uncategorized: 0, orientations: {} };
-// 多选：勾选的素材 ID 跨检索保留，切到回收站或退出多选时清空。
-let multiMode = false;
+// 勾选跨检索保留，切换图库来源、进出回收站或退出多选时清空。
+let multiMode = null;
 const multiSelected = new Set();
 let editingAsset = null;
+let metadataLock = null;
+let metadataHeartbeat;
+let openingMetadata = false;
 let savingMetadata = false;
 let changingTrash = false;
+let pendingTrash = null;
+let trashSnapshot = null;
 let libraryView = 'all';
 let visibleAssets = [];
 const favoriteRequests = new Set();
 let boxes = null;
+let lastLibraryData;
+const listRefreshPaused = () => inserting || replacing || changingTrash || openingMetadata || savingMetadata || favoriteRequests.size > 0
+  || Boolean(document.querySelector('dialog[open]'));
+const listRefresh = createViewRefresh({
+  canRefresh: () => ui.assetGrid.getAttribute('aria-busy') !== 'true' && !listRefreshPaused(),
+  refresh: refreshOnReturn,
+  pointer: !management,
+});
 
 function refreshFavoriteButton() {
   const pending = selected && favoriteRequests.has(selected.id);
@@ -99,10 +123,14 @@ function refreshFavoriteButton() {
   ui.favoriteButton.disabled = !selected || pending || changingTrash || libraryView === 'trash';
   ui.favoriteButton.setAttribute('aria-pressed', String(Boolean(selected?.favorite)));
   ui.favoriteLabel.textContent = pending ? '保存中' : selected?.favorite ? '已收藏' : '收藏';
+  for (const button of ui.assetGrid.querySelectorAll('.card-favorite-action')) {
+    button.setAttribute('aria-disabled', String(changingTrash || favoriteRequests.has(button.dataset.id)));
+  }
 }
 
-function setMultiMode(enabled) {
-  multiMode = enabled;
+function setMultiMode(mode) {
+  multiMode = mode;
+  const enabled = Boolean(mode);
   if (!enabled) multiSelected.clear();
   ui.toggleMulti.setAttribute('aria-pressed', String(enabled));
   ui.assetGrid.classList.toggle('multi', enabled);
@@ -116,7 +144,29 @@ function syncCardStates() {
     card.setAttribute('aria-pressed', String(multiMode ? multiSelected.has(card.dataset.id) : card.dataset.id === selected?.id));
   }
   ui.batchCount.textContent = `已选 ${multiSelected.size} 张`;
+  if (management) {
+    ui.assetDetails.hidden = Boolean(multiMode);
+    ui.multiSelectionSummary.hidden = !multiMode;
+    ui.multiSelectionSummary.textContent = `已选 ${multiSelected.size} 张图片`;
+  }
   ui.batchEdit.disabled = multiSelected.size === 0;
+  refreshTrashActions();
+}
+
+function refreshTrashActions() {
+  const busy = changingTrash || savingMetadata || inserting || replacing;
+  const inTrash = libraryView === 'trash';
+  ui.moveToTrash.hidden = Boolean(multiMode) || inTrash || !selected;
+  ui.moveToTrash.disabled = busy;
+  ui.purgeButton.hidden = Boolean(multiMode) || !inTrash || !selected;
+  ui.purgeButton.disabled = busy;
+  ui.clearAssetTrash.hidden = !inTrash;
+  ui.clearAssetTrash.disabled = busy || !trashSnapshot?.count;
+  ui.restoreButton.hidden = Boolean(multiMode) || !inTrash;
+  ui.restoreButton.disabled = busy || !selected;
+  ui.batchEdit.hidden = inTrash;
+  ui.batchTrash.textContent = inTrash ? '永久删除' : '移到回收站';
+  ui.batchTrash.disabled = busy || multiSelected.size === 0;
 }
 
 function toggleMultiSelected(id) {
@@ -127,14 +177,21 @@ function toggleMultiSelected(id) {
 
 function setLibraryView(view) {
   if (view === libraryView) return;
+  const changesTrashScope = (view === 'trash') !== (libraryView === 'trash');
   libraryView = view;
-  if (view === 'trash') setMultiMode(false);
-  ui.toggleMulti.hidden = view === 'trash';
+  if (changesTrashScope) clearLibrarySelection();
   ui.libraryTitle.textContent = view === 'trash' ? '回收站' : '本地素材';
   for (const button of ui.libraryViews.children) {
     button.setAttribute('aria-pressed', String(button.dataset.view === view));
   }
   applyFilterChange();
+}
+
+function clearLibrarySelection() {
+  trashSnapshot = null;
+  setMultiMode(null);
+  renderAssets([]);
+  selectAsset(null);
 }
 
 function hasFilters() {
@@ -273,6 +330,7 @@ function fillLayoutForm(preferences, caption) {
   ui.widthCm.value = String(preferences.widthCm);
   ui.maxHeightCm.value = preferences.maxHeightCm === null ? '' : String(preferences.maxHeightCm);
   ui.layoutMode.value = preferences.layout;
+  for (const select of [ui.qualityProfile, ui.widthMode, ui.layoutMode]) pickers.get(select).refresh();
   ui.includeCaption.checked = preferences.includeCaption;
   ui.captionText.value = caption;
   ui.layoutError.hidden = true;
@@ -328,16 +386,15 @@ function refreshAddButtons() {
 
 function refreshHost() {
   const trashed = libraryView === 'trash';
-  const inWps = typeof globalThis.Application !== 'undefined';
+  const inWps = !management && typeof globalThis.Application !== 'undefined';
   ui.layoutSettingsButton.parentElement.hidden = trashed;
   ui.hostStatus.hidden = trashed;
-  ui.restoreButton.hidden = !trashed;
-  ui.restoreButton.disabled = !selected || changingTrash || inserting || replacing;
-  ui.editMetadata.disabled = !selected || changingTrash || inserting || replacing || trashed;
-  ui.trashButton.disabled = changingTrash || savingMetadata || inserting || replacing;
+  ui.editMetadata.disabled = !selected || openingMetadata || changingTrash || inserting || replacing || trashed;
+  ui.trashButton.disabled = changingTrash || savingMetadata || inserting || replacing || (ui.metadataDialog.open && !metadataLock);
+  refreshTrashActions();
   try {
     const status = getHostStatus();
-    hostAvailable = status.available;
+    hostAvailable = inWps && status.available;
     ui.hostStatus.textContent = inWps ? status.message : '浏览器模式 · 插入需从 WPS 打开';
   } catch (error) {
     hostAvailable = false;
@@ -354,8 +411,9 @@ function refreshHost() {
       ui.replaceButton.title = error.message || '无法读取当前图片，请重新选择';
     }
   }
-  // 选中占位框时“+”改为填入，替换会丢失框的标记，因此不显示替换。
+  // 选中占位框时卡片按钮改为填入，替换会丢失框的标记，因此不显示替换。
   fillTarget = inWps && !trashed ? getFillStatus() : { available: false };
+  if (!fillTarget.available) pickers.get(ui.fitMode).close();
   ui.fillBar.hidden = !fillTarget.available;
   if (fillTarget.available) {
     ui.fillTarget.textContent = `填入占位框「${fillTarget.name}」${centimeters(fillTarget.widthPt)} × ${centimeters(fillTarget.heightPt)} 厘米`;
@@ -373,6 +431,7 @@ function refreshHost() {
     sortKey = key;
     renderAssets(orderAssets(visibleAssets));
   }
+  listRefresh.flush();
 }
 
 async function recordSuccessfulUse(asset, action) {
@@ -398,7 +457,7 @@ function selectAsset(asset) {
   selected = asset;
   const tabId = visibleAssets.some(item => item.id === asset?.id) ? asset.id : visibleAssets[0]?.id;
   syncCardStates();
-  for (const control of ui.assetGrid.querySelectorAll('.asset-card, .card-add')) {
+  for (const control of ui.assetGrid.querySelectorAll('.asset-card, .card-add, .card-favorite-action')) {
     control.tabIndex = control.dataset.id === tabId ? 0 : -1;
   }
   ui.previewButton.disabled = !asset;
@@ -438,7 +497,7 @@ function openImport() {
 
 function renderAssets(assets) {
   const active = document.activeElement;
-  const focusedClass = ['card-add', 'asset-card'].find(name => active?.classList.contains(name));
+  const focusedClass = ['card-add', 'card-favorite-action', 'asset-card'].find(name => active?.classList.contains(name));
   const focusedId = focusedClass ? active.dataset.id : null;
   visibleAssets = assets;
   const tabId = assets.some(asset => asset.id === selected?.id) ? selected.id : assets[0]?.id;
@@ -472,42 +531,68 @@ function renderAssets(assets) {
     caption.className = 'asset-caption';
     const name = document.createElement('span');
     name.className = 'asset-name';
-    name.textContent = asset.name;
+    name.textContent = asset.name.replace(/\.[^.]+$/, '') || asset.name;
     name.title = asset.name;
-    const details = document.createElement('span');
-    details.className = 'asset-details figures';
-    details.textContent = `${asset.width} × ${asset.height}`;
-    caption.append(name, details);
+    const size = document.createElement('span');
+    size.className = 'asset-size figures';
+    size.textContent = `${asset.width} × ${asset.height}`;
+    caption.append(name, size);
     const check = document.createElement('span');
     check.className = 'card-check';
     check.append(icon('check'));
     card.append(thumbnail, check, caption);
-    if (favorited) {
+    if (favorited && management) {
       const favorite = document.createElement('span');
       favorite.className = 'card-favorite';
       favorite.append(icon('star'));
       card.append(favorite);
     }
-    card.addEventListener('click', () => {
-      if (multiMode) toggleMultiSelected(asset.id);
-      else selectAsset(visibleAssets.find(item => item.id === asset.id) || null);
+    card.addEventListener('click', event => {
+      if (event.ctrlKey && !multiMode) {
+        if (selected && visibleAssets.some(item => item.id === selected.id)) multiSelected.add(selected.id);
+        setMultiMode('ctrl');
+      }
+      if (event.ctrlKey || multiMode === 'toggle' || (multiMode === 'ctrl' && event.detail === 0)) {
+        toggleMultiSelected(asset.id);
+      } else {
+        if (multiMode === 'ctrl') setMultiMode(null);
+        selectAsset(visibleAssets.find(item => item.id === asset.id) || null);
+      }
     });
     item.append(card);
     if (libraryView !== 'trash') {
-      const add = document.createElement('button');
-      add.type = 'button';
-      add.className = 'card-add';
-      add.dataset.id = asset.id;
-      add.tabIndex = asset.id === tabId ? 0 : -1;
-      add.dataset.name = asset.name;
-      add.append(icon('plus'));
-      add.addEventListener('click', () => insertAsset(asset));
-      item.append(add);
+      const actions = document.createElement('div');
+      actions.className = 'card-actions';
+      if (!management) {
+        const add = document.createElement('button');
+        add.type = 'button';
+        add.className = 'card-add';
+        add.dataset.id = asset.id;
+        add.tabIndex = asset.id === tabId ? 0 : -1;
+        add.dataset.name = asset.name;
+        add.append(icon('plus'));
+        add.addEventListener('click', () => insertAsset(asset));
+        actions.append(add);
+      }
+
+      const favoriteAction = document.createElement('button');
+      favoriteAction.type = 'button';
+      favoriteAction.className = 'card-favorite-action';
+      favoriteAction.dataset.id = asset.id;
+      favoriteAction.tabIndex = asset.id === tabId ? 0 : -1;
+      favoriteAction.title = favorited ? '取消收藏' : '收藏';
+      favoriteAction.setAttribute('aria-label', `收藏「${asset.name}」`);
+      favoriteAction.setAttribute('aria-pressed', String(favorited));
+      favoriteAction.append(icon('star'));
+      favoriteAction.addEventListener('click', () => toggleFavorite(asset));
+      actions.append(favoriteAction);
+      item.append(actions);
     }
     fragment.append(item);
   }
   ui.assetGrid.replaceChildren(fragment);
   refreshAddButtons();
+  refreshFavoriteButton();
   if (focusedId) {
     (ui.assetGrid.querySelector(`.${focusedClass}[data-id="${focusedId}"]`)
       || ui.assetGrid.querySelector('.asset-card'))?.focus({ preventScroll: true });
@@ -520,7 +605,7 @@ function clearAddedMark() {
   clearTimeout(addedMarkTimer);
   for (const button of ui.assetGrid.querySelectorAll('.card-add.added')) {
     button.classList.remove('added');
-    button.replaceChildren(icon('plus'));
+    button.querySelector('use').setAttribute('href', '#i-plus');
   }
 }
 
@@ -529,7 +614,7 @@ function markAdded(id) {
   const button = ui.assetGrid.querySelector(`.card-add[data-id="${id}"]`);
   if (!button) return;
   button.classList.add('added');
-  button.replaceChildren(icon('check'));
+  button.querySelector('use').setAttribute('href', '#i-check');
   addedMarkTimer = setTimeout(clearAddedMark, 1200);
 }
 
@@ -555,7 +640,7 @@ async function insertAsset(candidate) {
       fillPlaceholder(image, target, { asset: asset.id, fit });
       showAction(`已填入占位框「${target.name}」`);
       const recorded = await recordSuccessfulUse(asset, '填入');
-      // 连续配图：选中下一个空框，“+”继续填入。定位失败不影响已完成的填入。
+      // 连续配图：选中下一个空框，可继续填入。定位失败不影响已完成的填入。
       let next;
       let nextError = '';
       try { next = selectNextEmptyPlaceholder(target.start); } catch (error) { nextError = error.message; }
@@ -583,8 +668,13 @@ async function insertAsset(candidate) {
   }
 }
 
-async function loadLibrary() {
+async function loadLibrary({ background = false } = {}) {
+  listRefresh.consume();
   const version = ++requestVersion;
+  if (!background) {
+    trashSnapshot = null;
+    refreshTrashActions();
+  }
   libraryRequest?.abort();
   libraryRequest = new AbortController();
   const query = ui.searchInput.value.trim();
@@ -593,11 +683,21 @@ async function loadLibrary() {
   if (filters.uncategorized) parameters.set('uncategorized', '1');
   if (filters.orientation) parameters.set('orientation', filters.orientation);
   for (const tag of filters.tags) parameters.append('tag', tag);
+  const requestQuery = parameters.toString();
   ui.assetGrid.setAttribute('aria-busy', 'true');
-  ui.resultCount.textContent = '正在检索';
+  if (!background) ui.resultCount.textContent = '正在检索';
   try {
-    const data = await request(`/api/library?${parameters}`, { signal: libraryRequest.signal });
+    const data = await request(`/api/library?${requestQuery}`, { signal: libraryRequest.signal });
     if (version !== requestVersion) return;
+    if (background && listRefreshPaused()) {
+      listRefresh.request();
+      return;
+    }
+    if (ui.actionStatus.textContent.startsWith('素材列表暂未更新：')) showAction('');
+    if (background && lastLibraryData?.query === requestQuery
+      && JSON.stringify(lastLibraryData.data) === JSON.stringify(data)) return data;
+    lastLibraryData = { query: requestQuery, data };
+    trashSnapshot = libraryView === 'trash' && data.trashRevision ? { count: data.viewTotal, revision: data.trashRevision } : null;
     libraryFacets = data.facets;
     renderCategoryChips();
     ui.openFilters.disabled = false;
@@ -612,18 +712,27 @@ async function loadLibrary() {
       else if (libraryView === 'favorites' && data.viewTotal === 0) showLibraryState('还没有收藏', '', '浏览全部', () => setLibraryView('all'));
       else if (libraryView === 'recent' && data.viewTotal === 0) showLibraryState('还没有插入记录', '', '浏览全部', () => setLibraryView('all'));
       else if (query || hasFilters()) showLibraryState('没有找到匹配图片', '', '清除全部条件', clearAllConditions);
-      else showLibraryState('先添加一组标书配图', '导入本地图片后，就可以按名称查找并插入标书', '导入素材', openImport);
+      else showLibraryState('先添加一组标书配图', management ? '' : '导入本地图片后，就可以按名称查找并插入标书', '导入素材', openImport);
     }
     if (selected) selectAsset(data.assets.find((asset) => asset.id === selected.id) || null);
     return data;
   } catch (error) {
     if (version !== requestVersion || error.name === 'AbortError') return;
+    if (background && lastLibraryData) {
+      showAction(`素材列表暂未更新：${readableError(error)}`, true);
+      return;
+    }
+    lastLibraryData = null;
     renderAssets([]);
     selectAsset(null);
     ui.resultCount.textContent = '读取失败';
     showLibraryState('图库暂时无法读取', readableError(error), '重新读取', loadLibrary);
   } finally {
-    if (version === requestVersion) ui.assetGrid.setAttribute('aria-busy', 'false');
+    if (version === requestVersion) {
+      ui.assetGrid.setAttribute('aria-busy', 'false');
+      refreshTrashActions();
+      listRefresh.flush();
+    }
   }
 }
 
@@ -631,6 +740,7 @@ function scheduleSearch() {
   clearTimeout(searchTimer);
   requestVersion += 1;
   libraryRequest?.abort();
+  trashSnapshot = null;
   ui.clearSearch.hidden = !ui.searchInput.value;
   selectAsset(null);
   renderAssets([]);
@@ -654,7 +764,7 @@ ui.toggleImport.addEventListener('click', () => {
   }
 });
 const importer = createImportController({
-  ui, request, readableError, refreshLibrary: loadLibrary, clearAction: () => showAction(''),
+  ui, request, readableError, management, refreshLibrary: loadLibrary, clearAction: () => showAction(''),
   reveal: () => {
     boxes?.close();
     ui.importPanel.hidden = false;
@@ -688,7 +798,7 @@ document.addEventListener('paste', event => {
   importer.importFiles(images, { pasted: true });
 });
 
-ui.toggleMulti.addEventListener('click', () => setMultiMode(!multiMode));
+ui.toggleMulti.addEventListener('click', () => setMultiMode(multiMode ? null : 'toggle'));
 ui.batchSelectAll.addEventListener('click', () => {
   for (const asset of visibleAssets) multiSelected.add(asset.id);
   syncCardStates();
@@ -749,6 +859,7 @@ boxes = createBoxController({
 });
 ui.toggleBoxes.addEventListener('click', () => {
   if (!ui.boxPanel.hidden) {
+    pickers.get(ui.boxSize).close();
     boxes.close();
     return;
   }
@@ -786,9 +897,9 @@ ui.assetGrid.addEventListener('keydown', (event) => {
   // 多选时方向键只移动焦点，空格或 Enter 勾选。
   if (!multiMode) selectAsset(visibleAssets[next]);
 });
-ui.favoriteButton.addEventListener('click', async () => {
-  if (!selected || changingTrash || libraryView === 'trash' || favoriteRequests.has(selected.id)) return;
-  const asset = selected;
+async function toggleFavorite(candidate) {
+  const asset = visibleAssets.find(item => item.id === candidate?.id);
+  if (!asset || changingTrash || libraryView === 'trash' || favoriteRequests.has(asset.id)) return;
   const favorite = !asset.favorite;
   favoriteRequests.add(asset.id);
   refreshFavoriteButton();
@@ -811,8 +922,10 @@ ui.favoriteButton.addEventListener('click', async () => {
   } finally {
     favoriteRequests.delete(asset.id);
     refreshFavoriteButton();
+    listRefresh.flush();
   }
-});
+}
+ui.favoriteButton.addEventListener('click', () => toggleFavorite(selected));
 ui.openFilters.addEventListener('click', () => {
   fillFilters();
   ui.filterDialog.showModal();
@@ -833,19 +946,99 @@ ui.clearFilters.addEventListener('click', () => {
   filters = emptyFilters();
   applyFilterChange();
 });
-ui.editMetadata.addEventListener('click', () => {
-  if (!selected || savingMetadata || changingTrash || inserting || replacing || libraryView === 'trash') return;
-  editingAsset = selected;
-  ui.assetName.value = selected.name;
-  ui.assetAliases.value = selected.aliases.join('\n');
-  ui.assetCategories.value = selected.categories.join('\n');
-  ui.assetTags.value = selected.tags.join('\n');
-  ui.metadataError.hidden = true;
-  ui.metadataDialog.showModal();
-  ui.assetName.focus();
+const METADATA_LOCK_HEARTBEAT = 30_000;
+const LOST_METADATA_LOCK_STATUS = new Set([404, 409, 410, 423]);
+
+function releaseMetadataLock(lock, keepalive = false) {
+  if (!lock) return;
+  request(lock.url, {
+    method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ token: lock.token, release: true }), keepalive,
+  }).catch(() => {}); // 连接中断时由服务端超时释放。
+}
+
+function stopMetadataHeartbeat() {
+  const lock = metadataLock;
+  metadataLock = null;
+  clearInterval(metadataHeartbeat);
+  return lock;
+}
+
+function loseMetadataLock() {
+  stopMetadataHeartbeat();
+  ui.saveMetadata.disabled = true;
+  ui.trashButton.disabled = true;
+  ui.metadataError.textContent = '编辑锁已失效，请重新打开素材信息。当前草稿仍可复制。';
+  ui.metadataError.hidden = false;
+}
+
+async function renewMetadataLock() {
+  const lock = metadataLock;
+  if (!lock || lock.renewing || savingMetadata || changingTrash) return;
+  lock.renewing = true;
+  try {
+    await request(lock.url, {
+      method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ token: lock.token }),
+    });
+  } catch (error) {
+    if (metadataLock === lock && !savingMetadata && !changingTrash && LOST_METADATA_LOCK_STATUS.has(error.status)) loseMetadataLock();
+  } finally {
+    lock.renewing = false;
+  }
+}
+
+ui.editMetadata.addEventListener('click', async () => {
+  if (!selected || openingMetadata || savingMetadata || changingTrash || inserting || replacing || ui.metadataDialog.open || libraryView === 'trash') return;
+  const id = selected.id;
+  const source = `${connection.mode} ${connection.url}`;
+  const url = `/api/assets/${encodeURIComponent(id)}/edit-lock`;
+  openingMetadata = true;
+  refreshHost();
+  try {
+    const { asset, token } = await request(url, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}',
+    });
+    const lock = { url, token, renewing: false };
+    if (selected?.id !== id || libraryView === 'trash' || document.querySelector('dialog[open]')
+      || source !== `${connection.mode} ${connection.url}`) {
+      releaseMetadataLock(lock);
+      return;
+    }
+    metadataLock = lock;
+    editingAsset = asset;
+    ui.assetName.value = asset.name;
+    ui.assetAliases.value = asset.aliases.join('\n');
+    ui.assetCategories.value = asset.categories.join('\n');
+    ui.assetTags.value = asset.tags.join('\n');
+    ui.metadataError.hidden = true;
+    ui.saveMetadata.disabled = false;
+    ui.trashButton.disabled = false;
+    ui.metadataDialog.showModal();
+    ui.assetName.focus();
+    metadataHeartbeat = setInterval(renewMetadataLock, METADATA_LOCK_HEARTBEAT);
+    showAction('');
+  } catch (error) {
+    releaseMetadataLock(stopMetadataHeartbeat());
+    showAction(readableError(error), true);
+  } finally {
+    openingMetadata = false;
+    refreshHost();
+  }
 });
 ui.cancelMetadata.addEventListener('click', () => ui.metadataDialog.close());
-async function changeTrash(asset, trashed) {
+ui.metadataDialog.addEventListener('close', () => {
+  if (ui.metadataDialog.open) return;
+  releaseMetadataLock(stopMetadataHeartbeat());
+  editingAsset = null;
+  listRefresh.flush();
+});
+window.addEventListener('focus', renewMetadataLock);
+window.addEventListener('pagehide', event => {
+  const lock = stopMetadataHeartbeat();
+  releaseMetadataLock(lock, true);
+  if (lock && event.persisted) loseMetadataLock();
+});
+async function changeTrash(asset, trashed, editToken) {
   if (!asset || changingTrash || savingMetadata || inserting || replacing) return;
   changingTrash = true;
   ui.metadataError.hidden = true;
@@ -855,7 +1048,7 @@ async function changeTrash(asset, trashed) {
   const originalView = libraryView;
   try {
     await request(`/api/assets/${encodeURIComponent(asset.id)}/trash`, {
-      method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ trashed }),
+      method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ trashed, editToken }),
     });
     if (trashed) ui.metadataDialog.close();
     if (libraryView === originalView) {
@@ -868,28 +1061,116 @@ async function changeTrash(asset, trashed) {
   } catch (error) {
     const message = `${trashed ? '移出' : '恢复'}失败：${readableError(error)}`;
     if (trashed) {
-      ui.metadataError.textContent = message;
-      ui.metadataError.hidden = false;
+      if (editToken && LOST_METADATA_LOCK_STATUS.has(error.status)) loseMetadataLock();
+      else {
+        ui.metadataError.textContent = message;
+        ui.metadataError.hidden = false;
+      }
     } else showAction(message, true);
   } finally {
     changingTrash = false;
     if (trashed) for (const control of ui.metadataForm.elements) control.disabled = false;
+    if (trashed && ui.metadataDialog.open && !metadataLock) {
+      ui.saveMetadata.disabled = true;
+      ui.trashButton.disabled = true;
+    }
     refreshFavoriteButton();
     refreshHost();
   }
 }
 ui.trashButton.addEventListener('click', () => {
-  if (libraryView !== 'trash' && ui.metadataDialog.open) changeTrash(editingAsset, true);
+  if (libraryView !== 'trash' && ui.metadataDialog.open && metadataLock) changeTrash(editingAsset, true, metadataLock.token);
 });
 ui.restoreButton.addEventListener('click', () => {
   if (libraryView === 'trash') changeTrash(selected, false);
+});
+function openTrashDialog({ ids, name, clearing = false }) {
+  if (changingTrash || savingMetadata || inserting || replacing) return;
+  const permanent = libraryView === 'trash';
+  if (clearing ? !permanent || !trashSnapshot?.count : !ids?.length) return;
+  const body = clearing ? { all: true, revision: trashSnapshot.revision } : { ids };
+  pendingTrash = { body, clearing, permanent, mode: connection.mode, url: connection.url };
+  const scope = connection.mode === 'lan' || connection.lanServer ? '共享图库' : '本机图库';
+  if (clearing) {
+    ui.trashTitle.textContent = '清空回收站';
+    ui.trashDescription.textContent = `将永久删除${scope}回收站里的全部 ${trashSnapshot.count} 张素材，包括当前筛选之外的图片。删除后无法恢复。`;
+    ui.confirmTrash.textContent = '确认清空';
+  } else {
+    const target = name ? `「${name}」` : `选中的 ${ids.length} 张素材`;
+    ui.trashTitle.textContent = permanent ? '永久删除素材' : '移到回收站';
+    ui.trashDescription.textContent = permanent
+      ? `从${scope}永久删除${target}？删除后无法恢复。`
+      : `将${target}移到回收站？移出后可以恢复。`;
+    ui.confirmTrash.textContent = permanent ? '永久删除' : '确认移出';
+  }
+  ui.confirmTrash.toggleAttribute('data-permanent', permanent);
+  ui.trashError.hidden = true;
+  ui.trashDialog.showModal();
+}
+for (const button of [ui.moveToTrash, ui.purgeButton]) {
+  button.addEventListener('click', () => {
+    if (selected) openTrashDialog({ ids: [selected.id], name: selected.name });
+  });
+}
+ui.batchTrash.addEventListener('click', () => openTrashDialog({ ids: [...multiSelected] }));
+ui.clearAssetTrash.addEventListener('click', () => openTrashDialog({ clearing: true }));
+ui.cancelTrash.addEventListener('click', () => ui.trashDialog.close());
+ui.trashDialog.addEventListener('cancel', event => {
+  if (changingTrash) event.preventDefault();
+});
+ui.trashDialog.addEventListener('close', () => { pendingTrash = null; });
+ui.trashForm.addEventListener('submit', async event => {
+  event.preventDefault();
+  if (!pendingTrash || changingTrash || savingMetadata || inserting || replacing) return;
+  const { body, clearing, permanent, mode, url } = pendingTrash;
+  changingTrash = true;
+  ui.trashError.hidden = true;
+  for (const control of ui.trashForm.elements) control.disabled = true;
+  refreshHost();
+  try {
+    const source = await request('/api/connection');
+    if (source.mode !== mode || source.url !== url) throw new Error('图库来源已切换，请关闭弹窗后重新选择素材');
+    const result = await request(`/api/assets/batch/${permanent ? 'purge' : 'trash'}`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json', 'X-iPeiTu-Library': mode === 'local' ? 'local' : url ?? '' },
+      body: JSON.stringify(body),
+    });
+    ui.trashDialog.close();
+    if (clearing) {
+      clearLibrarySelection();
+    } else {
+      const moved = new Set(body.ids);
+      for (const id of moved) multiSelected.delete(id);
+      renderAssets(visibleAssets.filter(asset => !moved.has(asset.id)));
+      if (moved.has(selected?.id)) selectAsset(null);
+      if (multiMode === 'ctrl' && !multiSelected.size) setMultiMode(null);
+      syncCardStates();
+    }
+    const data = await loadLibrary();
+    const message = clearing ? `已清空回收站，永久删除 ${result.purged} 张素材`
+      : permanent ? `已永久删除 ${result.purged} 张素材` : `已将 ${result.trashed} 张素材移到回收站`;
+    const cleanup = result.cleanupPending ? '，部分文件待清理，服务重启后会重试' : '';
+    showAction(`${message}${cleanup}${data ? '' : '，图库刷新失败，请重新读取'}`, !data || result.cleanupPending);
+  } catch (error) {
+    if (clearing && error.status === 409) {
+      ui.trashDialog.close();
+      await loadLibrary();
+      showAction(readableError(error), true);
+      return;
+    }
+    ui.trashError.textContent = `${permanent ? '永久删除' : '移出'}失败：${readableError(error)}`;
+    ui.trashError.hidden = false;
+  } finally {
+    changingTrash = false;
+    for (const control of ui.trashForm.elements) control.disabled = false;
+    refreshHost();
+  }
 });
 ui.metadataDialog.addEventListener('cancel', event => {
   if (savingMetadata || changingTrash) event.preventDefault();
 });
 ui.metadataForm.addEventListener('submit', async (event) => {
   event.preventDefault();
-  if (!editingAsset || savingMetadata || changingTrash) return;
+  if (!editingAsset || !metadataLock || savingMetadata || changingTrash) return;
   ui.metadataError.hidden = true;
   const name = ui.assetName.value.trim();
   if (!name) {
@@ -918,7 +1199,7 @@ ui.metadataForm.addEventListener('submit', async (event) => {
   let persisted = false;
   try {
     const { asset } = await request(`/api/assets/${encodeURIComponent(editingAsset.id)}`, {
-      method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(patch),
+      method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ...patch, editToken: metadataLock.token }),
     });
     persisted = true;
     const data = await loadLibrary();
@@ -928,11 +1209,18 @@ ui.metadataForm.addEventListener('submit', async (event) => {
     showAction(!data ? '素材信息已保存，但图库刷新失败，请重新读取'
       : visible ? '素材信息已保存' : '素材信息已保存，图片不在当前筛选结果中', !data);
   } catch (error) {
-    ui.metadataError.textContent = persisted ? '素材信息已保存，但显示未能刷新，请关闭后重新读取图库' : `保存失败：${readableError(error)}`;
-    ui.metadataError.hidden = false;
+    if (!persisted && LOST_METADATA_LOCK_STATUS.has(error.status)) loseMetadataLock();
+    else {
+      ui.metadataError.textContent = persisted ? '素材信息已保存，但显示未能刷新，请关闭后重新读取图库' : `保存失败：${readableError(error)}`;
+      ui.metadataError.hidden = false;
+    }
   } finally {
     savingMetadata = false;
     for (const control of ui.metadataForm.elements) control.disabled = false;
+    if (ui.metadataDialog.open && !metadataLock) {
+      ui.saveMetadata.disabled = true;
+      ui.trashButton.disabled = true;
+    }
     ui.saveMetadata.textContent = '保存信息';
     refreshHost();
   }
@@ -952,11 +1240,13 @@ ui.previewImage.addEventListener('error', () => {
   ui.previewImage.hidden = true;
   ui.previewError.hidden = false;
 });
-ui.closePreview.addEventListener('click', () => ui.previewDialog.close());
+for (const button of document.querySelectorAll('.dialog-close')) {
+  button.addEventListener('click', () => button.closest('dialog').close('cancel'));
+}
 ui.layoutSettingsButton.addEventListener('click', () => {
   fillLayoutForm(layoutPreferences, captionDraft);
   ui.layoutDialog.showModal();
-  ui.widthMode.focus();
+  pickers.get(ui.widthMode).focus();
 });
 ui.widthMode.addEventListener('change', syncLayoutFields);
 ui.includeCaption.addEventListener('change', syncLayoutFields);
@@ -1048,6 +1338,7 @@ ui.ratioSort.addEventListener('click', () => {
 try {
   const savedFit = localStorage.getItem(FIT_STORAGE_KEY);
   if (FIT_MODES.includes(savedFit)) ui.fitMode.value = savedFit;
+  pickers.get(ui.fitMode).refresh();
 } catch {
   // 读不到本机设置时沿用默认的裁切填满，不影响使用。
 }
@@ -1066,15 +1357,31 @@ function renderConnection() {
   ui.sourceButton.classList.toggle('is-lan', lan);
   ui.sourceButton.title = lan ? `局域网图库 ${connection.url ?? '（连接配置有误）'}` : connection.lanServer ? '本机图库，已开放给局域网' : '本机图库';
   ui.importScope.textContent = lan ? '保存到局域网图库' : connection.lanServer ? '保存在本机，局域网共享' : '仅保存在本机';
+  ui.folderImportScope.textContent = ui.importScope.textContent;
 }
 
-async function loadConnection() {
+async function loadConnection({ background = false } = {}) {
   const previous = `${connection.mode} ${connection.url}`;
-  try { connection = await request('/api/connection'); } catch {
+  let next;
+  try { next = await request('/api/connection'); } catch {
     // 服务未运行时由图库读取失败给出说明，这里保持上次的显示。
   }
+  if (!next) return null;
+  if (background && (listRefreshPaused() || ui.assetGrid.getAttribute('aria-busy') === 'true')) {
+    listRefresh.request();
+    return null;
+  }
+  connection = next;
   renderConnection();
-  return previous !== `${connection.mode} ${connection.url}`;
+  const changed = previous !== `${connection.mode} ${connection.url}`;
+  if (changed) clearLibrarySelection();
+  return changed;
+}
+
+async function refreshOnReturn() {
+  const changed = await loadConnection({ background: true });
+  if (changed) clearAllConditions();
+  else if (changed === false) await loadLibrary({ background: true });
 }
 
 function showConnectionError(message) {
@@ -1092,6 +1399,7 @@ async function changeSource(method, body) {
       ? { method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) } : { method });
     ui.connectionDialog.close();
     renderConnection();
+    clearLibrarySelection();
     clearAllConditions();
     showAction(connection.mode === 'lan' ? `已连接局域网图库 ${connection.url}` : '已切回本机图库');
   } catch (error) {
@@ -1099,19 +1407,20 @@ async function changeSource(method, body) {
   } finally {
     ui.connectServer.disabled = connection.lanServer;
     ui.useLocal.disabled = false;
-    ui.connectServer.textContent = '连接';
+    ui.connectServer.textContent = '连接图库';
   }
 }
 
 ui.sourceButton.addEventListener('click', async () => {
-  await loadConnection();
+  if (await loadConnection()) clearAllConditions();
   const lan = connection.mode === 'lan';
-  ui.connectionCurrent.textContent = lan ? '当前：局域网' : '当前：本机';
+  ui.connectionCurrent.textContent = lan ? '局域网图库' : '本机图库';
   ui.serverUrl.value = connection.url ?? '';
   ui.accessKey.value = '';
-  ui.accessKey.placeholder = lan && connection.url ? '重新连接时需再次填写' : '';
+  ui.accessKey.placeholder = lan && connection.url ? '重新连接时需再次填写' : '输入共享电脑提供的密钥';
   ui.useLocal.hidden = !lan;
   ui.connectionServing.hidden = !connection.lanServer;
+  ui.connectionShared.hidden = !connection.lanServer;
   for (const control of [ui.serverUrl, ui.accessKey, ui.connectServer]) control.disabled = connection.lanServer;
   showConnectionError(connection.error ?? '');
   ui.connectionDialog.showModal();
@@ -1124,12 +1433,6 @@ ui.connectionForm.addEventListener('submit', (event) => {
 });
 ui.useLocal.addEventListener('click', () => changeSource('DELETE'));
 ui.cancelConnection.addEventListener('click', () => ui.connectionDialog.close());
-// 在其他窗格切换来源后，回到本窗格时同步显示并重新读取。
-window.addEventListener('focus', async () => {
-  if (await loadConnection()) clearAllConditions();
-});
-
 updateLayoutSummary();
 refreshHost();
-loadConnection();
-loadLibrary();
+loadConnection().then(() => loadLibrary());

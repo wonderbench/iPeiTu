@@ -1,16 +1,43 @@
-// File references exist only while uploading or for the first 100 failed items.
+// 文件引用只保留在本次选择、导入过程和前 100 项失败记录中。
 const SESSION_KEY = 'ipeitu.activeImportJob';
 const IMAGE_EXTENSION = /\.(?:png|jpe?g|webp|bmp|gif|tiff?|svg|heic|heif|avif|ico|jfif)$/i;
 const MAX_FILES = 10000;
 const MAX_RETRY_FILES = 100;
 
-export function createImportController({ ui, request, readableError, refreshLibrary, clearAction, reveal }) {
+function folderCategory(relativePath) {
+  const parts = relativePath.split('/');
+  return parts.length === 2 ? parts[0] : parts.slice(1, -1).join('/');
+}
+
+async function scanPickedFolder(folder, signal) {
+  const pending = [{ directory: folder, path: folder.name }];
+  const entries = [];
+  let scanned = 0;
+  while (pending.length && !signal.aborted) {
+    const { directory, path } = pending.pop();
+    for await (const handle of directory.values()) {
+      if (signal.aborted) return [];
+      if (++scanned > 100000) throw new Error('文件夹内容过多，请分批选择子文件夹');
+      const relativePath = `${path}/${handle.name}`;
+      if (handle.kind === 'directory') pending.push({ directory: handle, path: relativePath });
+      else if (handle.kind === 'file' && IMAGE_EXTENSION.test(handle.name)) {
+        if (entries.length === MAX_FILES) throw new Error(`一次最多导入 ${MAX_FILES} 张图片，请分批选择`);
+        entries.push({ handle, relativePath, category: folderCategory(relativePath) });
+      }
+    }
+  }
+  return entries;
+}
+
+export function createImportController({ ui, request, readableError, management, refreshLibrary, clearAction, reveal }) {
   let busy = false;
   let jobId = null;
   let paused = false;
   let stopped = false;
   let failures = [];
   let retryFiles = new Map();
+  let folderEntries = null;
+  let folderScan = null;
 
   function remember(id) {
     try {
@@ -87,17 +114,20 @@ export function createImportController({ ui, request, readableError, refreshLibr
       if (stopped) break;
       ui.importProgress.textContent = `正在导入 ${index + 1} / ${entries.length}：${entry.relativePath}`;
       meter(index, entries.length);
+      const name = (entry.file ?? entry.handle).name;
       const failed = error => {
         const id = `file-${index}`;
-        const failure = { id, name: entry.file.name, relativePath: entry.relativePath, error };
+        const failure = { id, name, relativePath: entry.relativePath, error };
         result.failed.push(failure);
         if (!stopped && retryFiles.size < MAX_RETRY_FILES) retryFiles.set(id, entry);
       };
       try {
-        const parameters = new URLSearchParams({ name: entry.file.name });
+        const file = entry.file ?? await entry.handle.getFile();
+        if (stopped) break;
+        const parameters = new URLSearchParams({ name });
         if (entry.category) parameters.set('category', entry.category);
         const current = await request(`/api/import-file?${parameters}`, {
-          method: 'POST', headers: { 'Content-Type': 'application/octet-stream' }, body: entry.file,
+          method: 'POST', headers: { 'Content-Type': 'application/octet-stream' }, body: file,
         });
         result.imported += current.imported;
         result.duplicates += current.duplicates;
@@ -118,11 +148,13 @@ export function createImportController({ ui, request, readableError, refreshLibr
     if (busy || paused) return;
     const entries = Array.from(input.files).filter(file => !folder || IMAGE_EXTENSION.test(file.name)).map(file => {
       const relativePath = file.webkitRelativePath || file.name;
-      const parts = relativePath.split('/');
-      const category = folder && parts.length > 1 ? parts.length === 2 ? parts[0] : parts.slice(1, -1).join('/') : '';
-      return { file, relativePath, category };
+      return { file, relativePath, category: folder ? folderCategory(relativePath) : '' };
     });
     input.value = '';
+    await importEntries(entries);
+  }
+
+  async function importEntries(entries) {
     if (!entries.length) {
       begin();
       ui.importProgress.textContent = '没有找到可导入的图片';
@@ -181,16 +213,8 @@ export function createImportController({ ui, request, readableError, refreshLibr
     } finally { setBusy(false); }
   }
 
-  ui.chooseFiles.addEventListener('click', () => ui.fileInput.click());
-  ui.chooseFolder.addEventListener('click', () => ui.folderInput.click());
-  ui.fileInput.addEventListener('change', () => selectedFiles(ui.fileInput, false));
-  ui.folderInput.addEventListener('change', () => selectedFiles(ui.folderInput, true));
-  ui.resumeImport.addEventListener('click', () => { if (!busy && jobId) poll(); });
-  ui.directoryForm.addEventListener('submit', async event => {
-    event.preventDefault();
+  async function importDirectory(directory) {
     if (busy || paused) return;
-    const directory = ui.directoryInput.value.trim().replace(/^"(.*)"$/, '$1');
-    if (!directory) { ui.directoryInput.focus(); return; }
     begin();
     ui.importProgress.textContent = '正在创建导入任务';
     meter(0, null);
@@ -208,6 +232,109 @@ export function createImportController({ ui, request, readableError, refreshLibr
       ui.importMeter.hidden = true;
       setBusy(false);
     }
+  }
+
+  const normalizePath = value => value.trim().replace(/^"(.*)"$/, '$1').trim();
+
+  function showFolderError(message) {
+    ui.folderImportError.textContent = message;
+    ui.folderImportError.hidden = !message;
+  }
+
+  function updateFolderDialog() {
+    ui.folderPathField.hidden = folderEntries !== null;
+    ui.useFolderPath.hidden = folderEntries === null;
+    ui.browseFolder.disabled = folderScan !== null;
+    ui.confirmFolderImport.disabled = folderScan !== null
+      || (folderEntries !== null ? !folderEntries.length : !normalizePath(ui.folderPath.value));
+  }
+
+  function showFolderDialog(directory = '') {
+    folderEntries = null;
+    ui.browseFolder.hidden = typeof window.showDirectoryPicker !== 'function';
+    ui.folderPath.value = directory;
+    ui.folderSelection.hidden = true;
+    showFolderError('');
+    updateFolderDialog();
+    ui.folderImportDialog.showModal();
+    (ui.browseFolder.hidden || directory ? ui.folderPath : ui.browseFolder).focus();
+  }
+
+  async function browseFolder() {
+    const scan = new AbortController();
+    folderScan = scan;
+    updateFolderDialog();
+    showFolderError('');
+    try {
+      const folder = await window.showDirectoryPicker({ mode: 'read' });
+      if (scan.signal.aborted) return;
+      folderEntries = [];
+      ui.folderSelection.textContent = `「${folder.name}」 · 正在扫描图片…`;
+      ui.folderSelection.hidden = false;
+      updateFolderDialog();
+      const entries = await scanPickedFolder(folder, scan.signal);
+      if (scan.signal.aborted) return;
+      folderEntries = entries;
+      ui.folderSelection.textContent = `「${folder.name}」 · ${entries.length} 张可导入图片，包含子文件夹`;
+      if (!entries.length) showFolderError('没有找到可导入的图片，请选择其他文件夹');
+    } catch (error) {
+      if (scan.signal.aborted || error.name === 'AbortError') return;
+      folderEntries = null;
+      ui.folderSelection.hidden = true;
+      showFolderError(`无法读取所选文件夹：${readableError(error)}。也可粘贴本机文件夹路径。`);
+    } finally {
+      if (folderScan === scan) {
+        folderScan = null;
+        updateFolderDialog();
+      }
+    }
+  }
+
+  ui.chooseFiles.addEventListener('click', () => ui.fileInput.click());
+  ui.chooseFolder.addEventListener('click', () => {
+    if (!management) {
+      ui.folderInput.click();
+      return;
+    }
+    showFolderDialog();
+  });
+  ui.fileInput.addEventListener('change', () => selectedFiles(ui.fileInput, false));
+  ui.folderInput.addEventListener('change', () => selectedFiles(ui.folderInput, true));
+  ui.resumeImport.addEventListener('click', () => { if (!busy && jobId) poll(); });
+  ui.directoryForm.addEventListener('submit', event => {
+    event.preventDefault();
+    if (busy || paused) return;
+    const directory = normalizePath(ui.directoryInput.value);
+    if (!directory) { ui.directoryInput.focus(); return; }
+    if (management) showFolderDialog(directory);
+    else importDirectory(directory);
+  });
+  ui.browseFolder.addEventListener('click', browseFolder);
+  ui.folderPath.addEventListener('input', updateFolderDialog);
+  ui.useFolderPath.addEventListener('click', () => {
+    folderScan?.abort();
+    folderScan = null;
+    folderEntries = null;
+    ui.folderSelection.hidden = true;
+    showFolderError('');
+    updateFolderDialog();
+    ui.folderPath.focus();
+  });
+  ui.cancelFolderImport.addEventListener('click', () => ui.folderImportDialog.close());
+  ui.folderImportDialog.addEventListener('close', () => {
+    if (ui.folderImportDialog.open) return;
+    folderScan?.abort();
+    folderScan = null;
+    folderEntries = null;
+  });
+  ui.folderImportForm.addEventListener('submit', event => {
+    event.preventDefault();
+    if (busy || paused || ui.confirmFolderImport.disabled) return;
+    const entries = folderEntries;
+    const directory = normalizePath(ui.folderPath.value);
+    ui.folderImportDialog.close();
+    if (entries) importEntries(entries);
+    else importDirectory(directory);
   });
   ui.retryImport.addEventListener('click', async () => {
     if (busy || paused) return;
