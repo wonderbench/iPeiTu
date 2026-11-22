@@ -215,3 +215,29 @@ test('局域网服务器：生成并沿用访问密钥，以局域网模式运�
   assert.equal(result.status, 0, result.output);
   await assert.rejects(access(keyPath), '卸载时删除访问密钥');
 });
+
+test('局域网服务器：删除密钥后重新安装，先停止运行中的服务，新密钥由重启后的服务加载', { skip }, async t => {
+  const { port, state, data, config, runKey, run } = await workspace(t);
+  const common = ['-ConfigDirectory', config, '-RunKey', runKey, '-StateDirectory', state, '-Port', String(port), '-SkipDependencies'];
+  const env = { IPEITU_DATA_DIR: data };
+  const keyPath = path.join(state, 'lan-access-key.txt');
+  let result = await run('setup', [...common, '-Lan'], env);
+  assert.equal(result.status, 0, result.output);
+  const oldKey = (await readFile(keyPath, 'utf8')).trim();
+  const first = await health(port);
+  assert.equal(first?.lan, true, '服务以局域网模式运行');
+
+  // 删除密钥即表示要更换：运行中的服务仍持有旧密钥，必须先停止，新密钥才会生效。
+  await rm(keyPath);
+  result = await run('setup', [...common, '-Lan'], env);
+  assert.equal(result.status, 0, result.output);
+  assert.match(result.output, /已生成新的访问密钥/);
+  assert.match(result.output, /已停止/, '换钥前先停止了原服务');
+  const newKey = (await readFile(keyPath, 'utf8')).trim();
+  assert.match(newKey, /^[A-Za-z0-9_-]{43}$/);
+  assert.notEqual(newKey, oldKey);
+  assert.ok(result.output.includes(newKey), '安装窗口显示新密钥');
+  const second = await health(port);
+  assert.equal(second?.lan, true, '重启后仍为局域网模式');
+  assert.notEqual(second.pid, first.pid, '服务已重启，加载的是新密钥');
+});

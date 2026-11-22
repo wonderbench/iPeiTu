@@ -70,6 +70,12 @@ if ($Lan) {
     if (Test-Path -LiteralPath $keyPath) {
         Write-Host '  局域网访问：沿用已有的访问密钥'
     } else {
+        # 运行中的服务仍使用启动时加载的密钥，换钥前先停止它。
+        & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $service -Action stop -Port $Port -StateDirectory $StateDirectory
+        if ($LASTEXITCODE -ne 0) {
+            Write-Host '未能停止原服务，未生成新密钥。请先关闭原服务，再重新运行“局域网服务器.cmd”。'
+            exit $LASTEXITCODE
+        }
         $bytes = New-Object byte[] 32
         $random = [Security.Cryptography.RandomNumberGenerator]::Create()
         try { $random.GetBytes($bytes) } finally { $random.Dispose() }
