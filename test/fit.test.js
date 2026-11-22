@@ -75,6 +75,20 @@ test('透明图输出 PNG 并保留透明；相同请求复用缓存', async t =
   assert.equal(again.bytes, before.size);
 });
 
+test('适配图统一写入 120 dpi 分辨率标记（JPEG 与 PNG）', async t => {
+  const { library, fitter } = await setup(t);
+  const opaque = await add(library, '不透明.png', await halves());
+  const alpha = await sharp({ create: { width: 800, height: 600, channels: 4, background: { r: 20, g: 120, b: 120, alpha: 0.4 } } }).png().toBuffer();
+  const transparent = await add(library, '半透明.png', alpha);
+  const input = { mode: 'cover', widthPt: '144', heightPt: '144', profile: 'balanced' };
+  const jpeg = await fitter.create(opaque, input);
+  const png = await fitter.create(transparent, input);
+  assert.equal(jpeg.format, 'jpeg');
+  assert.equal(png.format, 'png');
+  assert.equal((await sharp(jpeg.path).metadata()).density, 120);
+  assert.equal((await sharp(png.path).metadata()).density, 120);
+});
+
 test('适配参数严格校验，回收站中的素材不能填入', async t => {
   const { library, fitter } = await setup(t);
   const id = await add(library, '图.png', await halves());

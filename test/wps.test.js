@@ -33,13 +33,16 @@ function createHost(options = {}) {
       get Width() { return width; },
       set Width(value) {
         if (options.resizeError) throw new Error('resize unavailable');
-        if (this.LockAspectRatio === -1 && !options.ignoreAspectRatio) height *= value / width;
-        width = value;
+        // quantize(值, 'Width' | 'Height') 模拟 WPS 对写入宽高的取整或按分辨率量化；仅作用于新图。
+        const quantize = this.original || !options.quantize ? (number => number) : options.quantize;
+        if (this.LockAspectRatio === -1 && !options.ignoreAspectRatio) height = quantize(height * (value / width), 'Height');
+        width = quantize(value, 'Width');
       },
       get Height() { return height; },
       set Height(value) {
-        if (this.LockAspectRatio === -1 && !options.ignoreAspectRatio) width *= value / height;
-        height = value;
+        const quantize = this.original || !options.quantize ? (number => number) : options.quantize;
+        if (this.LockAspectRatio === -1 && !options.ignoreAspectRatio) width = quantize(width * (value / height), 'Width');
+        height = quantize(value, 'Height');
       },
       altText: '',
       get AlternativeText() { return options.altTextDropped || (options.newAltTextDropped && !this.original) ? '' : this.altText; },
@@ -1141,4 +1144,100 @@ test('文字标记转换中途失败时移除未完成的框，说明已转换�
   });
   assert.equal(state.pictures.length, 0, '未写入标记的占位图已移除');
   assert.deepEqual([state.undoStarted, state.undoEnded], [1, 1]);
+});
+
+// 以下用例按真实 WPS 12.1.0.29690 的实测行为模拟尺寸量化（模拟测试，不是实机验收）。
+test('占位框：WPS 把宽高截去小数后回读为整数磅时仍视为成功', () => {
+  const { state } = createHost({ text: '前文后文\r', start: 2, end: 2, quantize: value => Math.trunc(value) });
+  const target = { ...capturePlaceholderTarget(box()), widthPt: 255.7, heightPt: 340.7 };
+  const result = insertPlaceholder(boxImage, target);
+  assert.deepEqual(result, { name: '脚手架搭设', widthPt: 255, heightPt: 340 });
+  assert.equal(state.pictures.length, 1);
+  assert.deepEqual(parsePlaceholderMarker(state.pictures[0].altText), { name: '脚手架搭设' });
+  assert.equal(state.text, '前文\r\uFFFC\r后文\r');
+});
+
+test('占位框：回读偏差超出容差时报错带读数，且不留下无标记的图', () => {
+  const { state } = createHost({ text: '前文后文\r', start: 2, end: 2, quantize: value => value - 1 });
+  const target = { ...capturePlaceholderTarget(box()), widthPt: 255.7, heightPt: 340.7 };
+  assert.throws(() => insertPlaceholder(boxImage, target), error => {
+    assert.match(error.message, /WPS 未能按框的尺寸设置占位图（预期 255\.70 × 340\.70 磅，实测 254\.70 × 339\.70 磅）/);
+    assert.match(error.message, /未插入.*已移除/);
+    assert.equal(error.inserted, false);
+    return true;
+  });
+  assert.equal(state.pictures.length, 0);
+  assert.equal(state.text, '前文后文\r');
+  assert.deepEqual([state.undoStarted, state.undoEnded], [1, 1]);
+});
+
+test('填入：量化造成不足 1 磅的偏差仍成功', () => {
+  const { state } = boxHost({ quantize: value => value - 0.4 });
+  const result = fillPlaceholder(fittedImage, captureFillTarget(), { asset: assetId, fit: 'cover' });
+  assert.ok(Math.abs(result.widthPt - 299.6) < 1e-9 && Math.abs(result.heightPt - 199.6) < 1e-9);
+  assert.equal(state.pictures.length, 1);
+  assert.equal(state.pictures[0].original, false);
+  assert.deepEqual(parsePlaceholderMarker(state.pictures[0].altText), { name: '脚手架搭设', asset: assetId, fit: 'cover' });
+  assert.deepEqual(state.calls.filter(call => call.delete).map(call => call.delete), ['original']);
+});
+
+test('填入：偏差达到或超过 1 磅时失败，移除新图并保留原框', () => {
+  for (const [offset, readback] of [[1, '299.00 × 199.00'], [1.5, '298.50 × 198.50']]) {
+    const { state } = boxHost({ quantize: value => value - offset });
+    const original = state.pictures[0];
+    assert.throws(() => fillPlaceholder(fittedImage, captureFillTarget(), { asset: assetId, fit: 'cover' }), error => {
+      assert.match(error.message, /填入未完成，占位框已保留，新增图片已移除/);
+      assert.ok(error.message.includes(`WPS 未能按占位框尺寸设置图片（预期 300.00 × 200.00 磅，实测 ${readback} 磅）`), error.message);
+      assert.deepEqual([error.inserted, error.filled, error.resultUncertain], [false, false, false]);
+      return true;
+    });
+    assert.equal(state.pictures.length, 1);
+    assert.equal(state.pictures[0], original);
+    assert.equal(original.deleted, false);
+    assert.equal(state.text, '前文\uFFFC后文\r');
+    assert.deepEqual(parsePlaceholderMarker(original.altText), { name: '脚手架搭设' });
+    assert.deepEqual(state.calls.filter(call => call.delete).map(call => call.delete), ['new']);
+  }
+});
+
+test('换图：宽度偏差 1 磅以内且高度在容差内时成功', () => {
+  // 新图原始尺寸 800 × 450；宽度回读 239.5，高度回读 135.5（期望 134.72，偏差小于 1.34 磅）。
+  const quantize = (value, kind) => (kind === 'Width' ? value - 0.5 : value + 0.5);
+  const { state } = replacementHost({ quantize });
+  const original = state.pictures[0];
+  const result = replacePicture(asset, captureReplacementTarget());
+  assert.equal(result.replaced, true);
+  assert.ok(Math.abs(result.width - 239.5) < 1e-9 && Math.abs(result.height - 135.5) < 1e-9);
+  assert.equal(original.deleted, true);
+  assert.equal(state.pictures.length, 1);
+  assert.equal(state.pictures[0].original, false);
+});
+
+test('换图：宽度偏差超过 1 磅时中止并保留原图，报错带读数', () => {
+  const { state } = replacementHost({ quantize: (value, kind) => (kind === 'Width' ? value - 1.5 : value) });
+  const original = state.pictures[0];
+  assert.throws(() => replacePicture(asset, captureReplacementTarget()), error => {
+    assert.match(error.message, /WPS 未能按原宽度等比例调整新图片（预期 240\.00 × [\d.]+ 磅，实测 238\.50 × [\d.]+ 磅）/);
+    assert.match(error.message, /原图已保留，新增图片已移除/);
+    assert.equal(error.replaced, false);
+    return true;
+  });
+  assert.equal(state.pictures.length, 1);
+  assert.equal(state.pictures[0], original);
+  assert.equal(original.deleted, false);
+  assert.equal(state.text, '前文\uFFFC后文\r');
+});
+
+test('换图：高度偏差超出容差时中止并保留原图', () => {
+  const { state } = replacementHost({ quantize: (value, kind) => (kind === 'Height' ? value + 3 : value) });
+  const original = state.pictures[0];
+  assert.throws(() => replacePicture(asset, captureReplacementTarget()), error => {
+    assert.match(error.message, /WPS 未能按原宽度等比例调整新图片（预期 240\.00 × 135\.00 磅，实测 240\.00 × 138\.00 磅）/);
+    assert.equal(error.replaced, false);
+    assert.equal(error.resultUncertain, false);
+    return true;
+  });
+  assert.equal(state.pictures.length, 1);
+  assert.equal(state.pictures[0], original);
+  assert.equal(original.deleted, false);
 });
