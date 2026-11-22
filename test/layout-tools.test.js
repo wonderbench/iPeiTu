@@ -173,23 +173,23 @@ test('删除空行：删除空白段落，保留表格内、分节符、文档�
 
 test('删除空行：选区只含两个表格之间的空行时，从文档定位两侧仍能识别并保留', () => {
   const state = createHost({
-    paragraphs: [{ text: '表格一', inTable: true }, '', { text: '表格二', inTable: true }, '', '结尾'],
+    paragraphs: [{ text: '表格一\r', inTable: true }, '\r', { text: '表格二\r', inTable: true }, '\r', '结尾\r'],
     selected: { paragraphs: [1] },
   });
   const result = runLayoutOperation('deleteEmptyLines');
-  assert.deepEqual(state.paragraphs.map(item => item.text), ['表格一', '', '表格二', '', '结尾']);
+  assert.deepEqual(state.paragraphs.map(item => item.text), ['表格一\r', '\r', '表格二\r', '\r', '结尾\r']);
   assert.deepEqual([result.count, result.skipped], [0, 1]);
   assert.equal(result.message, '删除空行：没有需要处理的内容；表格之间的空行保留 1 处');
 });
 
 test('删除空行：锚定浮动对象或无法确认的空行保留并单独计数，普通空行照常删除', () => {
   const state = createHost({ paragraphs: [
-    '正文', { text: '', shapes: 1 }, { text: '', shapeError: true }, '',
-    { text: '表格一', inTable: true }, '', { text: '表格二', inTable: true },
-    { text: '', shapes: 2 }, '结尾', '',
+    '正文\r', { text: '\r', shapes: 1 }, { text: '\r', shapeError: true }, '\r',
+    { text: '表格一\r', inTable: true }, '\r', { text: '表格二\r', inTable: true },
+    { text: '\r', shapes: 2 }, '结尾\r', '\r',
   ] });
   const result = runLayoutOperation('deleteEmptyLines');
-  assert.deepEqual(state.paragraphs.map(item => item.text), ['正文', '', '', '表格一', '', '表格二', '', '结尾', '']);
+  assert.deepEqual(state.paragraphs.map(item => item.text), ['正文\r', '\r', '\r', '表格一\r', '\r', '表格二\r', '\r', '结尾\r', '\r']);
   assert.deepEqual(state.paragraphs.map(item => item.shapes ?? 0), [0, 1, 0, 0, 0, 0, 2, 0, 0], '带浮动对象的空段落原样保留');
   assert.deepEqual([result.count, result.skipped, result.extraSkipped], [1, 1, 3]);
   assert.equal(result.message, '删除空行：已处理 1 处；表格之间的空行保留 1 处；锚定浮动对象或无法确认的空行保留 3 处');
