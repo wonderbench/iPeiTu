@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, readdir, rm, stat, writeFile } from 'node:fs/promises';
+import { mkdtemp, readdir, readFile, rm, stat, unlink, utimes, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import sharp from 'sharp';
@@ -25,7 +25,7 @@ test('占位图按磅值换算像素，保存在图库目录内并复用缓存',
   const before = await stat(first.path);
   const again = await placeholders.create({ name: '脚手架搭设', widthPt: 340.2, heightPt: 255.1 });
   assert.equal(again.path, first.path);
-  assert.equal((await stat(again.path)).mtimeMs, before.mtimeMs, '相同框复用缓存，不重写文件');
+  assert.equal((await stat(again.path)).ino, before.ino, '相同框复用缓存，不重写文件');
   const other = await placeholders.create({ name: '模板安装', widthPt: 340.2, heightPt: 255.1 });
   assert.notEqual(other.path, first.path);
   assert.deepEqual((await readdir(path.join(root, 'placeholders'))).filter(name => !name.endsWith('.png')), [], '不留临时文件');
@@ -41,6 +41,43 @@ test('损坏的缓存会重新生成；XML 特殊字符和超长框名仍生成�
   assert.equal((await sharp(rebuilt.path).metadata()).width, 133);
   const long = await placeholders.create({ name: '很长的框名'.repeat(20), widthPt: MIN_BOX_PT, heightPt: MIN_BOX_PT });
   assert.equal((await sharp(long.path).metadata()).height, 19);
+});
+
+const PAST = new Date('2020-01-02T03:04:05.000Z');
+
+test('占位图缓存命中时不重写文件，只把修改时间刷新到现在', async t => {
+  const placeholders = new Placeholders(await temporaryLibrary(t));
+  const box = { name: '基础施工', widthPt: 200, heightPt: 150 };
+  const first = await placeholders.create(box);
+  const content = await readFile(first.path);
+  await utimes(first.path, PAST, PAST);
+  const before = await stat(first.path);
+  assert.equal(before.mtimeMs, PAST.getTime());
+  const again = await placeholders.create(box);
+  const after = await stat(again.path);
+  assert.equal(again.path, first.path);
+  assert.equal(after.ino, before.ino);
+  assert.deepEqual(await readFile(again.path), content);
+  assert.ok(after.mtimeMs > Date.now() - 60_000, '命中后修改时间更新为当前时间');
+});
+
+test('占位图命中后文件已被清理时重新生成', async t => {
+  const placeholders = new Placeholders(await temporaryLibrary(t));
+  const box = { name: '基础施工', widthPt: 200, heightPt: 150 };
+  const first = await placeholders.create(box);
+  // 校验通过后、刷新时间前文件被删除。
+  const validCache = placeholders.validCache.bind(placeholders);
+  let removeAfterCheck = true;
+  t.mock.method(placeholders, 'validCache', async (...args) => {
+    const valid = await validCache(...args);
+    if (removeAfterCheck) { removeAfterCheck = false; await unlink(args[0]); }
+    return valid;
+  });
+  const rebuilt = await placeholders.create(box);
+  assert.equal(removeAfterCheck, false);
+  assert.equal(rebuilt.path, first.path);
+  const metadata = await sharp(rebuilt.path).metadata();
+  assert.deepEqual([metadata.format, metadata.width, metadata.height], ['png', first.width, first.height]);
 });
 
 test('占位框输入只接受框名与限定范围内的宽高', () => {

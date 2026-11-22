@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile, writeFile, rm, mkdir, rename, symlink, readdir } from 'node:fs/promises';
+import { mkdtemp, readFile, writeFile, rm, mkdir, rename, symlink, readdir, stat, unlink, utimes } from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
 import sharp from 'sharp';
@@ -164,6 +164,49 @@ test('cache hits across reopen avoid encoding; damaged and empty caches are expl
   }
   assert.equal(warnings.mock.calls.length, 2);
   assert.equal((await readdir(path.dirname(first.path))).some(name => name.endsWith('.tmp')), false);
+});
+
+const PAST = new Date('2020-01-02T03:04:05.000Z');
+
+test('a cache hit refreshes the modification time without re-encoding or rewriting the file', async t => {
+  const { library } = await setup(t);
+  const { id } = await add(library, { width: 801, height: 601 });
+  const first = await library.insertion(id, 'balanced');
+  const content = await readFile(first.path);
+  await utimes(first.path, PAST, PAST);
+  const before = await stat(first.path);
+  assert.equal(before.mtimeMs, PAST.getTime());
+  const render = t.mock.method(library.quality, 'render', () => { throw new Error('缓存命中不应编码'); });
+  assert.deepEqual(await library.insertion(id, 'balanced'), first);
+  render.mock.restore();
+  const after = await stat(first.path);
+  assert.equal(after.ino, before.ino);
+  assert.deepEqual(await readFile(first.path), content);
+  assert.ok(after.mtimeMs > Date.now() - 60_000, '命中后修改时间更新为当前时间');
+});
+
+test('a cache removed between validation and the time refresh is rebuilt without warnings', async t => {
+  const { library } = await setup(t);
+  const { id } = await add(library, { width: 801, height: 601 });
+  const first = await library.insertion(id, 'balanced');
+  // 读取与校验通过后、刷新时间前文件被删除。
+  const validCache = library.quality.validCache.bind(library.quality);
+  let removeAfterCheck = true;
+  t.mock.method(library.quality, 'validCache', async (...args) => {
+    const valid = await validCache(...args);
+    if (removeAfterCheck) { removeAfterCheck = false; await unlink(first.path); }
+    return valid;
+  });
+  const render = library.quality.render.bind(library.quality);
+  let renders = 0;
+  t.mock.method(library.quality, 'render', async (...args) => { renders++; return render(...args); });
+  const warnings = t.mock.method(console, 'warn', () => {});
+  const rebuilt = await library.insertion(id, 'balanced');
+  assert.equal(removeAfterCheck, false);
+  assert.equal(renders, 1, '按未命中重新生成');
+  assert.deepEqual({ ...rebuilt, bytes: 0 }, { ...first, bytes: 0 }, '同一路径、同样的尺寸与格式');
+  assert.equal(rebuilt.bytes, (await readFile(rebuilt.path)).length);
+  assert.equal(warnings.mock.calls.length, 0, '被清理不是缓存损坏，不告警');
 });
 
 test('shared work is bounded, stays outside library mutation serialization, and rechecks trash after generation', async t => {

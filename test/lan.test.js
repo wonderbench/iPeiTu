@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
-import { access, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { access, mkdir, mkdtemp, readFile, rm, stat, unlink, utimes, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import sharp from 'sharp';
@@ -78,6 +78,7 @@ const jsonRequest = (method, value) => ({ method, headers: { 'content-type': 'ap
 const ASSET = 'a'.repeat(64);
 const SNIPPET = randomUUID();
 const REMOTE_DENIED = '局域网客户端不能使用该接口';
+const PAST = new Date('2020-01-02T03:04:05.000Z');
 
 // 白名单每一项的示例请求；白名单新增一项而这里没有对应示例时，清单一致性测试会失败。
 const remoteSamples = [
@@ -268,6 +269,9 @@ test('authentication failures are logged at most once per address per window', (
   assert.equal(lines.length, 1006);
 
   assert.throws(() => new AuthFailureLog({ windowMs: 0 }), /正数/);
+  for (const windowMs of [Infinity, -Infinity, NaN, '60000', -1]) {
+    assert.throws(() => new AuthFailureLog({ windowMs }), /有限正数/, `windowMs=${String(windowMs)} 应被拒绝`);
+  }
   assert.throws(() => new AuthFailureLog({ maxAddresses: 0 }), /正数/);
 });
 
@@ -351,7 +355,29 @@ test('a client relays the library, caches insertion files and uploads folder imp
   const upstreamInsertion = await upstream.library.insertion(firstId, 'original');
   assert.deepEqual(await readFile(response.json.path), await readFile(upstreamInsertion.path));
   assert.equal(response.json.name, '基坑.png');
-  assert.equal((await call(relay.base, `/api/assets/${firstId}/insertion?profile=original`)).json.path, response.json.path, '再次插入复用缓存');
+  const cachedPath = response.json.path;
+  const cachedBytes = await readFile(cachedPath);
+  await utimes(cachedPath, PAST, PAST);
+  const beforeHit = await stat(cachedPath);
+  assert.equal(beforeHit.mtimeMs, PAST.getTime());
+  assert.equal((await call(relay.base, `/api/assets/${firstId}/insertion?profile=original`)).json.path, cachedPath, '再次插入复用缓存');
+  const afterHit = await stat(cachedPath);
+  assert.equal(afterHit.ino, beforeHit.ino, '复用缓存不重新下载写入');
+  assert.deepEqual(await readFile(cachedPath), cachedBytes);
+  assert.ok(afterHit.mtimeMs > Date.now() - 60_000, '命中后修改时间更新为当前时间');
+  // 哈希核对通过后、刷新时间前缓存被清理：重新下载，不把 ENOENT 返回给任务窗格。
+  const cachedCheck = relay.lan.cached.bind(relay.lan);
+  let removeAfterCheck = true;
+  t.mock.method(relay.lan, 'cached', async (...args) => {
+    const hit = await cachedCheck(...args);
+    if (removeAfterCheck) { removeAfterCheck = false; await unlink(args[0]); }
+    return hit;
+  });
+  const redownloaded = await call(relay.base, `/api/assets/${firstId}/insertion?profile=original`);
+  assert.equal(removeAfterCheck, false);
+  assert.equal(redownloaded.status, 200, redownloaded.json?.error);
+  assert.equal(redownloaded.json.path, cachedPath);
+  assert.deepEqual(await readFile(cachedPath), cachedBytes, '重新下载的内容与服务器一致');
   response = await call(relay.base, `/api/assets/${firstId}/fit?mode=cover&widthPt=144&heightPt=72`);
   assert.equal(response.status, 200, response.json?.error);
   assert.equal(path.dirname(response.json.path), cache);

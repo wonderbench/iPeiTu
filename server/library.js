@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { mkdir, readFile, readdir, writeFile, rename, lstat, opendir, open, stat, realpath } from 'node:fs/promises';
+import { mkdir, readFile, readdir, writeFile, rename, lstat, opendir, open, stat, realpath, unlink } from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
 import sharp from 'sharp';
@@ -166,10 +166,25 @@ function safeName(name) {
   return basename;
 }
 
+// 先写临时文件再重命名替换。失败时删除临时文件并照常抛出原错误；
+// 临时文件本身删不掉（如被占用）时告警，留给缓存清理按 1 小时规则处理，不覆盖原错误。
+export async function writeReplacing(temporary, filename, content, { rename: move = rename } = {}) {
+  try {
+    await writeFile(temporary, content, { flag: 'wx' });
+    await move(temporary, filename);
+  } catch (error) {
+    // EEXIST 说明同名文件不是本次创建的，不能删除。
+    if (error.code !== 'EEXIST') {
+      try { await unlink(temporary); } catch (cleanup) {
+        if (cleanup.code !== 'ENOENT') console.warn('iPeiTu 临时文件未能删除，将由定期清理处理:', temporary, cleanup);
+      }
+    }
+    throw error;
+  }
+}
+
 async function replaceFile(filename, content) {
-  const temporary = `${filename}.${randomUUID()}.tmp`;
-  await writeFile(temporary, content, { flag: 'wx' });
-  await rename(temporary, filename);
+  await writeReplacing(`${filename}.${randomUUID()}.tmp`, filename, content);
 }
 
 export class Library {
@@ -244,8 +259,7 @@ export class Library {
 
   async persist(assets) {
     const temporary = path.join(this.directory, `index-${randomUUID()}.tmp`);
-    await writeFile(temporary, `${JSON.stringify({ version: 3, assets }, null, 2)}\n`, { flag: 'wx' });
-    await rename(temporary, path.join(this.directory, 'index.json'));
+    await writeReplacing(temporary, path.join(this.directory, 'index.json'), `${JSON.stringify({ version: 3, assets }, null, 2)}\n`);
     this.assets = assets;
   }
 
@@ -490,6 +504,20 @@ export class Library {
     name = safeName(name);
     categories = metadataList(categories, 'categories');
     if (!buffer.length || buffer.length > MAX_IMAGE_BYTES) throw new LibraryError('单张图片须大于 0 字节且不超过 32 MB', 413);
+    const id = createHash('sha256').update(buffer).digest('hex');
+    const known = this.assets.find(asset => asset.id === id);
+    // 内容哈希相同即字节完全相同，首次导入时已解码校验过；受管文件齐全时只合并元数据，不解码也不重写文件。
+    if (known && await this.managedFilesPresent(known, buffer)) {
+      const restoring = known.deletedAt !== null;
+      const aliases = restoring ? known.aliases
+        : mergeMetadata(known.aliases, matchKey(known.name) === matchKey(name) ? [] : [name], 'aliases');
+      const mergedCategories = restoring ? known.categories : mergeMetadata(known.categories, categories, 'categories');
+      if (restoring || aliases.length !== known.aliases.length || mergedCategories.length !== known.categories.length) {
+        const updated = { ...known, aliases, categories: mergedCategories, deletedAt: null };
+        await this.persist(this.assets.map(asset => asset.id === id ? updated : asset));
+      }
+      return restoring ? 'restored' : 'duplicates';
+    }
     const image = sharp(buffer, { limitInputPixels: MAX_IMAGE_PIXELS, failOn: 'warning' });
     let metadata;
     let thumbnail;
@@ -503,7 +531,6 @@ export class Library {
       if (error instanceof LibraryError) throw error;
       throw new LibraryError(`无法读取图片：仅支持 JPEG、PNG、WebP，单图不超过 6400 万像素；BMP 请先转换为 PNG。${error.message}`);
     }
-    const id = createHash('sha256').update(buffer).digest('hex');
     const normalized = metadata.format === 'webp' || (metadata.orientation >= 2 && metadata.orientation <= 8);
     const existing = this.assets.find(asset => asset.id === id);
     if (existing) {
@@ -525,6 +552,26 @@ export class Library {
       width: rotated ? metadata.height : metadata.width, height: rotated ? metadata.width : metadata.height };
     await this.persist([...this.assets, asset]);
     return 'imported';
+  }
+
+  // 重复导入时判断能否跳过重写：原图、缩略图与（需要时的）插入副本都是非空普通文件，且原图与导入内容逐字节相同。
+  // 缩略图与插入副本不解码校验，只确认存在且非空。
+  // 旧索引中 normalized 未记录时无法判断是否需要插入副本，返回 false，走完整导入补记该字段。
+  async managedFilesPresent(asset, buffer) {
+    if (typeof asset.normalized !== 'boolean') return false;
+    const original = path.join(this.directory, 'images', `${asset.id}.${asset.format}`);
+    const files = [original, path.join(this.directory, 'thumbnails', `${asset.id}.jpeg`)];
+    if (asset.normalized || asset.format === 'webp') files.push(path.join(this.directory, 'insertion', `${asset.id}.png`));
+    try {
+      for (const filename of files) {
+        const details = await lstat(filename);
+        if (!details.isFile() || details.size <= 0) return false;
+      }
+      return (await readFile(original)).equals(buffer);
+    } catch (error) {
+      if (error.code === 'ENOENT' || error.code === 'ENOTDIR') return false;
+      throw error;
+    }
   }
 
   async writeImages(id, format, buffer, thumbnail, image, normalized) {

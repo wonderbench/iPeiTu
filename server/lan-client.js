@@ -4,6 +4,7 @@ import path from 'node:path';
 import { ImportJobs } from './import-jobs.js';
 import { LibraryError, MAX_IMAGE_BYTES, clientIdPattern } from './library.js';
 import { readBody } from './request-body.js';
+import { touchCache } from './cache-prune.js';
 
 // 客户端连接局域网图库：本机服务保存服务器地址与密钥，把图库与知识库请求转发过去；
 // 插图文件下载到本机缓存后再交给 WPS，目录导入在本机读取后逐张上传。
@@ -278,7 +279,8 @@ export class LanClient {
     const details = await lstat(this.cacheDirectory);
     if (!details.isDirectory() || details.isSymbolicLink()) throw new LibraryError('局域网缓存目录类型无效，请检查图库目录', 500);
     const target = path.join(this.cacheDirectory, `${expected}.${result.format === 'png' ? 'png' : 'jpg'}`);
-    if (!(await this.cached(target, expected))) {
+    // 哈希相符后刷新修改时间；刷新时文件已被缓存清理删除则按未命中重新下载。
+    if (!(await this.cached(target, expected)) || !(await touchCache(target))) {
       const response = await this.upstream(file, { timeout: 120_000 });
       if (!response.ok) {
         let message = `局域网图库下载失败（${response.status}）`;

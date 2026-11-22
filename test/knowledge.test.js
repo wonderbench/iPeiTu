@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile, writeFile, rm } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, readdir, writeFile, rm } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { Knowledge, KNOWLEDGE_CATEGORIES, MAX_SNIPPETS } from '../server/knowledge.js';
@@ -140,4 +140,22 @@ test('damaged or unknown knowledge files disable only the knowledge base and sta
     await assert.rejects(knowledge.setTrash(valid.id, { trashed: true }), { status: 500 });
     assert.equal(await readFile(file, 'utf8'), content, '原文件未修改');
   }
+});
+
+test('a failed knowledge.json replacement leaves no temporary file and keeps the in-memory snippets', async t => {
+  const directory = await temporary(t);
+  const knowledge = await Knowledge.open(directory);
+  const saved = await knowledge.create(input());
+  const file = path.join(directory, 'knowledge.json');
+  const original = await readFile(file);
+  await rm(file);
+  // 目标是非空目录时，Linux 与 Windows 上的重命名都会失败。
+  await mkdir(file);
+  await writeFile(path.join(file, '占位.txt'), 'x');
+  await assert.rejects(knowledge.create(input({ title: '不应保存' })));
+  assert.deepEqual(knowledge.snippets, [saved]);
+  assert.deepEqual((await readdir(directory)).filter(name => name.endsWith('.tmp')), []);
+  await rm(file, { recursive: true });
+  await writeFile(file, original);
+  assert.equal((await knowledge.create(input({ title: '恢复后保存' }))).title, '恢复后保存');
 });

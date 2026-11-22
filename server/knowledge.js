@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
-import { mkdir, readFile, writeFile, rename } from 'node:fs/promises';
+import { mkdir, readFile } from 'node:fs/promises';
 import path from 'node:path';
-import { LibraryError } from './library.js';
+import { LibraryError, writeReplacing } from './library.js';
 
 // 标书知识库：通用文字片段，保存在图库目录的 knowledge.json。分类在此维护，正文由用户自行录入。
 export const KNOWLEDGE_CATEGORIES = Object.freeze([
@@ -139,9 +139,7 @@ export class Knowledge {
   }
 
   async persist(snippets) {
-    const temporary = `${this.file}.${randomUUID()}.tmp`;
-    await writeFile(temporary, `${JSON.stringify({ version: 1, snippets }, null, 2)}\n`, { flag: 'wx' });
-    await rename(temporary, this.file);
+    await writeReplacing(`${this.file}.${randomUUID()}.tmp`, this.file, `${JSON.stringify({ version: 1, snippets }, null, 2)}\n`);
     this.snippets = snippets;
   }
 
