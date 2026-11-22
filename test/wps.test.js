@@ -23,6 +23,16 @@ function createHost(options = {}) {
   state.paragraphs = state.text.split('\r').map(() => ({ style: options.style ?? '标书正文', format: { ...originalFormat }, numbered: Boolean(options.numbered) }));
   const page = { PageWidth: 600, LeftMargin: 60, RightMargin: 60, PageHeight: 800, TopMargin: 72, BottomMargin: 72, ...options.page };
   const cell = { Width: 220, LeftPadding: 10, RightPadding: 10, Height: 180, HeightRule: 2, TopPadding: 5, BottomPadding: 5, ...options.cell };
+  // options.textColumns：{ Count, Spacing, widths: [...] }，或 Error 表示读取 TextColumns 时抛错；缺省时不提供该属性。
+  if (options.textColumns) {
+    Object.defineProperty(page, 'TextColumns', {
+      get() {
+        if (options.textColumns instanceof Error) throw options.textColumns;
+        const { Count, Spacing, widths = [] } = options.textColumns;
+        return { Count, Spacing, Item: index => ({ get Width() { return widths[index - 1]; } }) };
+      },
+    });
+  }
   function makePicture(position, initialWidth, initialHeight, original = false, type = 3) {
     let width = initialWidth;
     let height = initialHeight;
@@ -1240,4 +1250,75 @@ test('换图：高度偏差超出容差时中止并保留原图', () => {
   assert.equal(state.pictures.length, 1);
   assert.equal(state.pictures[0], original);
   assert.equal(original.deleted, false);
+});
+
+test('分栏：自适应插图不超过栏宽，各栏宽度不等时取最小栏宽', () => {
+  createHost({ textColumns: { Count: 2, Spacing: 20, widths: [220, 220] } });
+  assert.equal(insertPicture(asset).width, 220);
+  createHost({ textColumns: { Count: 3, Spacing: 20, widths: [230, 150, 180] } });
+  assert.equal(insertPicture(asset).width, 150, '光标所在栏未知，取最小栏宽');
+  createHost({ textColumns: { Count: 1, Spacing: 20, widths: [100] } });
+  assert.equal(insertPicture(asset).width, 480, '一栏按版心宽度');
+});
+
+test('分栏：逐栏宽度读不到有效数值时按等宽估算，栏间距读不到按 0 计', () => {
+  createHost({ textColumns: { Count: 2, Spacing: 20, widths: [] } });
+  assert.equal(insertPicture(asset).width, 230, '(480 - 20) / 2');
+  createHost({ textColumns: { Count: 3, Spacing: 30, widths: [200, 9999999, 200] } });
+  assert.equal(insertPicture(asset).width, 140, '(480 - 60) / 3，不确定宽度不参与取小');
+  createHost({ textColumns: { Count: 2, widths: [0, 200] } });
+  assert.equal(insertPicture(asset).width, 240, '栏间距缺失按 0 计');
+});
+
+test('读取 TextColumns 抛错或栏数无效时按一栏处理', () => {
+  createHost({ textColumns: new Error('TextColumns unavailable') });
+  assert.equal(insertPicture(asset).width, 480);
+  for (const Count of [0, -2, 2.5, undefined, '2']) {
+    createHost({ textColumns: { Count, Spacing: 20, widths: [100, 100] } });
+    assert.equal(insertPicture(asset).width, 480, String(Count));
+  }
+});
+
+test('分栏：整行宽占位框取栏宽', () => {
+  createHost({ textColumns: { Count: 2, Spacing: 20, widths: [200, 220] } });
+  const line = capturePlaceholderTarget(box({ size: 'line' }));
+  assert.deepEqual([line.widthPt, line.heightPt], [200, 150]);
+  const fixed = capturePlaceholderTarget(box({ widthCm: 30, heightCm: 20 }));
+  assert.deepEqual([fixed.widthPt, fixed.heightPt], [200, 133.3], '固定尺寸超出栏宽时等比缩小');
+});
+
+test('合并单元格（宽度 9999999）下自适应插图中止，文档不变并给出明确提示', () => {
+  const { state } = createHost({ inTable: true, cell: { Width: 9999999 } });
+  const before = state.text;
+  assert.throws(() => insertPicture(asset), /无法读取当前单元格的宽度（常见于合并单元格），请在排版设置中改用固定宽度后重试/);
+  assert.equal(state.text, before);
+  assert.equal(state.calls.length, 0);
+  assert.equal(state.pictures.length, 0);
+  assert.deepEqual([state.undoStarted, state.undoEnded], [0, 0]);
+});
+
+test('合并单元格下固定宽度插图按指定宽度插入，上限为版心宽度', () => {
+  createHost({ inTable: true, cell: { Width: 9999999 }, pictureWidth: 120, pictureHeight: 60 });
+  const fixed = insertPicture(asset, undefined, { widthMode: 'fixed', widthCm: 8 });
+  assert.ok(Math.abs(fixed.width - 8 * 72 / 2.54) < 1e-8);
+  createHost({ inTable: true, cell: { Width: 9999999 }, pictureWidth: 120, pictureHeight: 60 });
+  assert.equal(insertPicture(asset, undefined, { widthMode: 'fixed', widthCm: 20 }).width, 480);
+});
+
+test('合并单元格下占位框选整行宽或填满单元格时中止，固定尺寸照常放置', () => {
+  const { state } = createHost({ inTable: true, cell: { Width: 9999999 } });
+  for (const size of ['line', 'cell']) {
+    assert.throws(() => capturePlaceholderTarget(box({ size })), /无法放置占位框：无法读取当前单元格的宽度（常见于合并单元格），请改选固定尺寸/);
+  }
+  assert.equal(state.calls.length, 0);
+  const fixed = capturePlaceholderTarget(box());
+  assert.deepEqual([fixed.widthPt, fixed.heightPt], [340.1, 255.1]);
+  const wide = capturePlaceholderTarget(box({ widthCm: 30, heightCm: 20 }));
+  assert.deepEqual([wide.widthPt, wide.heightPt], [480, 320], '上限为版心宽度');
+});
+
+test('单元格高度不确定（9999999）时填满单元格按 4:3 取高，不缩放', () => {
+  createHost({ inTable: true, cell: { Height: 9999999, HeightRule: 1 } });
+  const target = capturePlaceholderTarget(box({ size: 'cell' }));
+  assert.deepEqual([target.widthPt, target.heightPt], [200, 150]);
 });
