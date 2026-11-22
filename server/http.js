@@ -37,9 +37,63 @@ function validateParameters(parameters, allowed, repeatable = []) {
 const loopbackAddresses = new Set(['127.0.0.1', '::1', '::ffff:127.0.0.1']);
 const loopbackHosts = new Set(['127.0.0.1', 'localhost', '::1']);
 
-// 远程请求（局域网客户端的本机服务转发）可用的接口；静态页面、目录导入、占位图与连接设置只供本机使用。
-function remoteRoute(pathname) {
-  return pathname === '/api/health' || isForwardedPath(pathname);
+// 远程请求（局域网客户端的本机服务转发）可用的接口：按“方法 + 完整路径”显式登记，未登记的一律拒绝。
+// 新增接口默认不对远程开放；确需开放时在此显式登记，并在 test/lan.test.js 的清单一致性测试中补上示例请求。
+// 静态页面、目录导入、占位图、连接设置与任何永久删除操作只供本机使用。
+// 路径与下面路由分支使用同一个 url.pathname，正则必须首尾锚定，素材与知识库编号格式与路由一致。
+export const remoteRoutes = Object.freeze([
+  ['GET', /^\/api\/health$/],
+  ['GET', /^\/api\/library$/],
+  ['POST', /^\/api\/import-file$/],
+  ['POST', /^\/api\/assets\/batch$/],
+  ['PATCH', /^\/api\/assets\/[a-f0-9]{64}$/],
+  ['PATCH', /^\/api\/assets\/[a-f0-9]{64}\/favorite$/],
+  ['POST', /^\/api\/assets\/[a-f0-9]{64}\/recent$/],
+  ['PATCH', /^\/api\/assets\/[a-f0-9]{64}\/trash$/],
+  ['GET', /^\/api\/assets\/[a-f0-9]{64}\/fit$/],
+  ['GET', /^\/api\/assets\/[a-f0-9]{64}\/insertion$/],
+  ['GET', /^\/api\/assets\/[a-f0-9]{64}\/fit\/file$/],
+  ['GET', /^\/api\/assets\/[a-f0-9]{64}\/insertion\/file$/],
+  ['GET', /^\/api\/assets\/[a-f0-9]{64}\/(image|thumbnail)$/],
+  ['GET', /^\/api\/knowledge$/],
+  ['POST', /^\/api\/knowledge$/],
+  ['PATCH', knowledgePath],
+  ['PATCH', knowledgeTrashPath],
+].map(([method, pattern]) => Object.freeze({ method, pattern })));
+
+function remoteRoute(method, pathname) {
+  return remoteRoutes.some(route => route.method === method && route.pattern.test(pathname));
+}
+
+// 认证失败日志按来源地址限频：同一地址在一个窗口内最多记录一行，下一次记录时带上期间未记录的次数。
+// 记录的地址数有上限，超出时淘汰最早记录的地址，服务器被扫描时内存不会无限增长。
+// 默认使用单调时钟，系统时间回拨不会让某个地址长期不被记录；测试可注入 now 与 warn。
+export class AuthFailureLog {
+  constructor({ windowMs = 60_000, maxAddresses = 256, now = () => performance.now(), warn = message => console.warn(message) } = {}) {
+    if (!(windowMs > 0) || !Number.isSafeInteger(maxAddresses) || maxAddresses < 1) throw new Error('认证失败日志的窗口与地址上限必须为正数');
+    this.windowMs = windowMs;
+    this.maxAddresses = maxAddresses;
+    this.now = now;
+    this.warn = warn;
+    this.entries = new Map();
+  }
+
+  record(address) {
+    const key = String(address ?? '未知地址');
+    const time = this.now();
+    const entry = this.entries.get(key);
+    if (entry && time - entry.loggedAt < this.windowMs) {
+      entry.suppressed += 1;
+      return;
+    }
+    const suppressed = entry?.suppressed ?? 0;
+    // 先删除再写入，使 Map 的插入顺序即记录时间顺序，淘汰时取第一个即最早记录的地址。
+    this.entries.delete(key);
+    this.entries.set(key, { loggedAt: time, suppressed: 0 });
+    while (this.entries.size > this.maxAddresses) this.entries.delete(this.entries.keys().next().value);
+    const extra = suppressed ? `；上次记录后另有 ${suppressed} 次同类拒绝未逐条记录` : '';
+    this.warn(`iPeiTu 局域网访问被拒绝：${key} 未提供正确的访问密钥${extra}`);
+  }
 }
 
 function sameKey(actual, expected) {
@@ -48,10 +102,10 @@ function sameKey(actual, expected) {
 }
 
 // 连接来自回环地址且 Host 是本机地址时为本机请求，沿用原有检查；其余为远程请求，只在局域网模式下凭密钥接受。
-function validateRequest(request, port, accessKey) {
+function validateRequest(request, port, accessKey, authLog) {
   const allowedHosts = new Set([`127.0.0.1:${port}`, `localhost:${port}`]);
   if (!loopbackAddresses.has(request.socket.remoteAddress) || !allowedHosts.has(request.headers.host)) {
-    return validateRemote(request, accessKey);
+    return validateRemote(request, accessKey, authLog);
   }
   const origin = `http://${request.headers.host}`;
   if (request.headers.origin && request.headers.origin !== origin) throw new LibraryError('不接受其他网站的请求', 403);
@@ -66,7 +120,7 @@ function validateRequest(request, port, accessKey) {
   return { origin, remote: false, client: null };
 }
 
-function validateRemote(request, accessKey) {
+function validateRemote(request, accessKey, authLog) {
   if (!accessKey) throw new LibraryError('只接受本机地址请求', 403);
   // 转发请求由客户端本机服务发出，不带浏览器的来源标头；带这些标头的是浏览器直接访问。
   if (request.headers.origin || request.headers['sec-fetch-site'] || request.headers.referer) {
@@ -74,7 +128,7 @@ function validateRemote(request, accessKey) {
   }
   const [scheme, token] = (request.headers.authorization ?? '').split(' ');
   if (scheme !== 'Bearer' || !token || !sameKey(token, accessKey)) {
-    console.warn(`iPeiTu 局域网访问被拒绝：${request.socket.remoteAddress} 未提供正确的访问密钥`);
+    authLog.record(request.socket.remoteAddress);
     throw new LibraryError('访问密钥不正确', 401);
   }
   const client = request.headers['x-ipeitu-client'];
@@ -95,8 +149,9 @@ async function downloadable(result, file) {
   return { ...rest, bytes: content.length, sha256: createHash('sha256').update(content).digest('hex'), file };
 }
 
-export async function createServer({ dataDirectory, publicDirectory = defaultPublicDirectory, accessKey = null } = {}) {
+export async function createServer({ dataDirectory, publicDirectory = defaultPublicDirectory, accessKey = null, authLog = new AuthFailureLog() } = {}) {
   if (accessKey !== null && !accessKeyPattern.test(accessKey)) throw new Error('局域网访问密钥格式无效，应为 43 位 base64url 字符');
+  if (!(authLog instanceof AuthFailureLog)) throw new Error('authLog 必须是 AuthFailureLog 实例');
   const library = await Library.open(dataDirectory);
   const jobs = new ImportJobs(library);
   const placeholders = new Placeholders(library.directory);
@@ -113,9 +168,9 @@ export async function createServer({ dataDirectory, publicDirectory = defaultPub
     response.setHeader('Cross-Origin-Resource-Policy', 'same-origin');
     response.setHeader('Referrer-Policy', 'same-origin');
     try {
-      const { origin, remote, client } = validateRequest(request, server.address().port, accessKey);
+      const { origin, remote, client } = validateRequest(request, server.address().port, accessKey, authLog);
       const url = new URL(request.url, origin);
-      if (remote && !remoteRoute(url.pathname)) throw new LibraryError('局域网客户端不能使用该接口', 403);
+      if (remote && !remoteRoute(request.method, url.pathname)) throw new LibraryError('局域网客户端不能使用该接口', 403);
       const assetId = url.pathname.split('/')[3];
       if (!remote && lan.active && isForwardedPath(url.pathname)) {
         // 已连接局域网图库：图库与知识库请求转发到服务器，插图文件下载到本机缓存。
