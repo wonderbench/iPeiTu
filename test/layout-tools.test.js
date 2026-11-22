@@ -129,10 +129,38 @@ test('清除空格：删除全角与首尾空格，英文或数字之间保留�
   const apply = text => spaceDeletions(text).reverse().reduce((value, [start, end]) => value.slice(0, start) + value.slice(end), text);
   assert.equal(apply('  A  B  '), 'A B');
   assert.equal(apply('Q235 B'), 'Q235 B');
-  assert.equal(apply('混凝土 C30'), '混凝土C30');
+  assert.equal(apply('混凝土 C30'), '混凝土 C30');
   assert.equal(apply(`${FULL_WIDTH_SPACE}钢筋${FULL_WIDTH_SPACE}绑扎 `), '钢筋绑扎');
   assert.equal(apply(`a${FULL_WIDTH_SPACE} b`), 'a b');
   assert.equal(apply('第一段 \r 第二段'), '第一段\r第二段');
+});
+
+test('清除空格：中文与数字、英文之间保留半角空格，汉字之间、标点旁、首尾和纯全角空格删除', () => {
+  const apply = text => spaceDeletions(text).reverse().reduce((value, [start, end]) => value.slice(0, start) + value.slice(end), text);
+  assert.equal(apply('张三 13800000000'), '张三 13800000000');
+  assert.equal(apply('C30 混凝土'), 'C30 混凝土');
+  assert.equal(apply('2025 年 3 月'), '2025 年 3 月');
+  assert.equal(apply('项目 经理'), '项目经理');
+  assert.equal(apply('张三   138'), '张三 138');
+  assert.equal(apply(`张三${FULL_WIDTH_SPACE}138`), '张三138');
+  assert.equal(apply(`张三${FULL_WIDTH_SPACE} 138`), '张三 138');
+  assert.equal(apply(' 张三 '), '张三');
+  assert.equal(apply('A - B'), 'A-B');
+  assert.equal(apply('（ 3 ）'), '（3）');
+  assert.equal(apply('abc def'), 'abc def');
+  assert.equal(apply('12 34'), '12 34');
+  assert.equal(apply('abc 张三'), 'abc 张三');
+  assert.equal(apply('第一段 \r 第二段 A\rB 1'), '第一段\r第二段 A\rB 1');
+  assert.equal(apply('abc \r 123'), 'abc\r123', '段落标记两侧的空格都删除');
+});
+
+test('清除空格：扩展区汉字（代理对）与数字之间保留空格，下标按 UTF-16 计', () => {
+  const han = String.fromCodePoint(0x20000);
+  assert.equal(han.length, 2);
+  assert.deepEqual(spaceDeletions(`${han} 1`), []);
+  assert.deepEqual(spaceDeletions(`1 ${han}`), []);
+  assert.deepEqual(spaceDeletions(`${han}  1`), [[3, 4]], '保留第一个半角空格，删除其后的空格');
+  assert.deepEqual(spaceDeletions(`${han} ${han}`), [[2, 3]], '汉字之间删除，下标跨过代理对');
 });
 
 test('清除格式只作用于所选内容：段落样式恢复正文，段落与字符格式重置', () => {
@@ -223,9 +251,16 @@ test('清除空格逐个单元格删除，含域代码的单元格跳过并计�
   const state = createHost({ tables: [[' 钢筋 ', 'Q235  B'], ['混凝土 C30', ' 有域 ']] });
   state.cells[3].field = true;
   const result = runLayoutOperation('clearTableSpaces');
-  assert.deepEqual(state.cells.map(cell => cell.text), ['钢筋', 'Q235 B', '混凝土C30', ' 有域 ']);
-  assert.deepEqual([result.count, result.skipped], [4, 1]);
-  assert.equal(result.message, '清除空格：已处理 4 个空格；含域或隐藏文字的单元格未处理 1 处');
+  assert.deepEqual(state.cells.map(cell => cell.text), ['钢筋', 'Q235 B', '混凝土 C30', ' 有域 ']);
+  assert.deepEqual([result.count, result.skipped], [3, 1]);
+  assert.equal(result.message, '清除空格：已处理 3 个空格；含域或隐藏文字的单元格未处理 1 处');
+});
+
+test('清除空格：单元格内中文与数字之间保留一个半角空格，汉字之间删除', () => {
+  const state = createHost({ tables: [['张三  13800000000', '项目 经理', 'C30 混凝土']] });
+  const result = runLayoutOperation('clearTableSpaces');
+  assert.deepEqual(state.cells.map(cell => cell.text), ['张三 13800000000', '项目经理', 'C30 混凝土']);
+  assert.deepEqual([result.count, result.skipped], [2, 0]);
 });
 
 test('一键去色：图片改灰度，图形填充和线条改灰色；浮动图形只在全文时处理', () => {

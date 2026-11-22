@@ -21,6 +21,7 @@ const NO_BREAK_SPACE = String.fromCharCode(0xa0);
 const SPACES = new Set([' ', FULL_WIDTH_SPACE, NO_BREAK_SPACE]);
 const BLANK_PARAGRAPH = new RegExp(`^[ \\t${FULL_WIDTH_SPACE}${NO_BREAK_SPACE}]*\\r$`);
 const LATIN = /[A-Za-z0-9]/;
+const HAN = /\p{Script=Han}/u;
 
 function host() {
   const app = globalThis.Application;
@@ -64,7 +65,15 @@ function grayscale(rgb) {
   return gray + gray * 256 + gray * 65536;
 }
 
-// 删除一个单元格中多余的空格：全角空格和行首尾空格全部删除；两个英文或数字之间保留一个半角空格。
+// 空格两侧的字符：一侧是英文字母或数字，另一侧是英文字母、数字或汉字时，才保留空格。
+function keepsSpace(before, after) {
+  if (!before || !after) return false;
+  return (LATIN.test(before) && (LATIN.test(after) || HAN.test(after))) || (LATIN.test(after) && HAN.test(before));
+}
+
+// 删除一个单元格中多余的空格（返回 UTF-16 下标的 [起, 止) 区间）：每段连续空格整段删除；
+// 只有这段含半角空格、且两侧字符满足“一侧是英文或数字，另一侧是英文、数字或汉字”时，保留第一个半角空格。
+// 汉字与汉字之间、标点符号或段落标记旁、文字首尾的空格全部删除。
 export function spaceDeletions(text) {
   const segments = [];
   let index = 0;
@@ -73,7 +82,13 @@ export function spaceDeletions(text) {
     const start = index;
     while (index < text.length && SPACES.has(text[index])) index++;
     const run = text.slice(start, index);
-    const keep = LATIN.test(text[start - 1] ?? '') && LATIN.test(text[index] ?? '') ? run.indexOf(' ') : -1;
+    // 按码点取相邻字符：前一个若是代理对的低位，连同高位一起取。
+    const low = text.charCodeAt(start - 1);
+    const high = text.charCodeAt(start - 2);
+    const before = start === 0 ? '' : low >= 0xdc00 && low <= 0xdfff && high >= 0xd800 && high <= 0xdbff
+      ? text.slice(start - 2, start) : text[start - 1];
+    const after = index < text.length ? String.fromCodePoint(text.codePointAt(index)) : '';
+    const keep = keepsSpace(before, after) ? run.indexOf(' ') : -1;
     if (keep === -1) segments.push([start, index]);
     else {
       if (keep > 0) segments.push([start, start + keep]);
