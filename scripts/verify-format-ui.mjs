@@ -4,6 +4,16 @@ export async function verifyFormat({ page, base }) {
   async function visibleText(selector, text) {
     await page.waitForFunction(({ selector, text }) => document.querySelector(selector)?.textContent.includes(text), { selector, text });
   }
+  // 作用于全文的批量操作先弹出确认框；answer 为 confirm 或 cancel。
+  const dialog = page.locator('#wholeDocumentDialog');
+  async function clickBatch(selector, label, answer = 'confirm') {
+    await page.locator(selector).click();
+    await dialog.waitFor({ state: 'visible' });
+    assert.equal((await page.locator('#wholeDocumentTitle').textContent()).trim(), `将对全文执行「${label}」`);
+    await dialog.locator(`button[value="${answer}"]`).click();
+    await dialog.waitFor({ state: 'hidden' });
+  }
+  const undoCount = () => page.evaluate(() => window.formatState.undo.length);
   await page.setViewportSize({ width: 320, height: 800 });
   await page.goto(`${base}/format.html`);
   await page.locator('[data-operation]').first().waitFor();
@@ -30,11 +40,13 @@ export async function verifyFormat({ page, base }) {
       get Count() { return state.paragraphs.length; },
       Item: index => {
         const paragraph = state.paragraphs[index - 1];
-        return { Range: { Text: paragraph.text, End: end(paragraph), Information: () => false,
+        return { Range: { Text: paragraph.text, Start: end(paragraph) - paragraph.text.length, End: end(paragraph),
+          Information: () => false, ShapeRange: { Count: 0 },
           Delete() { state.paragraphs.splice(state.paragraphs.indexOf(paragraph), 1); } } };
       },
     };
     const doc = { Name: '排版.docx', ReadOnly: false, ProtectionType: -1,
+      Range: (start, end) => ({ Start: start, End: end, Information: () => false }),
       get Content() { return { Start: 0, End: end(state.paragraphs.at(-1)), Paragraphs: paragraphs, Tables: { Count: 1, Item: () => state.table } }; } };
     window.Application = {
       Documents: { Count: 1 }, ActiveDocument: doc, CentimetersToPoints: value => value * 72 / 2.54,
@@ -44,15 +56,33 @@ export async function verifyFormat({ page, base }) {
     };
     window.dispatchEvent(new Event('focus'));
   });
-  await visibleText('#scopeStatus', '排版.docx · 未选中内容，作用于全文');
+  await visibleText('#scopeStatus', '排版.docx · 首行缩进、居中对齐作用于当前段落，批量排版作用于全文');
   assert.equal(await page.locator('[data-operation="clearFormatting"]').isDisabled(), true, '未选中内容时不能清除格式');
 
-  await page.locator('[data-operation="deleteEmptyLines"]').click();
-  await visibleText('#formatResult', '删除空行：已处理 1 处');
+  // 取消与 Esc 不执行；确认框打开期间选区变化则放弃执行。
+  await clickBatch('[data-operation="removeBorders"]', '去除表格线', 'cancel');
+  await page.locator('[data-operation="removeBorders"]').click();
+  await dialog.waitFor({ state: 'visible' });
+  await page.keyboard.press('Escape');
+  await dialog.waitFor({ state: 'hidden' });
+  assert.equal(await undoCount(), 0, '取消或按 Esc 不执行');
+  assert.equal(await page.locator('#formatResult').isHidden(), true);
   await page.locator('[data-operation="tableFullWidth"]').click();
+  await dialog.waitFor({ state: 'visible' });
+  await page.evaluate(() => { window.Application.Selection.Range.Start = 0; window.Application.Selection.Range.End = 9; });
+  await dialog.locator('button[value="confirm"]').click();
+  await visibleText('#formatResult', '选择范围已变化');
+  assert.equal(await undoCount(), 0, '选区变化后不执行');
+  await page.evaluate(() => { window.Application.Selection.Range.Start = 2; window.Application.Selection.Range.End = 2; window.dispatchEvent(new Event('focus')); });
+  await visibleText('#scopeStatus', '批量排版作用于全文');
+
+  await clickBatch('[data-operation="deleteEmptyLines"]', '删除空行');
+  await visibleText('#formatResult', '删除空行：已处理 1 处');
+  await clickBatch('[data-operation="tableFullWidth"]', '表格满页');
   await visibleText('#formatResult', '表格满页：已处理 1 个表格');
   await page.locator('[data-operation="firstLineIndent"]').click();
   await visibleText('#formatResult', '首行缩进：已处理 1 段');
+  assert.equal(await dialog.isVisible(), false, '首行缩进只改当前段落，不弹确认框');
   const snapshot = () => page.evaluate(() => {
     const { paragraphs, table, cells, current, undo } = window.formatState;
     return {
@@ -71,20 +101,28 @@ export async function verifyFormat({ page, base }) {
   await visibleText('#formatResult', '当前表格宽 10.6 厘米，已填入一栏页面宽度');
   assert.equal(await page.locator('#singleWidth').inputValue(), '10.6');
   await page.locator('#singleWidth').fill('16');
-  await page.locator('#applyTableWidths').click();
+  await clickBatch('#applyTableWidths', '表格宽度');
   await visibleText('#formatResult', '表格宽度：已调整 1 个表格（一栏 1、多栏 0）');
   assert.deepEqual(await page.evaluate(() => JSON.parse(localStorage.getItem('ipeitu.tableWidths.v1'))), { singleCm: 16, multiCm: 7 });
   await page.locator('#multiWidth').fill('0');
-  await page.locator('#applyTableWidths').click();
+  await clickBatch('#applyTableWidths', '表格宽度');
   await visibleText('#formatResult', '1–60 厘米');
   await page.locator('#multiWidth').fill('7');
-  await page.locator('[data-operation="alignTablesCenter"]').click();
+  await clickBatch('[data-operation="alignTablesCenter"]', '表格居中');
   await visibleText('#formatResult', '表格居中：已处理 1 个表格');
   state = await snapshot();
   const target = 16 * 72 / 2.54;
   assert.ok(Math.abs(state.cells[0] + state.cells[1] - target) < 0.05 && Math.abs(state.cells[0] / state.cells[1] - 2) < 0.001, '各列等比缩放到目标宽度');
   assert.deepEqual([state.table.PreferredWidthType, state.table.Alignment], [3, 1]);
   assert.deepEqual(state.undo.slice(3), ['iPeiTu 排版：表格宽度', 'iPeiTu 排版：表格居中'], '无效宽度不产生撤销记录');
+
+  // 有选区时直接执行，不弹确认框。
+  await page.evaluate(() => { window.Application.Selection.Range.Start = 0; window.Application.Selection.Range.End = 9; window.dispatchEvent(new Event('focus')); });
+  await visibleText('#scopeStatus', '作用于所选内容');
+  await page.locator('[data-operation="alignTablesRight"]').click();
+  await visibleText('#formatResult', '表格右对齐：已处理 1 个表格');
+  assert.equal(await dialog.isVisible(), false, '有选区时不弹确认框');
+  assert.equal(await page.evaluate(() => window.formatState.table.Rows.Alignment), 2);
 
   await page.evaluate(() => { window.Application.ActiveDocument.ReadOnly = true; window.dispatchEvent(new Event('focus')); });
   await visibleText('#scopeStatus', '只读');
@@ -95,5 +133,5 @@ export async function verifyFormat({ page, base }) {
     assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth
       && [...document.querySelectorAll('[data-operation]')].every(button => button.getBoundingClientRect().right <= innerWidth)), true, `${width}px 排版工具无横向溢出`);
   }
-  console.log('排版工具 UI 验收通过：十三项入口、浏览器与只读禁用、作用范围提示、删除空行、表格满页、首行缩进、读取与调整表格宽度、表格居中、撤销记录、窄窗格布局。');
+  console.log('排版工具 UI 验收通过：十三项入口、浏览器与只读禁用、作用范围提示、全文批量操作的确认、取消与选区变化、有选区不确认、删除空行、表格满页、首行缩进、读取与调整表格宽度、表格居中、撤销记录、窄窗格布局。');
 }
