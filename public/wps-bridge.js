@@ -63,17 +63,68 @@ export function captureInsertionTarget() {
   }
 }
 
+// WPS/Word 对合并单元格等不确定的宽度、高度返回 9999999（与 layout-tools.js 的 UNDEFINED_WIDTH 一致）。
+const UNDEFINED_SIZE = 9999998;
+const isDefiniteSize = value => Number.isFinite(value) && value > 0 && value < UNDEFINED_SIZE;
+const UNKNOWN_CELL_WIDTH = '无法读取当前单元格的宽度（常见于合并单元格）';
+
+// 版心宽度；两栏及以上的节取栏宽。无法判断光标在哪一栏，取各栏最小宽度。
+// TextColumns 的 Count、Item(i).Width、Spacing 按 Word 对象模型使用：WPS 文档确认 PageSetup.TextColumns 与
+// TextColumns 的 Count、Spacing、Width、EvenlySpaced、Item，TextColumn 单项的 Width 文档页未列出，按 Word 对象模型推断，待实机确认。
+// 返回 estimated: true 表示栏宽是按等宽估算得到，而不是读到的。
+function columnLimit(page, bodyWidth) {
+  let count;
+  let columns;
+  try {
+    columns = page.TextColumns;
+    count = columns.Count;
+  } catch {
+    return { width: bodyWidth, estimated: false }; // 读不到分栏信息时按一栏处理
+  }
+  if (!Number.isInteger(count) || count < 2) return { width: bodyWidth, estimated: false };
+  const widths = [];
+  try {
+    for (let index = 1; index <= count; index++) widths.push(columns.Item(index).Width);
+  } catch {
+    widths.length = 0;
+  }
+  if (widths.length === count && widths.every(isDefiniteSize)) {
+    return { width: Math.min(bodyWidth, ...widths), estimated: false };
+  }
+  let spacing = 0;
+  try {
+    spacing = columns.Spacing;
+  } catch {
+    spacing = 0;
+  }
+  if (!Number.isFinite(spacing) || spacing < 0) spacing = 0;
+  return { width: (bodyWidth - spacing * (count - 1)) / count, estimated: true };
+}
+
+// 返回光标处的可用宽度：limit 为版心或栏宽；单元格内另给 cellWidth（内边距扣除后），
+// 单元格宽度不确定（如合并单元格）时 cellWidth 为 null，由调用方决定如何处理，不再把 9999999 当成数值。
 function availableWidth(range) {
   const page = range.PageSetup;
-  let width = page.PageWidth - page.LeftMargin - page.RightMargin;
-  if (range.Information(WITHIN_TABLE)) {
-    const cell = range.Cells.Item(1);
-    width = Math.min(width, cell.Width - cell.LeftPadding - cell.RightPadding);
-  }
-  if (!Number.isFinite(width) || width <= 0) {
+  const bodyWidth = page.PageWidth - page.LeftMargin - page.RightMargin;
+  if (!Number.isFinite(bodyWidth) || bodyWidth <= 0) {
     throw new Error('当前光标位置没有可用的排版宽度，请移动光标后重试');
   }
-  return width;
+  const column = columnLimit(page, bodyWidth);
+  if (!Number.isFinite(column.width) || column.width <= 0) {
+    throw new Error('当前光标位置没有可用的排版宽度，请移动光标后重试');
+  }
+  const inTable = Boolean(range.Information(WITHIN_TABLE));
+  let cellWidth;
+  if (inTable) {
+    const cell = range.Cells.Item(1);
+    cellWidth = isDefiniteSize(cell.Width) && Number.isFinite(cell.LeftPadding) && Number.isFinite(cell.RightPadding)
+      ? cell.Width - cell.LeftPadding - cell.RightPadding : null;
+    if (cellWidth !== null && cellWidth <= 0) {
+      throw new Error('当前光标位置没有可用的排版宽度，请移动光标后重试');
+    }
+  }
+  const width = cellWidth === undefined || cellWidth === null ? column.width : Math.min(column.width, cellWidth);
+  return { limit: column.width, width, inTable, cellWidth, estimated: column.estimated };
 }
 
 function separatePictureParagraphs(picture, original, options) {
@@ -150,8 +201,12 @@ export function insertPicture(asset, expectedTarget, options) {
       throw new Error('当前文档或光标位置已改变，请确认目标后重新点击');
     }
     range.Collapse(COLLAPSE_END);
-    const maxWidth = availableWidth(range);
-    const widthLimit = layout.widthMode === 'fixed' ? Math.min(maxWidth, app.CentimetersToPoints(layout.widthCm)) : maxWidth;
+    const available = availableWidth(range);
+    if (layout.widthMode !== 'fixed' && available.cellWidth === null) {
+      throw new Error(`${UNKNOWN_CELL_WIDTH}，请在排版设置中改用固定宽度后重试`);
+    }
+    // 固定宽度在单元格宽度不确定时只受版心或栏宽限制。
+    const widthLimit = layout.widthMode === 'fixed' ? Math.min(available.width, app.CentimetersToPoints(layout.widthCm)) : available.width;
     const heightLimit = layout.maxHeightCm === null ? Infinity : app.CentimetersToPoints(layout.maxHeightCm);
     let original;
     if (layout.layout === 'centered' || layout.caption) {
@@ -390,18 +445,23 @@ export function parsePlaceholderMarker(text) {
 
 function placeholderSize(app, range, options) {
   const page = range.PageSetup;
-  const maxWidth = availableWidth(range);
+  const available = availableWidth(range);
+  const maxWidth = available.width;
   const maxHeight = page.PageHeight - page.TopMargin - page.BottomMargin;
   if (!Number.isFinite(maxHeight) || maxHeight <= 0) throw new Error('当前位置没有可用的版面高度，请移动光标后重试');
   let width;
   let height;
+  if ((options.size === 'cell' || options.size === 'line') && available.cellWidth === null) {
+    throw new Error(`${UNKNOWN_CELL_WIDTH}，请改选固定尺寸`);
+  }
   if (options.size === 'cell') {
-    if (!range.Information(WITHIN_TABLE)) throw new Error('光标不在表格单元格内，请改选其他尺寸');
+    if (!available.inTable) throw new Error('光标不在表格单元格内，请改选其他尺寸');
     const cell = range.Cells.Item(1);
     width = maxWidth;
     const inner = cell.Height - cell.TopPadding - cell.BottomPadding;
-    // 自动行高的单元格没有确定高度，按 4:3 取高。
-    height = cell.HeightRule === ROW_HEIGHT_AUTO || !(Number.isFinite(inner) && inner > 0) ? width * 3 / 4 : inner;
+    // 自动行高、或高度不确定（合并单元格返回 9999999）的单元格没有确定高度，按 4:3 取高。
+    const heightKnown = isDefiniteSize(cell.Height) && Number.isFinite(inner) && inner > 0 && inner < UNDEFINED_SIZE;
+    height = cell.HeightRule === ROW_HEIGHT_AUTO || !heightKnown ? width * 3 / 4 : inner;
   } else if (options.size === 'line') {
     width = maxWidth;
     height = width * 3 / 4;
