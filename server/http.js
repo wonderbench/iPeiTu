@@ -8,6 +8,7 @@ import { ImportJobs } from './import-jobs.js';
 import { Placeholders } from './placeholder.js';
 import { Fitter } from './fit.js';
 import { Knowledge } from './knowledge.js';
+import { prepareSelfCheck, removeSelfCheck } from './self-check.js';
 import { API_VERSION, LanClient, accessKeyPattern, isDownloadPath, isForwardedPath } from './lan-client.js';
 import { readBody as body, readJsonBody as jsonBody } from './request-body.js';
 
@@ -21,6 +22,8 @@ const contentTypes = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascr
 
 const knowledgePath = /^\/api\/knowledge\/[0-9a-f-]{36}$/;
 const knowledgeTrashPath = /^\/api\/knowledge\/[0-9a-f-]{36}\/trash$/;
+const knowledgeEditLockPath = /^\/api\/knowledge\/[0-9a-f-]{36}\/edit-lock$/;
+const assetEditLockPath = /^\/api\/assets\/[a-f0-9]{64}\/edit-lock$/;
 
 function json(response, status, value) {
   response.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8' });
@@ -39,13 +42,20 @@ const loopbackHosts = new Set(['127.0.0.1', 'localhost', '::1']);
 
 // 远程请求（局域网客户端的本机服务转发）可用的接口：按“方法 + 完整路径”显式登记，未登记的一律拒绝。
 // 新增接口默认不对远程开放；确需开放时在此显式登记，并在 test/lan.test.js 的清单一致性测试中补上示例请求。
-// 静态页面、目录导入、占位图、连接设置与任何永久删除操作只供本机使用。
+// 静态页面、目录导入、占位图、连接设置、实机自检与任何永久删除操作只供本机使用。
 // 路径与下面路由分支使用同一个 url.pathname，正则必须首尾锚定，素材与知识库编号格式与路由一致。
+// 编辑锁（申请 POST、续期与释放 PATCH）对远程开放：共享图库上两台电脑互斥编辑同一素材或片段正是它的用途。
+// 批量移入回收站与单张移入回收站同级、可从回收站恢复，对远程开放。
+// 永久删除素材（/api/assets/batch/purge）与清空知识库回收站（/api/knowledge/trash/purge）不可恢复，只允许服务器本机操作，
+// 远程请求在密钥校验通过后得到 403 与 localOnlyMessages 中的专门提示；/api/self-check 在本机临时目录建文件，只供本机。
 export const remoteRoutes = Object.freeze([
   ['GET', /^\/api\/health$/],
   ['GET', /^\/api\/library$/],
   ['POST', /^\/api\/import-file$/],
   ['POST', /^\/api\/assets\/batch$/],
+  ['POST', /^\/api\/assets\/batch\/trash$/],
+  ['POST', assetEditLockPath],
+  ['PATCH', assetEditLockPath],
   ['PATCH', /^\/api\/assets\/[a-f0-9]{64}$/],
   ['PATCH', /^\/api\/assets\/[a-f0-9]{64}\/favorite$/],
   ['POST', /^\/api\/assets\/[a-f0-9]{64}\/recent$/],
@@ -59,7 +69,15 @@ export const remoteRoutes = Object.freeze([
   ['POST', /^\/api\/knowledge$/],
   ['PATCH', knowledgePath],
   ['PATCH', knowledgeTrashPath],
+  ['POST', knowledgeEditLockPath],
+  ['PATCH', knowledgeEditLockPath],
 ].map(([method, pattern]) => Object.freeze({ method, pattern })));
+
+// 只供本机的不可恢复操作：远程请求被拒绝时给出说明，客户端转发后原样显示这段文字。
+export const localOnlyMessages = Object.freeze({
+  '/api/assets/batch/purge': '永久删除素材只能在服务器那台电脑上操作；局域网客户端可以移入回收站',
+  '/api/knowledge/trash/purge': '永久删除知识库片段只能在服务器那台电脑上操作；局域网客户端可以移入回收站',
+});
 
 function remoteRoute(method, pathname) {
   return remoteRoutes.some(route => route.method === method && route.pattern.test(pathname));
@@ -172,8 +190,17 @@ export async function createServer({ dataDirectory, publicDirectory = defaultPub
     try {
       const { origin, remote, client } = validateRequest(request, server.address().port, accessKey, authLog);
       const url = new URL(request.url, origin);
-      if (remote && !remoteRoute(request.method, url.pathname)) throw new LibraryError('局域网客户端不能使用该接口', 403);
+      if (remote && !remoteRoute(request.method, url.pathname)) {
+        throw new LibraryError(Object.hasOwn(localOnlyMessages, url.pathname) ? localOnlyMessages[url.pathname] : '局域网客户端不能使用该接口', 403);
+      }
       const assetId = url.pathname.split('/')[3];
+      const expectedLibrary = request.headers['x-ipeitu-library'];
+      if (!remote && expectedLibrary !== undefined) {
+        const source = lan.status();
+        if (expectedLibrary !== (source.mode === 'local' ? 'local' : source.url)) {
+          throw new LibraryError('图库来源已切换，请重新选择素材', 409);
+        }
+      }
       if (!remote && lan.active && isForwardedPath(url.pathname)) {
         // 已连接局域网图库：图库与知识库请求转发到服务器，插图文件下载到本机缓存。
         if (request.method === 'GET' && isDownloadPath(url.pathname)) json(response, 200, await lan.download(url));
@@ -198,6 +225,18 @@ export async function createServer({ dataDirectory, publicDirectory = defaultPub
       } else if (request.method === 'POST' && url.pathname === '/api/assets/batch') {
         validateParameters(url.searchParams, []);
         json(response, 200, await library.updateAssets(await jsonBody(request, 256 * 1024)));
+      } else if (request.method === 'POST' && url.pathname === '/api/assets/batch/trash') {
+        validateParameters(url.searchParams, []);
+        json(response, 200, await library.trashAssets(await jsonBody(request, 128 * 1024)));
+      } else if (request.method === 'POST' && url.pathname === '/api/assets/batch/purge') {
+        validateParameters(url.searchParams, []);
+        json(response, 200, await library.purgeAssets(await jsonBody(request, 128 * 1024)));
+      } else if (['POST', 'PATCH'].includes(request.method) && assetEditLockPath.test(url.pathname)) {
+        validateParameters(url.searchParams, []);
+        const input = await jsonBody(request);
+        json(response, 200, request.method === 'POST'
+          ? await library.acquireEditLock(assetId, input, client)
+          : await library.changeEditLock(assetId, input));
       } else if (request.method === 'PATCH' && /^\/api\/assets\/[a-f0-9]{64}$/.test(url.pathname)) {
         validateParameters(url.searchParams, []);
         json(response, 200, { asset: await library.updateAsset(assetId, await jsonBody(request, 128 * 1024), client) });
@@ -229,6 +268,13 @@ export async function createServer({ dataDirectory, publicDirectory = defaultPub
           throw new LibraryError('目录导入仅接受 directory 字段');
         }
         json(response, 200, await importJobs().importDirectory(input.directory));
+      } else if (request.method === 'POST' && url.pathname === '/api/self-check') {
+        validateParameters(url.searchParams, []);
+        json(response, 201, await prepareSelfCheck());
+      } else if (request.method === 'DELETE' && /^\/api\/self-check\/[0-9a-f-]{36}$/.test(url.pathname)) {
+        validateParameters(url.searchParams, []);
+        await removeSelfCheck(url.pathname.split('/')[3]);
+        json(response, 200, { removed: true });
       } else if (request.method === 'POST' && url.pathname === '/api/placeholders') {
         validateParameters(url.searchParams, []);
         json(response, 200, await placeholders.create(await jsonBody(request)));
@@ -261,6 +307,17 @@ export async function createServer({ dataDirectory, publicDirectory = defaultPub
       } else if (request.method === 'POST' && url.pathname === '/api/knowledge') {
         validateParameters(url.searchParams, []);
         json(response, 201, { snippet: await knowledge.create(await jsonBody(request, 128 * 1024)) });
+      } else if (request.method === 'POST' && url.pathname === '/api/knowledge/trash/purge') {
+        validateParameters(url.searchParams, []);
+        json(response, 200, await knowledge.purgeTrash(await jsonBody(request, 256 * 1024)));
+      } else if (['POST', 'PATCH'].includes(request.method) && knowledgeEditLockPath.test(url.pathname)) {
+        validateParameters(url.searchParams, []);
+        const id = url.pathname.split('/')[3];
+        const input = await jsonBody(request);
+        const result = request.method === 'POST'
+          ? await knowledge.acquireEditLock(id, input)
+          : await knowledge.changeEditLock(id, input);
+        json(response, 200, result);
       } else if (request.method === 'PATCH' && knowledgePath.test(url.pathname)) {
         validateParameters(url.searchParams, []);
         json(response, 200, { snippet: await knowledge.update(url.pathname.split('/')[3], await jsonBody(request, 128 * 1024)) });

@@ -61,7 +61,9 @@
 
 ## 复现命令
 
-在项目目录运行：
+在项目目录运行。`npm run check` 包含完整的测试套件；`Jzc` 的测试套件不在远端，2026-11-22 合入时由 `main` 的测试适配并补写（见 [开发计划](PLAN.md)）。
+
+以下命令在 Windows 上需要 Node.js 24 或更新版本和 npm：
 
 ```powershell
 npm ci

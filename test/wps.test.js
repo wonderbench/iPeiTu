@@ -774,7 +774,8 @@ test('替换完成后光标或撤销收尾失败仍报告 replaced，不让用�
 test('Ribbon 重复打开复用任务窗格，关闭后可以再次显示', async () => {
   const source = await readFile(new URL('../public/main.js', import.meta.url), 'utf8');
   const storage = new Map();
-  const pane = { ID: 7, Visible: false };
+  // 新窗格由 WPS 给出默认宽度；素材库显示后补足到 560。
+  const pane = { ID: 7, Visible: false, Width: 300 };
   let created = 0;
   const app = {
     PluginStorage: { getItem: (key) => storage.get(key), setItem: (key, value) => storage.set(key, value) },
@@ -789,11 +790,14 @@ test('Ribbon 重复打开复用任务窗格，关闭后可以再次显示', asyn
   vm.runInContext(source, context);
   assert.equal(context.OnAddinLoad(), true);
   context.OpenImageLibrary();
+  assert.equal(pane.Width, 560);
   pane.Visible = false;
+  pane.Width = 700;
   context.OpenImageLibrary();
   assert.equal(created, 1);
   assert.equal(pane.Visible, true);
   assert.equal(pane.DockPosition, 2);
+  assert.equal(pane.Width, 700, '保留手动拉宽的尺寸');
 });
 
 test('注册与重复卸载只还原本次插件，保留旧注册和其他插件后续变化', { skip: process.platform !== 'win32' }, async (t) => {

@@ -13,7 +13,7 @@ async function setup(t) {
   await mkdir(publicDirectory);
   await writeFile(path.join(publicDirectory, 'index.html'), '<h1>iPeiTu</h1>');
   await writeFile(path.join(root, 'secret.txt'), 'PRIVATE');
-  let server, library, base;
+  let server, library, knowledge, base;
   t.after(async () => {
     if (server) {
       server.closeAllConnections();
@@ -22,7 +22,7 @@ async function setup(t) {
     await rm(root, { recursive: true, force: true });
   });
   for (let attempt = 0; attempt < 10; attempt++) {
-    ({ server, library } = await startServer({ port: 0, dataDirectory: path.join(root, 'data'), publicDirectory }));
+    ({ server, library, knowledge } = await startServer({ port: 0, dataDirectory: path.join(root, 'data'), publicDirectory }));
     base = `http://127.0.0.1:${server.address().port}`;
     try {
       await (await fetch(base)).arrayBuffer();
@@ -36,7 +36,7 @@ async function setup(t) {
       server = undefined;
     }
   }
-  return { root, publicDirectory, server, library, base };
+  return { root, publicDirectory, server, library, knowledge, base };
 }
 
 function request(base, pathname, headers = {}) {
@@ -487,4 +487,96 @@ test('a damaged knowledge file keeps the image library available and reports the
   assert.equal(knowledge.status, 500);
   assert.match(JSON.parse(knowledge.text).error, /knowledge\.json 不是有效 JSON/);
   assert.equal(await readFile(path.join(root, 'data', 'knowledge.json'), 'utf8'), '{broken');
+});
+
+const json = (method, input, headers = {}) => ({ method, headers: { 'content-type': 'application/json', ...headers }, body: JSON.stringify(input) });
+const png = color => sharp({ create: { width: 6, height: 4, channels: 3, background: color } }).png().toBuffer();
+
+test('a request expecting another library source is refused with 409 before any change', async t => {
+  const { base, library } = await setup(t);
+  await library.importFile('原图.png', await png('red'));
+  const id = library.assets[0].id;
+  assert.equal((await fetch(`${base}/api/library`, { headers: { 'x-ipeitu-library': 'local' } })).status, 200, '本机图库与请求一致');
+  for (const expected of ['http://192.168.1.10:39831', 'LOCAL']) {
+    const listing = await fetch(`${base}/api/library`, { headers: { 'x-ipeitu-library': expected } });
+    assert.equal(listing.status, 409, expected);
+    assert.match((await listing.json()).error, /图库来源已切换/);
+    const patch = await fetch(`${base}/api/assets/${id}`, json('PATCH', { name: '不保存' }, { 'x-ipeitu-library': expected }));
+    assert.equal(patch.status, 409);
+  }
+  assert.equal(library.getAsset(id).name, '原图.png');
+  assert.equal((await fetch(`${base}/api/assets/${id}`, json('PATCH', { name: '保存' }, { 'x-ipeitu-library': 'local' }))).status, 200);
+});
+
+test('HTTP batch trash, permanent delete and clearing the trash follow the library rules', async t => {
+  const { base, library } = await setup(t);
+  for (const color of ['red', 'green', 'blue']) await library.importFile(`${color}.png`, await png(color));
+  const ids = library.assets.map(asset => asset.id);
+  assert.equal((await fetch(`${base}/api/assets/batch/trash`, json('POST', { ids: [ids[0]] }, { origin: 'https://attacker.example' }))).status, 403);
+  assert.equal((await fetch(`${base}/api/assets/batch/trash?extra=1`, json('POST', { ids: [ids[0]] }))).status, 400);
+  assert.equal((await fetch(`${base}/api/assets/batch/trash`, json('POST', { ids: [] }))).status, 400);
+  const trashed = await fetch(`${base}/api/assets/batch/trash`, json('POST', { ids: ids.slice(0, 2) }));
+  assert.equal(trashed.status, 200);
+  assert.deepEqual(await trashed.json(), { trashed: 2 });
+  assert.equal(library.activeTotal, 1);
+  assert.equal((await fetch(`${base}/api/assets/batch/purge`, json('POST', { ids: [ids[2]] }))).status, 409, '未移出的素材不能永久删除');
+  const purged = await fetch(`${base}/api/assets/batch/purge`, json('POST', { ids: [ids[0]] }));
+  assert.deepEqual(await purged.json(), { purged: 1, cleanupPending: false });
+  const trash = await (await fetch(`${base}/api/library?view=trash`)).json();
+  assert.deepEqual(trash.assets.map(asset => asset.id), [ids[1]]);
+  assert.match(trash.trashRevision, /^[a-f0-9]{64}$/);
+  assert.equal((await fetch(`${base}/api/assets/batch/purge`, json('POST', { all: true, revision: 'a'.repeat(64) }))).status, 409);
+  const cleared = await fetch(`${base}/api/assets/batch/purge`, json('POST', { all: true, revision: trash.trashRevision }));
+  assert.deepEqual(await cleared.json(), { purged: 1, cleanupPending: false });
+  assert.deepEqual(library.assets.map(asset => asset.id), [ids[2]]);
+  assert.equal((await fetch(`${base}/api/assets/${ids[0]}/image`)).status, 404);
+});
+
+test('HTTP edit locks for assets and snippets block other saves until released', async t => {
+  const { base, library, knowledge } = await setup(t);
+  await library.importFile('原图.png', await png('red'));
+  const id = library.assets[0].id;
+  const acquired = await fetch(`${base}/api/assets/${id}/edit-lock`, json('POST', {}));
+  assert.equal(acquired.status, 200);
+  const { asset, token } = await acquired.json();
+  assert.equal(asset.id, id);
+  assert.equal((await fetch(`${base}/api/assets/${id}/edit-lock`, json('POST', {}))).status, 423);
+  assert.equal((await fetch(`${base}/api/assets/${id}`, json('PATCH', { name: '无锁保存' }))).status, 423);
+  assert.equal((await fetch(`${base}/api/assets/${id}/edit-lock?extra=1`, json('PATCH', { token }))).status, 400);
+  assert.deepEqual(await (await fetch(`${base}/api/assets/${id}/edit-lock`, json('PATCH', { token }))).json(), { ok: true });
+  const saved = await fetch(`${base}/api/assets/${id}`, json('PATCH', { name: '持锁保存', editToken: token }));
+  assert.equal(saved.status, 200);
+  assert.equal(library.getAsset(id).name, '持锁保存');
+  assert.equal((await fetch(`${base}/api/assets/${id}/edit-lock`, json('DELETE', {}))).status, 404);
+
+  const snippet = await knowledge.create({ title: '模板支设', type: '房建施工', section: '模板工程', tags: [], body: '按方案支设。' });
+  const lock = await (await fetch(`${base}/api/knowledge/${snippet.id}/edit-lock`, json('POST', {}))).json();
+  assert.equal(lock.snippet.id, snippet.id);
+  assert.equal((await fetch(`${base}/api/knowledge/${snippet.id}`, json('PATCH', { title: '他人修改' }))).status, 423);
+  assert.equal((await fetch(`${base}/api/knowledge/${snippet.id}/trash`, json('PATCH', { trashed: true }))).status, 423);
+  assert.deepEqual(await (await fetch(`${base}/api/knowledge/${snippet.id}/edit-lock`, json('PATCH', { token: lock.token, release: true }))).json(), { ok: true });
+  assert.equal((await fetch(`${base}/api/knowledge/${snippet.id}/trash`, json('PATCH', { trashed: true }))).status, 200);
+  const trash = await (await fetch(`${base}/api/knowledge?view=trash`)).json();
+  const purged = await fetch(`${base}/api/knowledge/trash/purge`, json('POST', { revision: trash.trashRevision, all: true }));
+  assert.deepEqual(await purged.json(), { purged: 1 });
+  assert.equal(knowledge.snippets.length, 0);
+});
+
+test('HTTP self-check creates and removes only its temporary folder and refuses foreign origins', async t => {
+  const { base } = await setup(t);
+  assert.equal((await fetch(`${base}/api/self-check`, { method: 'POST', headers: { origin: 'https://attacker.example' } })).status, 403);
+  assert.equal((await fetch(`${base}/api/self-check?extra=1`, { method: 'POST' })).status, 400);
+  const response = await fetch(`${base}/api/self-check`, { method: 'POST' });
+  assert.equal(response.status, 201);
+  const prepared = await response.json();
+  const directory = path.dirname(prepared.image.path);
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  assert.equal(path.basename(directory), `ipeitu-self-check-${prepared.id}`);
+  assert.ok((await readFile(prepared.image.path)).length > 0);
+  assert.equal((await fetch(`${base}/api/self-check/${'-'.repeat(36)}`, { method: 'DELETE' })).status, 400);
+  assert.equal((await fetch(`${base}/api/self-check/${prepared.id}`, { method: 'DELETE', headers: { origin: 'https://attacker.example' } })).status, 403);
+  assert.ok((await readFile(prepared.image.path)).length > 0, '被拒绝的请求不删除');
+  const removed = await fetch(`${base}/api/self-check/${prepared.id}`, { method: 'DELETE' });
+  assert.deepEqual(await removed.json(), { removed: true });
+  await assert.rejects(readFile(prepared.image.path), { code: 'ENOENT' });
 });

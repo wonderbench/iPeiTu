@@ -12,6 +12,7 @@
     <!-- Icons from lucide (ISC License), https://lucide.dev -->
     <svg class="sprite" aria-hidden="true">
       <symbol id="i-plus" viewBox="0 0 24 24"><path d="M5 12h14"/><path d="M12 5v14"/></symbol>
+      <symbol id="i-close" viewBox="0 0 24 24"><path d="m6 6 12 12M18 6 6 18"/></symbol>
       <symbol id="i-search" viewBox="0 0 24 24"><path d="m21 21-4.34-4.34"/><circle cx="11" cy="11" r="8"/></symbol>
       <symbol id="i-check" viewBox="0 0 24 24"><path d="M20 6 9 17l-5-5"/></symbol>
     </svg>
@@ -19,12 +20,12 @@
     <div class="app knowledge-app">
       <header class="topbar">
         <div class="brand">
-          <span class="wordmark">iPeiTu</span>
-          <span id="sourceBadge" class="source-badge" hidden>局域网</span>
+          <img class="wordmark wordmark-image" src="/ipeitu-wordmark.png" alt="iPeiTu" width="60" height="20">
           <h1>知识库</h1>
+          <span id="sourceBadge" class="source-badge" hidden>局域网</span>
         </div>
         <div class="topbar-actions">
-          <button id="newSnippet" class="button secondary" type="button" aria-haspopup="dialog" aria-controls="snippetDialog">
+          <button id="newSnippet" class="button secondary toolbar-action" type="button" aria-haspopup="dialog" aria-controls="snippetDialog">
             <svg class="icon" aria-hidden="true"><use href="#i-plus"/></svg>
             <span>新建片段</span>
           </button>
@@ -34,14 +35,6 @@
       <main id="workspace" class="workspace">
         <section aria-labelledby="knowledgeTitle">
           <div class="library-tools">
-            <label class="visually-hidden" for="searchInput">检索标题、章节、标签或正文</label>
-            <div class="search-field">
-              <svg class="icon" aria-hidden="true"><use href="#i-search"/></svg>
-              <input id="searchInput" type="search" autocomplete="off" spellcheck="false" placeholder="标题、章节、标签或正文" title="多个关键词用空格分隔" aria-controls="snippetList">
-              <button id="clearSearch" type="button" class="text-button" hidden>清空</button>
-            </div>
-            <div id="typeChips" class="category-chips" role="group" aria-label="工程类别"></div>
-            <div id="sectionChips" class="category-chips" role="group" aria-label="章节" hidden></div>
             <div class="view-row">
               <div class="view-switcher" role="group" aria-label="片段视图">
                 <button id="viewAll" type="button" data-view="all" aria-pressed="true">全部</button>
@@ -51,6 +44,23 @@
                 <h2 id="knowledgeTitle" class="visually-hidden">标书片段</h2>
                 <span id="resultCount" class="meta figures" aria-live="polite">正在读取</span>
               </div>
+            </div>
+            <label class="visually-hidden" for="searchInput">检索标题、章节、标签或正文</label>
+            <div class="search-field">
+              <svg class="icon" aria-hidden="true"><use href="#i-search"/></svg>
+              <input id="searchInput" type="search" autocomplete="off" spellcheck="false" placeholder="标题、章节、标签或正文" title="多个关键词用空格分隔" aria-controls="snippetList">
+              <button id="clearSearch" type="button" class="text-button" hidden>清空</button>
+            </div>
+            <div id="typeChips" class="category-chips" role="group" aria-label="工程类别"></div>
+            <div id="sectionChips" class="category-chips" role="group" aria-label="章节" hidden></div>
+            <div id="knowledgeTrashTools" class="knowledge-trash-tools" role="group" aria-label="回收站操作" hidden>
+              <button id="toggleTrashMulti" class="button secondary" type="button" aria-pressed="false">多选</button>
+              <button id="clearKnowledgeTrash" class="button secondary trash-action" type="button" aria-haspopup="dialog" aria-controls="knowledgePurgeDialog">清空回收站</button>
+            </div>
+            <div id="knowledgeTrashBatch" class="batch-bar knowledge-trash-tools" hidden>
+              <span id="knowledgeTrashCount" class="meta figures" aria-live="polite"></span>
+              <button id="selectTrashCurrent" class="button secondary" type="button">全选当前</button>
+              <button id="purgeTrashSelection" class="button secondary trash-action" type="button" aria-haspopup="dialog" aria-controls="knowledgePurgeDialog">永久删除</button>
             </div>
           </div>
           <div id="knowledgeState" class="empty-state" role="status">
@@ -71,8 +81,9 @@
           <div id="previewBody" class="snippet-body"></div>
           <div class="preview-actions">
             <button id="editSnippet" class="text-button" type="button" aria-haspopup="dialog" aria-controls="snippetDialog">编辑</button>
-            <button id="trashSnippet" class="text-button" type="button">移到回收站</button>
+            <button id="trashSnippet" class="text-button trash-action" type="button">移到回收站</button>
             <button id="restoreSnippet" class="text-button" type="button" hidden>恢复</button>
+            <button id="purgeSnippet" class="button secondary trash-action" type="button" aria-haspopup="dialog" aria-controls="knowledgePurgeDialog" hidden>永久删除</button>
           </div>
         </article>
         <div class="insert-options">
@@ -87,18 +98,18 @@
               <option value="6">标题 6</option>
             </select>
           </div>
-          <label class="checkbox-label"><input id="includeTitle" type="checkbox">插入片段标题</label>
         </div>
-        <button id="captureSelection" class="button secondary" type="button" title="把文档中选中的段落收录为新片段，标题层级按大纲级别保留">收录选中内容</button>
+        <button id="captureSelection" class="button secondary" type="button" title="只收录文档中实际选中的文字，完整选中的标题保留相对层级">收录选中内容</button>
         <p id="hostStatus" class="host-status">正在检查 WPS 状态</p>
         <p id="actionStatus" class="action-status" role="status" aria-live="polite" hidden></p>
       </footer>
     </div>
 
-    <dialog id="snippetDialog" class="compact-dialog" aria-labelledby="snippetDialogTitle">
+    <dialog id="snippetDialog" aria-labelledby="snippetDialogTitle">
       <form id="snippetForm" novalidate>
         <div class="dialog-heading">
           <h2 id="snippetDialogTitle">新建片段</h2>
+          <button id="closeSnippet" class="dialog-close" type="button" aria-label="关闭"><svg class="icon" aria-hidden="true"><use href="#i-close"/></svg></button>
         </div>
         <div class="layout-fields">
           <div class="field-group">
@@ -122,13 +133,28 @@
           </div>
           <div class="field-group">
             <label for="snippetBody">正文</label>
-            <textarea id="snippetBody" name="body" rows="10" maxlength="20000" placeholder="每行一段；行首 # 加空格为小标题，## 为下一级" required></textarea>
+            <textarea id="snippetBody" name="body" rows="10" maxlength="20000" placeholder="每行一段；行首 # 加空格为小标题，## 为下一级" aria-describedby="snippetFormatStatus" required></textarea>
+            <small id="snippetFormatStatus" role="status" hidden></small>
           </div>
         </div>
         <p id="snippetError" class="form-error" role="alert" hidden></p>
         <div class="dialog-actions">
-          <button id="cancelSnippet" class="button secondary" type="button">取消</button>
+          <button id="cancelSnippet" class="text-button dialog-cancel" type="button">取消</button>
           <button id="saveSnippet" class="button primary" type="submit">保存片段</button>
+        </div>
+      </form>
+    </dialog>
+    <dialog id="knowledgePurgeDialog" aria-labelledby="knowledgePurgeTitle" aria-describedby="knowledgePurgeDescription">
+      <form id="knowledgePurgeForm">
+        <div class="dialog-heading">
+          <h2 id="knowledgePurgeTitle">永久删除片段</h2>
+          <button id="closeKnowledgePurge" class="dialog-close" type="button" aria-label="关闭"><svg class="icon" aria-hidden="true"><use href="#i-close"/></svg></button>
+        </div>
+        <p id="knowledgePurgeDescription" class="supporting"></p>
+        <p id="knowledgePurgeError" class="form-error" role="alert" hidden></p>
+        <div class="dialog-actions">
+          <button id="cancelKnowledgePurge" class="text-button dialog-cancel" type="button" autofocus>取消</button>
+          <button id="confirmKnowledgePurge" class="button primary" type="submit">永久删除</button>
         </div>
       </form>
     </dialog>

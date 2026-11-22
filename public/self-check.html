@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>iPeiTu · WPS 实机自检</title>
+    <link rel="stylesheet" href="/styles.css">
+    <link rel="stylesheet" href="/self-check.css">
+    <script type="module" src="/self-check-page.js"></script>
+  </head>
+  <body>
+    <header class="topbar">
+      <div class="brand">
+        <img class="wordmark wordmark-image" src="/ipeitu-wordmark.png" alt="iPeiTu" width="60" height="20">
+        <h1>WPS 实机自检</h1>
+      </div>
+    </header>
+    <main class="self-check">
+      <p class="supporting">在临时文档里验证插图、换图、占位框、标题样式和表格宽度，并检查保存重开后的结果。</p>
+      <div class="self-check-actions">
+        <button id="startSelfCheck" class="button primary" type="button" disabled>开始自检</button>
+        <button id="copySelfCheck" class="button secondary" type="button" hidden>复制报告</button>
+      </div>
+      <p id="selfCheckStatus" class="action-status" role="status" aria-live="polite">正在检查 WPS 状态</p>
+      <section id="selfCheckOutput" class="self-check-output" hidden>
+        <label for="selfCheckReport">自检报告</label>
+        <textarea id="selfCheckReport" rows="14" readonly></textarea>
+        <p class="supporting">窗格显示效果、防火墙提示和两台电脑互连需要人工确认。</p>
+      </section>
+    </main>
+  </body>
+</html>

@@ -101,5 +101,53 @@ export async function verifyLibraryManagement({ page, base }) {
     assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth
       && ['#toggleMulti', '#openFilters'].every(selector => document.querySelector(selector).getBoundingClientRect().right <= innerWidth)), true, `${width}px 素材管理控件完整可见`);
   }
-  console.log('素材管理 UI 验收通过：比例筛选、分类按钮、多选与批量设置及失败不改、粘贴与拖入导入、输入框粘贴不拦截、窄窗格布局。');
+  await page.setViewportSize({ width: 420, height: 800 });
+
+  // 缩略图上的收藏按钮平时隐藏，悬停时显示，点击只收藏不改变所选图片。
+  const total = (await library()).total;
+  const item = page.locator('.asset-item').first();
+  const favorite = item.locator('.card-favorite-action');
+  if (await favorite.getAttribute('aria-pressed') === 'false') {
+    assert.equal(await favorite.evaluate(button => getComputedStyle(button).opacity), '0', '未悬停时收藏按钮隐藏');
+  }
+  await item.locator('.asset-card').hover();
+  await page.waitForFunction(() => getComputedStyle(document.querySelector('.asset-item .card-favorite-action')).opacity === '1');
+  const favoriteId = await favorite.getAttribute('data-id');
+  const wasFavorite = await favorite.getAttribute('aria-pressed') === 'true';
+  await favorite.click();
+  await page.waitForFunction(({ id, pressed }) => document.querySelector(`.card-favorite-action[data-id="${id}"]`)?.getAttribute('aria-pressed') === pressed,
+    { id: favoriteId, pressed: String(!wasFavorite) });
+  assert.equal((await library('?view=favorites')).assets.some(asset => asset.id === favoriteId), !wasFavorite, '缩略图收藏写入图库');
+
+  // Ctrl 点击：把当前所选与新点的图片一起多选；不按 Ctrl 再点一张退出多选并改为单选。
+  await page.locator('.asset-card').nth(0).click();
+  await page.locator('.asset-card').nth(1).click({ modifiers: ['Control'] });
+  assert.equal(await page.locator('#batchBar').isVisible(), true, 'Ctrl 点击进入多选');
+  await visibleText('#batchCount', '已选 2 张');
+  assert.equal(await page.locator('.asset-card[aria-pressed="true"]').count(), 2);
+  await page.locator('.asset-card').nth(1).click({ modifiers: ['Control'] });
+  await visibleText('#batchCount', '已选 1 张');
+  await page.locator('.asset-card').nth(2).click();
+  assert.equal(await page.locator('#batchBar').isVisible(), false, '普通点击退出 Ctrl 多选');
+  assert.equal(await page.locator('.asset-card[aria-pressed="true"]').count(), 1);
+  const selectedName = await page.locator('.asset-card').nth(2).getAttribute('aria-label');
+  assert.ok(selectedName.includes(await page.locator('#selectedName').textContent()), '普通点击选中这张图片');
+
+  // 切回窗格时重新读取列表：其他页面新增的素材在窗口获得焦点后出现；有对话框打开时延后到关闭后。
+  const fresh = async (name, color) => {
+    const buffer = await sharp({ create: { width: 200, height: 150, channels: 3, background: color } }).png().toBuffer();
+    const response = await fetch(`${base}/api/import-file?name=${encodeURIComponent(name)}`, { method: 'POST', headers: { 'Content-Type': 'application/octet-stream' }, body: buffer });
+    assert.equal(response.status, 200);
+  };
+  await fresh('其他页面导入.png', '#3d5a6c');
+  await page.evaluate(() => window.dispatchEvent(new Event('focus')));
+  await visibleText('#resultCount', `${total + 1} 张`);
+  await page.locator('#layoutSettingsButton').click();
+  await fresh('对话框期间导入.png', '#6c3d5a');
+  await page.evaluate(() => window.dispatchEvent(new Event('focus')));
+  await page.waitForTimeout(600);
+  assert.equal(await page.locator('#resultCount').textContent(), `${total + 1} 张`, '对话框打开期间不刷新列表');
+  await page.locator('#cancelLayout').click();
+  await visibleText('#resultCount', `${total + 2} 张`);
+  console.log('素材管理 UI 验收通过：比例筛选、分类按钮、多选与批量设置及失败不改、粘贴与拖入导入、输入框粘贴不拦截、窄窗格布局、悬停显示的缩略图收藏、Ctrl 点击多选、切回窗格刷新与对话框期间延后。');
 }

@@ -6,7 +6,7 @@ import { access, mkdir, mkdtemp, readdir, readFile, rm, stat, unlink, utimes, wr
 import os from 'node:os';
 import path from 'node:path';
 import sharp from 'sharp';
-import { AuthFailureLog, remoteRoutes, startServer } from '../server/http.js';
+import { AuthFailureLog, localOnlyMessages, remoteRoutes, startServer } from '../server/http.js';
 import { Library } from '../server/library.js';
 import { normalizeServerUrl } from '../server/lan-client.js';
 import { CACHE_DIRECTORIES } from '../server/cache-prune.js';
@@ -79,23 +79,29 @@ const jsonRequest = (method, value) => ({ method, headers: { 'content-type': 'ap
 const ASSET = 'a'.repeat(64);
 const SNIPPET = randomUUID();
 const REMOTE_DENIED = '局域网客户端不能使用该接口';
+// 永久删除的两个接口给出专门的说明，其余本机专用接口使用通用说明。
+const deniedMessage = pathname => (Object.hasOwn(localOnlyMessages, pathname) ? localOnlyMessages[pathname] : REMOTE_DENIED);
 const PAST = new Date('2020-01-02T03:04:05.000Z');
 
 // 白名单每一项的示例请求；白名单新增一项而这里没有对应示例时，清单一致性测试会失败。
 const remoteSamples = [
   ['GET', '/api/health'], ['GET', '/api/library'], ['POST', '/api/import-file'], ['POST', '/api/assets/batch'],
+  ['POST', '/api/assets/batch/trash'], ['POST', `/api/assets/${ASSET}/edit-lock`], ['PATCH', `/api/assets/${ASSET}/edit-lock`],
   ['PATCH', `/api/assets/${ASSET}`], ['PATCH', `/api/assets/${ASSET}/favorite`], ['POST', `/api/assets/${ASSET}/recent`],
   ['PATCH', `/api/assets/${ASSET}/trash`], ['GET', `/api/assets/${ASSET}/fit`], ['GET', `/api/assets/${ASSET}/insertion`],
   ['GET', `/api/assets/${ASSET}/fit/file`], ['GET', `/api/assets/${ASSET}/insertion/file`], ['GET', `/api/assets/${ASSET}/image`],
   ['GET', `/api/assets/${ASSET}/thumbnail`], ['GET', '/api/knowledge'], ['POST', '/api/knowledge'],
   ['PATCH', `/api/knowledge/${SNIPPET}`], ['PATCH', `/api/knowledge/${SNIPPET}/trash`],
+  ['POST', `/api/knowledge/${SNIPPET}/edit-lock`], ['PATCH', `/api/knowledge/${SNIPPET}/edit-lock`],
 ];
 
-// 持有正确密钥也不能使用的接口：本机专用接口、永久删除、方法不符与路径变形。
+// 持有正确密钥也不能使用的接口：本机专用接口、永久删除、实机自检、方法不符与路径变形。
 const remoteForbidden = [
   ['GET', '/'], ['GET', '/taskpane.html'], ['POST', '/api/import-jobs'], ['GET', `/api/import-jobs/${SNIPPET}`], ['POST', '/api/import'],
   ['POST', '/api/placeholders'], ['GET', '/api/connection'], ['PUT', '/api/connection'], ['DELETE', '/api/connection'],
-  ['POST', '/api/assets/batch/purge'], ['POST', '/api/assets/batch/trash'], ['POST', '/api/knowledge/trash/purge'],
+  ['POST', '/api/assets/batch/purge'], ['POST', '/api/knowledge/trash/purge'], ['GET', '/api/assets/batch/trash'],
+  ['POST', '/api/self-check'], ['DELETE', `/api/self-check/${SNIPPET}`], ['DELETE', `/api/assets/${ASSET}/edit-lock`],
+  ['GET', `/api/knowledge/${SNIPPET}/edit-lock`], ['POST', `/api/assets/${ASSET}/edit-lock/`],
   ['DELETE', `/api/assets/${ASSET}`], ['DELETE', '/api/library'], ['DELETE', `/api/knowledge/${SNIPPET}`],
   ['GET', '/api/assets/batch'], ['PUT', `/api/assets/${ASSET}/favorite`], ['POST', '/api/health'], ['HEAD', '/api/health'],
   ['GET', '/api/library/'], ['GET', '/API/library'], ['GET', '/api/assets/../connection'], ['PATCH', `/api/assets/${ASSET}%2Ftrash`],
@@ -165,7 +171,7 @@ test('LAN server accepts only keyed relay requests from other addresses', { skip
   for (const [method, pathname] of remoteForbidden) {
     const response = await call(base, pathname, { method, headers: remote() });
     assert.equal(response.status, 403, `${method} ${pathname}`);
-    if (method !== 'HEAD') assert.equal(response.json?.error, REMOTE_DENIED, `${method} ${pathname}`);
+    if (method !== 'HEAD') assert.equal(response.json?.error, deniedMessage(pathname), `${method} ${pathname}`);
   }
   // 未带密钥或密钥错误时先得到 401，不因白名单泄露接口是否存在。
   for (const [method, pathname] of [['POST', '/api/assets/batch/purge'], ['DELETE', `/api/assets/${ASSET}`], ['GET', '/api/connection'],
@@ -233,6 +239,85 @@ test('every allowlisted endpoint reaches its route for a keyed remote client', {
     assert.notEqual(response.json?.error, REMOTE_DENIED, `${method} ${pathname}`);
     assert.notEqual(response.json?.error, '接口不存在', `${method} ${pathname} 在白名单中却没有对应路由`);
   }
+});
+
+test('remote clients share edit locks and batch trash but permanent delete stays on the server computer', { skip }, async t => {
+  const upstreamDirectory = await temporary(t);
+  const upstream = await serve(t, { host: '0.0.0.0', accessKey: KEY, dataDirectory: upstreamDirectory });
+  const firstBytes = await png('#113355');
+  const secondBytes = await png('#553311');
+  await upstream.library.importFile('甲.png', firstBytes);
+  await upstream.library.importFile('乙.png', secondBytes);
+  const [first, second] = [sha256(firstBytes), sha256(secondBytes)];
+  const snippet = await upstream.knowledge.create({ title: '交通导改', type: '市政道路管网', section: '交通导改', tags: [], body: '设置围挡。' });
+  const send = (pathname, method, value, client = CLIENT_A) => call(upstream.remoteBase, pathname, {
+    method, headers: { ...remote(KEY, client), 'content-type': 'application/json' }, body: JSON.stringify(value),
+  });
+
+  let response = await send(`/api/assets/${first}/edit-lock`, 'POST', {});
+  assert.equal(response.status, 200, response.json?.error);
+  const { token } = response.json;
+  response = await send(`/api/assets/${first}/edit-lock`, 'POST', {}, CLIENT_B);
+  assert.equal(response.status, 423, '另一台电脑不能同时编辑');
+  assert.match(response.json.error, /正在编辑/);
+  await assert.rejects(upstream.library.updateAsset(first, { name: '服务器修改' }), { status: 423 }, '服务器本机同样受锁约束');
+  assert.equal((await send(`/api/assets/${first}`, 'PATCH', { name: '他人修改' }, CLIENT_B)).status, 423);
+  assert.deepEqual((await send(`/api/assets/${first}/edit-lock`, 'PATCH', { token })).json, { ok: true });
+  response = await send(`/api/assets/${first}`, 'PATCH', { name: '持锁保存', editToken: token });
+  assert.equal(response.status, 200, response.json?.error);
+  assert.equal(upstream.library.getAsset(first).name, '持锁保存');
+  response = await send(`/api/assets/${first}/edit-lock`, 'POST', {}, CLIENT_B);
+  assert.equal(response.status, 200, '保存后锁已释放');
+  assert.deepEqual((await send(`/api/assets/${first}/edit-lock`, 'PATCH', { token: response.json.token, release: true }, CLIENT_B)).json, { ok: true });
+
+  response = await send(`/api/knowledge/${snippet.id}/edit-lock`, 'POST', {});
+  assert.equal(response.status, 200, response.json?.error);
+  const snippetToken = response.json.token;
+  assert.equal((await send(`/api/knowledge/${snippet.id}/edit-lock`, 'POST', {}, CLIENT_B)).status, 423);
+  assert.equal((await send(`/api/knowledge/${snippet.id}`, 'PATCH', { title: '他人修改' }, CLIENT_B)).status, 423);
+  assert.deepEqual((await send(`/api/knowledge/${snippet.id}/edit-lock`, 'PATCH', { token: snippetToken, release: true })).json, { ok: true });
+  assert.equal((await send(`/api/knowledge/${snippet.id}/trash`, 'PATCH', { trashed: true })).status, 200);
+
+  response = await send('/api/assets/batch/trash', 'POST', { ids: [first, second] });
+  assert.deepEqual(response.json, { trashed: 2 });
+  assert.equal(upstream.library.activeTotal, 0);
+  const trash = await call(upstream.remoteBase, '/api/library?view=trash', { headers: remote() });
+  assert.match(trash.json.trashRevision, /^[a-f0-9]{64}$/);
+  const knowledgeTrash = await call(upstream.remoteBase, '/api/knowledge?view=trash', { headers: remote() });
+  for (const [pathname, value] of [['/api/assets/batch/purge', { all: true, revision: trash.json.trashRevision }],
+    ['/api/assets/batch/purge', { ids: [first] }], ['/api/knowledge/trash/purge', { revision: knowledgeTrash.json.trashRevision, all: true }]]) {
+    response = await send(pathname, 'POST', value);
+    assert.equal(response.status, 403, pathname);
+    assert.equal(response.json.error, localOnlyMessages[pathname]);
+    assert.match(response.json.error, /只能在服务器那台电脑上操作/);
+  }
+  assert.equal(upstream.library.assets.length, 2, '远程永久删除没有生效');
+  assert.equal(upstream.knowledge.snippets.length, 1);
+
+  // 客户端界面经本机服务转发：得到服务器的 403 与同一段说明。
+  const relay = await serve(t, { dataDirectory: path.join(await temporary(t), 'client') });
+  assert.equal((await call(relay.base, '/api/connection', jsonRequest('PUT', { url: upstream.remoteBase, key: KEY }))).status, 200);
+  response = await call(relay.base, '/api/assets/batch/purge', jsonRequest('POST', { ids: [first] }));
+  assert.equal(response.status, 403);
+  assert.equal(response.json.error, localOnlyMessages['/api/assets/batch/purge']);
+  response = await call(relay.base, '/api/knowledge/trash/purge', jsonRequest('POST', { revision: knowledgeTrash.json.trashRevision, all: true }));
+  assert.equal(response.status, 403);
+  assert.equal(response.json.error, localOnlyMessages['/api/knowledge/trash/purge']);
+  response = await call(relay.base, '/api/self-check', { method: 'POST' });
+  assert.equal(response.status, 201, '自检不转发，在客户端本机进行');
+  const selfCheck = response.json;
+  t.after(() => rm(path.dirname(selfCheck.image.path), { recursive: true, force: true }));
+  assert.deepEqual((await call(relay.base, `/api/self-check/${selfCheck.id}`, { method: 'DELETE' })).json, { removed: true });
+
+  // 任务窗格带上它所显示的图库来源；来源不符时拒绝，避免把操作发到另一份图库。
+  assert.equal((await call(relay.base, '/api/library', { headers: { 'x-ipeitu-library': upstream.remoteBase } })).status, 200);
+  response = await call(relay.base, '/api/library', { headers: { 'x-ipeitu-library': 'local' } });
+  assert.equal(response.status, 409);
+  assert.match(response.json.error, /图库来源已切换/);
+
+  response = await call(upstream.base, '/api/assets/batch/purge', jsonRequest('POST', { all: true, revision: trash.json.trashRevision }));
+  assert.equal(response.status, 200, response.json?.error);
+  assert.deepEqual(response.json, { purged: 2, cleanupPending: false }, '服务器本机可以永久删除');
 });
 
 test('authentication failures are logged at most once per address per window', () => {

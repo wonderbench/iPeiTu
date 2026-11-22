@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>iPeiTu · 资源管理</title>
+    <link rel="stylesheet" href="/styles.css">
+    <link rel="stylesheet" href="/manage.css">
+    <script type="module" src="/manage.js"></script>
+  </head>
+  <body>
+    <div class="manage-shell">
+      <header class="manage-header">
+        <div class="brand">
+          <img class="wordmark wordmark-image" src="/ipeitu-wordmark.png" alt="iPeiTu" width="60" height="20">
+          <h1>资源管理</h1>
+        </div>
+        <nav class="manage-nav" aria-label="管理模块">
+          <a href="#assets" aria-current="page">素材管理</a>
+          <a href="#knowledge">知识库管理</a>
+        </nav>
+      </header>
+      <main class="manage-content">
+        <iframe id="assets" title="素材管理" data-src="/taskpane.html?manage=1" hidden></iframe>
+        <iframe id="knowledge" title="知识库管理" data-src="/knowledge.html?manage=1" hidden></iframe>
+      </main>
+    </div>
+  </body>
+</html>

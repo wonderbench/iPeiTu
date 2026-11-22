@@ -10,7 +10,7 @@ export async function verifyImportAndTrash({ page, base, temporary, picture, fil
   async function library(view = 'all') {
     return (await fetch(`${base}/api/library?view=${view}`)).json();
   }
-  await page.reload();
+  await page.goto(`${base}/taskpane.html`);
   await visibleText('#resultCount', '2 张');
   await page.setViewportSize({ width: 320, height: 800 });
   await page.locator('.asset-card').first().click();
@@ -138,6 +138,9 @@ export async function verifyImportAndTrash({ page, base, temporary, picture, fil
   for (const selector of ['#replaceButton', '#editMetadata', '#favoriteButton']) {
     assert.ok(!(await page.locator(selector).isVisible()) || await page.locator(selector).isDisabled(), `回收站禁止 ${selector}`);
   }
+  assert.equal(await page.locator('#moveToTrash').isVisible(), false, '回收站中不显示移到回收站');
+  assert.equal(await page.locator('#purgeButton').isVisible(), true, '回收站中可永久删除所选素材');
+  assert.equal(await page.locator('#clearAssetTrash').isVisible(), true, '回收站显示清空入口');
   await page.locator('#previewButton').click();
   await page.waitForFunction(() => document.querySelector('#previewImage').naturalWidth === 1200);
   await page.keyboard.press('Escape');
@@ -160,4 +163,104 @@ export async function verifyImportAndTrash({ page, base, temporary, picture, fil
   await page.locator('#viewAll').click();
   await visibleText('#resultCount', '5 张');
   console.log('导入整理 UI 验收通过：文件夹同名素材、失败单独重试、目录任务查询恢复、修复后重试、移出/恢复失败保留状态、回收站预览与操作限制、收藏及最近记录恢复。');
+}
+
+// 素材回收站：单张与 Ctrl 多选移出前确认，永久删除与清空回收站前确认；确认期间回收站内容变化时不执行。
+export async function verifyAssetPurge({ page, base, seed }) {
+  async function visibleText(selector, text) {
+    await page.waitForFunction(({ selector, text }) => document.querySelector(selector)?.textContent.includes(text), { selector, text });
+  }
+  const library = async (view = 'all') => (await fetch(`${base}/api/library?view=${view}`)).json();
+  const colors = ['#5a6f7c', '#7c6a5a', '#5a7c62', '#7c5a74'];
+  const names = ['回收甲.png', '回收乙.png', '回收丙.png', '回收丁.png'];
+  const assets = await seed(base, await Promise.all(names.map(async (name, index) => ({
+    name, buffer: await sharp({ create: { width: 320 + index * 40, height: 240, channels: 3, background: colors[index] } }).png().toBuffer(),
+  }))));
+  const id = name => assets.find(asset => asset.name === name).id;
+  const card = name => page.locator(`.asset-card[aria-label^="选择 ${name}"]`);
+  const dialog = page.locator('#trashDialog');
+  const post = (url, body, method = 'POST') => fetch(`${base}${url}`, { method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+
+  await page.setViewportSize({ width: 420, height: 800 });
+  await page.goto(`${base}/taskpane.html`);
+  await visibleText('#resultCount', '4 张');
+
+  // 单张移出：详情区的“移到回收站”先确认，取消不改动。
+  await card('回收甲.png').click();
+  await page.locator('#moveToTrash').click();
+  await dialog.waitFor({ state: 'visible' });
+  assert.equal(await page.locator('#trashTitle').textContent(), '移到回收站');
+  assert.match(await page.locator('#trashDescription').textContent(), /「回收甲\.png」移到回收站？移出后可以恢复/);
+  await page.locator('#cancelTrash').click();
+  await dialog.waitFor({ state: 'hidden' });
+  assert.equal((await library()).total, 4, '取消不移出');
+  await page.locator('#moveToTrash').click();
+  await page.locator('#confirmTrash').click();
+  await visibleText('#actionStatus', '已将 1 张素材移到回收站');
+  await visibleText('#resultCount', '3 张');
+
+  // Ctrl 点击多选：已选图片与新点的图片一起进入多选，批量移出后退出多选。
+  await card('回收乙.png').click();
+  await card('回收丙.png').click({ modifiers: ['Control'] });
+  assert.equal(await page.locator('#batchBar').isVisible(), true, 'Ctrl 点击进入多选');
+  await visibleText('#batchCount', '已选 2 张');
+  assert.equal(await page.locator('#batchTrash').textContent(), '移到回收站');
+  await page.locator('#batchTrash').click();
+  await dialog.waitFor({ state: 'visible' });
+  assert.match(await page.locator('#trashDescription').textContent(), /选中的 2 张素材移到回收站/);
+  await page.locator('#confirmTrash').click();
+  await visibleText('#actionStatus', '已将 2 张素材移到回收站');
+  await visibleText('#resultCount', '1 张');
+  await page.waitForFunction(() => document.querySelector('#batchBar').hidden, null, { timeout: 5000 });
+
+  // 回收站：永久删除所选素材，取消不删除；确认期间素材被恢复时服务拒绝，界面提示后不删除。
+  await page.locator('#viewTrash').click();
+  await visibleText('#resultCount', '3 张');
+  assert.equal(await page.locator('#clearAssetTrash').isEnabled(), true);
+  await card('回收甲.png').click();
+  await page.locator('#purgeButton').click();
+  await dialog.waitFor({ state: 'visible' });
+  assert.equal(await page.locator('#trashTitle').textContent(), '永久删除素材');
+  assert.match(await page.locator('#trashDescription').textContent(), /永久删除「回收甲\.png」？删除后无法恢复/);
+  assert.equal(await page.locator('#confirmTrash').getAttribute('data-permanent'), '', '永久删除按钮使用警示样式');
+  await page.locator('#cancelTrash').click();
+  assert.equal((await library('trash')).assets.length, 3, '取消不删除');
+  await page.locator('#purgeButton').click();
+  await dialog.waitFor({ state: 'visible' });
+  assert.equal((await post(`/api/assets/${id('回收甲.png')}/trash`, { trashed: false }, 'PATCH')).status, 200);
+  await page.locator('#confirmTrash').click();
+  await visibleText('#trashError', '只能永久删除回收站中的素材');
+  assert.equal(await dialog.isVisible(), true, '失败时弹窗保留并说明原因');
+  assert.equal((await library()).assets.some(asset => asset.id === id('回收甲.png')), true, '已恢复的素材不被删除');
+  await page.locator('#cancelTrash').click();
+  await page.locator('#viewAll').click();
+  await visibleText('#resultCount', '2 张');
+  await page.locator('#viewTrash').click();
+  await visibleText('#resultCount', '2 张');
+  await card('回收乙.png').click();
+  await page.locator('#purgeButton').click();
+  await page.locator('#confirmTrash').click();
+  await visibleText('#actionStatus', '已永久删除 1 张素材');
+  await visibleText('#resultCount', '1 张');
+  assert.equal((await fetch(`${base}/api/assets/${id('回收乙.png')}/image`)).status, 404, '永久删除移除原图');
+
+  // 清空回收站：确认期间有素材移入，服务按确认时的回收站版本拒绝，界面刷新后需重新确认。
+  await page.locator('#clearAssetTrash').click();
+  await dialog.waitFor({ state: 'visible' });
+  assert.equal(await page.locator('#trashTitle').textContent(), '清空回收站');
+  assert.match(await page.locator('#trashDescription').textContent(), /全部 1 张素材/);
+  assert.equal((await post('/api/assets/batch/trash', { ids: [id('回收丁.png')] })).status, 200);
+  await page.locator('#confirmTrash').click();
+  await visibleText('#actionStatus', '回收站内容已变化');
+  await dialog.waitFor({ state: 'hidden' });
+  await visibleText('#resultCount', '2 张');
+  assert.equal((await library('trash')).assets.length, 2, '内容变化后不清空');
+  await page.locator('#clearAssetTrash').click();
+  assert.match(await page.locator('#trashDescription').textContent(), /全部 2 张素材/);
+  await page.locator('#confirmTrash').click();
+  await visibleText('#actionStatus', '已清空回收站，永久删除 2 张素材');
+  await visibleText('#stateTitle', '回收站为空');
+  assert.equal((await library('trash')).assets.length, 0);
+  assert.deepEqual((await library()).assets.map(asset => asset.name), ['回收甲.png']);
+  console.log('素材回收站 UI 验收通过：单张与 Ctrl 多选移出确认、取消不改动、永久删除确认与警示、确认期间恢复时拒绝删除、清空回收站及确认期间内容变化需重新确认。');
 }

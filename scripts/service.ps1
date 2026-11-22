@@ -15,6 +15,7 @@ try { [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding($false) } 
 $root = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
 $entry = Join-Path $root 'server\index.js'
 $stateRoot = [IO.Path]::GetFullPath($StateDirectory)
+. (Join-Path $PSScriptRoot 'node-runtime.ps1')
 $statePath = Join-Path $stateRoot "service-$Port.json"
 $logPath = Join-Path $stateRoot "logs\service-$Port.log"
 # 局域网模式由访问密钥文件决定：存在时监听所有网卡，其他电脑凭密钥连接（见“局域网服务器.cmd”）。
@@ -85,15 +86,15 @@ function Start-IPeiTu {
         if ($owner -like 'node*') { Write-Host '如果这是以前手动运行 npm start 的窗口，请在该窗口按 Ctrl+C 关闭后再运行。' }
         return 2
     }
-    $node = Get-Command node -ErrorAction SilentlyContinue
-    if (!$node) {
-        Write-Host '未找到 Node.js，请先运行“安装.cmd”。'
+    $runtime = Find-IPeiTuRuntime -StateDirectory $stateRoot
+    if (!$runtime) {
+        Write-Host '未找到可用的 Node.js 24 或更新版本，请先运行“安装.cmd”。'
         return 3
     }
     [IO.Directory]::CreateDirectory((Split-Path -Parent $logPath)) | Out-Null
     $dataDirectory = if ($env:IPEITU_DATA_DIR) { $env:IPEITU_DATA_DIR } else { Join-Path $env:LOCALAPPDATA 'iPeiTu\library' }
     $quote = { param($value) '"' + ([string]$value).TrimEnd('\') + '"' }
-    $commandLine = (& $quote $node.Source) + ' ' + (& $quote $entry) + ' --port ' + $Port + ' --data-dir ' + (& $quote $dataDirectory) + ' --log ' + (& $quote $logPath)
+    $commandLine = (& $quote $runtime.Node) + ' ' + (& $quote $entry) + ' --port ' + $Port + ' --data-dir ' + (& $quote $dataDirectory) + ' --log ' + (& $quote $logPath)
     if ($lan) { $commandLine += ' --host 0.0.0.0 --access-key-file ' + (& $quote $keyPath) }
     # 用 WMI 创建进程：由系统 WMI 服务创建，与本窗口及其调用方没有父子与句柄继承关系
     # （改用 Start-Process 时，CI 中从测试调用的脚本一直没有结束）。端口、图库和日志经命令行参数传入。

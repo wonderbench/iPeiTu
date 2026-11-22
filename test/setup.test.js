@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { spawn, spawnSync } from 'node:child_process';
-import { access, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { access, copyFile, mkdir, mkdtemp, readFile, rm, utimes, writeFile } from 'node:fs/promises';
 import net from 'node:net';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -240,4 +240,77 @@ test('局域网服务器：删除密钥后重新安装，先停止运行中的�
   const second = await health(port);
   assert.equal(second?.lan, true, '重启后仍为局域网模式');
   assert.notEqual(second.pid, first.pid, '服务已重启，加载的是新密钥');
+});
+// ---- Node.js 运行时的查找与便携版复用：全部在临时目录里完成，不访问网络 ----
+// 只调用 Find-IPeiTuRuntime 与“已就绪时直接返回”的 Install-IPeiTuPortableRuntime。
+// PATH 收窄为系统目录，保证选中的一定是临时状态目录里的便携版；断言失败时不会继续调用会下载的分支。
+const nodeMajor = Number(process.versions.node.split('.')[0]);
+const skipRuntime = process.platform !== 'win32' || nodeMajor < 24;
+const runtimeScript = path.join(scripts, 'node-runtime.ps1');
+
+function runtimeCall(state, body) {
+  const system = path.join(process.env.SystemRoot ?? 'C:\Windows', 'System32');
+  const command = `. $env:IPEITU_TEST_SCRIPT; ${body}`;
+  const result = spawnSync('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', command], {
+    encoding: 'utf8', windowsHide: true, timeout: 60_000,
+    env: { ...process.env, IPEITU_TEST_SCRIPT: runtimeScript, IPEITU_TEST_STATE: state, Path: `${system};${path.join(system, 'WindowsPowerShell', 'v1.0')}` },
+  });
+  assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
+  return result.stdout.trim();
+}
+
+async function fakePortable(state, { withNode = true, withNpm = true } = {}) {
+  const directory = runtimeCall(state, 'Get-IPeiTuPortableDirectory $env:IPEITU_TEST_STATE');
+  assert.ok(directory, '当前架构有便携版目录');
+  await mkdir(directory, { recursive: true });
+  // 复制本机正在运行的 Node 24，npm.cmd 用只输出版本号的桩脚本代替。
+  if (withNode) await copyFile(process.execPath, path.join(directory, 'node.exe'));
+  if (withNpm) await writeFile(path.join(directory, 'npm.cmd'), '@echo 10.9.2\r\n');
+  return directory;
+}
+
+test('Node.js 运行时：状态目录里有完整的便携版时直接采用，不下载，并清理过期的下载残留', { skip: skipRuntime }, async t => {
+  const state = await mkdtemp(path.join(tmpdir(), 'ipeitu-runtime-'));
+  t.after(() => rm(state, { recursive: true, force: true }));
+  const directory = await fakePortable(state);
+  const runtimeRoot = path.dirname(directory);
+  const stale = path.join(runtimeRoot, `download-${'a'.repeat(32)}`);
+  const fresh = path.join(runtimeRoot, `download-${'b'.repeat(32)}`);
+  const other = path.join(runtimeRoot, 'download-keep-me');
+  for (const dir of [stale, fresh, other]) await mkdir(dir);
+  const old = new Date(Date.now() - 3 * 24 * 3600 * 1000);
+  await utimes(stale, old, old);
+  await utimes(other, old, old);
+
+  const found = JSON.parse(runtimeCall(state, 'Find-IPeiTuRuntime -StateDirectory $env:IPEITU_TEST_STATE -RequireNpm | ConvertTo-Json -Compress'));
+  assert.equal(found.Node.toLowerCase(), path.join(directory, 'node.exe').toLowerCase());
+  assert.equal(found.Version, process.version);
+
+  // 已就绪时 Install 在下载之前返回；到这里 Find 已确认便携版可用。
+  const installed = JSON.parse(runtimeCall(state, 'Install-IPeiTuPortableRuntime $env:IPEITU_TEST_STATE | ConvertTo-Json -Compress'));
+  assert.equal(installed.Node.toLowerCase(), found.Node.toLowerCase());
+  await assert.rejects(access(stale), '超过一天的下载残留已清理');
+  await access(fresh);
+  await access(other);
+});
+
+test('Node.js 运行时：缺少 node.exe 或 npm 的便携版目录不被当作可用运行时', { skip: skipRuntime }, async t => {
+  for (const options of [{ withNode: false }, { withNpm: false }]) {
+    const state = await mkdtemp(path.join(tmpdir(), 'ipeitu-runtime-'));
+    t.after(() => rm(state, { recursive: true, force: true }));
+    await fakePortable(state, options);
+    const found = runtimeCall(state, 'Find-IPeiTuRuntime -StateDirectory $env:IPEITU_TEST_STATE -RequireNpm | ConvertTo-Json -Compress');
+    assert.equal(found, '', `残缺的便携版（${JSON.stringify(options)}）未被采用`);
+  }
+});
+
+test('Node.js 运行时：下载地址固定为官方 dist，先校验 SHA-256 再解压', { skip: process.platform !== 'win32' }, async () => {
+  const text = await readFile(runtimeScript, 'utf8');
+  assert.match(text, /\$ipeituNodeRelease = 'v\d+\.\d+\.\d+'/);
+  assert.equal([...text.matchAll(/(?:x64|arm64)\s*=\s*'([0-9a-f]{64})'/g)].length, 2, '两种架构各有 64 位十六进制校验值');
+  const uris = [...text.matchAll(/-Uri\s+"([^"]+)"/g)].map(match => match[1]);
+  assert.equal(uris.length, 1);
+  assert.ok(uris[0].startsWith('https://nodejs.org/dist/$ipeituNodeRelease/'), uris[0]);
+  assert.ok(text.indexOf('Get-FileHash') < text.indexOf('Expand-Archive'), '校验在解压之前');
+  assert.ok(text.indexOf('Get-FileHash') > text.indexOf('Invoke-WebRequest'));
 });
