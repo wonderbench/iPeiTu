@@ -9,32 +9,46 @@ afterEach(() => { delete globalThis.Application; });
 const FULL_WIDTH_SPACE = String.fromCharCode(0x3000);
 const collection = items => ({ get Count() { return items.length; }, Item: index => items[index - 1] });
 
+// 内置样式编号对应的本地名称：正文 -1，标题 1—9 为 -2—-10。标题 N 的大纲级别为 N，其余为正文级别 10。
+const STYLE_NAMES = new Map([[-1, '正文'], ...Array.from({ length: 9 }, (_, index) => [-(index + 2), `标题 ${index + 1}`])]);
+const outlineOfStyle = name => { const match = /^标题 ([1-9])$/.exec(name); return match ? Number(match[1]) : 10; };
+
 // 模拟 WPS 正文：段落以 \r 结束；Range.Paragraphs 返回与范围相交的段落，插入的分段符复制所在段落的格式。
+// Paragraph.Style 按名称赋值，读回 Style 对象（NameLocal）；赋样式后大纲级别随样式变化。
 function createHost(options = {}) {
   const state = {
     paragraphs: (options.paragraphs ?? ['']).map((text, index) => ({
       text, style: '标书正文', reset: 0, fontReset: 0, indent: 0, numbered: true, outline: options.outline?.[index] ?? 10,
     })),
-    cursor: options.cursor ?? 0, end: options.end ?? options.cursor ?? 0, undo: [], ended: 0, selected: null,
+    cursor: options.cursor ?? 0, end: options.end ?? options.cursor ?? 0, undo: [], ended: 0, selected: null, log: [], lookups: [],
   };
+  const styleNames = options.styleNames ?? STYLE_NAMES;
+  const outlineOf = options.outlineOf ?? outlineOfStyle;
   const startOf = paragraph => state.paragraphs.slice(0, state.paragraphs.indexOf(paragraph)).reduce((sum, item) => sum + item.text.length + 1, 0);
   const containing = position => state.paragraphs.find(paragraph => position <= startOf(paragraph) + paragraph.text.length) ?? state.paragraphs.at(-1);
   const within = (start, end) => (start === end ? [containing(start)]
     : state.paragraphs.filter(paragraph => startOf(paragraph) < end && startOf(paragraph) + paragraph.text.length + 1 > start));
   const paragraphObject = paragraph => ({
-    get Style() { return paragraph.style; },
-    set Style(value) { paragraph.style = value; },
+    get Style() { return { NameLocal: paragraph.style }; },
+    set Style(value) {
+      assert.equal(typeof value, 'string', '按样式名称设置');
+      state.log.push(`${paragraph.text}|style:${value}`);
+      // ignoreStyle 模拟 WPS 静默忽略样式赋值。
+      if (options.ignoreStyle) return;
+      paragraph.style = value;
+      paragraph.outline = outlineOf(value);
+    },
     get OutlineLevel() { return paragraph.outline; },
     Range: {
       get Start() { return startOf(paragraph); },
       get Text() { return `${paragraph.text}${paragraph.cellEnd ? '\r\u0007' : '\r'}`; },
       ParagraphFormat: {
-        Reset() { paragraph.reset++; paragraph.indent = 0; },
+        Reset() { paragraph.reset++; paragraph.indent = 0; state.log.push(`${paragraph.text}|reset`); },
         get CharacterUnitFirstLineIndent() { return paragraph.indent; },
-        set CharacterUnitFirstLineIndent(value) { paragraph.indent = value; },
+        set CharacterUnitFirstLineIndent(value) { paragraph.indent = value; state.log.push(`${paragraph.text}|indent:${value}`); },
       },
-      Font: { Reset() { paragraph.fontReset++; } },
-      ListFormat: { RemoveNumbers() { paragraph.numbered = false; } },
+      Font: { Reset() { paragraph.fontReset++; state.log.push(`${paragraph.text}|fontReset`); } },
+      ListFormat: { RemoveNumbers() { paragraph.numbered = false; state.log.push(`${paragraph.text}|removeNumbers`); } },
     },
   });
   const insertAt = (position, text) => {
@@ -44,7 +58,15 @@ function createHost(options = {}) {
     state.paragraphs.splice(state.paragraphs.indexOf(paragraph), 1, ...parts.map(part => ({ ...paragraph, text: part })));
   };
   const doc = {
-    Name: '标书.docx', FullName: 'C:\\测试\\标书.docx', ReadOnly: false, ProtectionType: -1, ...options.document,
+    Name: '标书.docx', FullName: 'C:\\测试\\标书.docx', ReadOnly: false, ProtectionType: -1,
+    Styles: {
+      Item(id) {
+        if (options.noStyles) assert.fail('表格内不应读取样式');
+        state.lookups.push(id);
+        return styleNames.has(id) ? { NameLocal: styleNames.get(id) } : undefined;
+      },
+    },
+    ...options.document,
     Range(start, end) {
       return { get Paragraphs() { return collection(within(start, end).map(paragraphObject)); }, Select() { state.selected = [start, end]; } };
     },
@@ -93,7 +115,9 @@ test('inserts into an empty paragraph with heading and body styles in one undo r
   const result = insertSnippet(snippet, { baseLevel: 3 });
   assert.deepEqual(result, { paragraphs: 2, headings: 1, inTable: false });
   assert.deepEqual(texts(state), ['前文', '施工准备', '检查模板。', '后文']);
-  assert.deepEqual(styles(state), ['标书正文', -4, -1, '标书正文'], '标题 3 为 -4，正文为 -1');
+  assert.deepEqual(styles(state), ['标书正文', '标题 3', '正文', '标书正文'], '按内置编号 -4、-1 查到的本地名称设置');
+  assert.deepEqual(state.paragraphs.map(paragraph => paragraph.outline), [10, 3, 10, 10]);
+  assert.deepEqual(state.lookups, [-4, -1]);
   const [, heading, body] = state.paragraphs;
   assert.deepEqual([heading.reset, heading.fontReset, heading.indent, heading.numbered], [1, 1, 0, true], '标题保留样式自带的编号');
   assert.deepEqual([body.reset, body.fontReset, body.indent, body.numbered], [1, 1, 2, false], '正文首行缩进 2 字符并去掉编号');
@@ -107,7 +131,7 @@ test('inserts after, before and inside a paragraph without changing its text or 
   let state = createHost({ paragraphs: ['前文', '后文'], cursor: 2 });
   insertSnippet(snippet, { includeTitle: true });
   assert.deepEqual(texts(state), ['前文', '混凝土浇筑', '施工准备', '检查模板。', '后文']);
-  assert.deepEqual(styles(state), ['标书正文', -4, -5, -1, '标书正文']);
+  assert.deepEqual(styles(state), ['标书正文', '标题 3', '标题 4', '正文', '标书正文']);
 
   state = createHost({ paragraphs: ['正文'], cursor: 0 });
   insertSnippet(snippet);
@@ -117,15 +141,67 @@ test('inserts after, before and inside a paragraph without changing its text or 
   state = createHost({ paragraphs: ['甲乙'], cursor: 1 });
   insertSnippet({ title: '纯正文', body: '第一段\n第二段' });
   assert.deepEqual(texts(state), ['甲', '第一段', '第二段', '乙']);
-  assert.deepEqual(styles(state), ['标书正文', -1, -1, '标书正文']);
+  assert.deepEqual(styles(state), ['标书正文', '正文', '正文', '标书正文']);
   assert.deepEqual(state.paragraphs.map(paragraph => paragraph.reset), [0, 1, 1, 0]);
 });
 
 test('keeps table cell formatting and reports it', () => {
-  const state = createHost({ paragraphs: ['', '后文'], cursor: 0, inTable: true });
+  // noStyles：读取样式即失败，证明表格内不查样式、不设样式也不核对。
+  const state = createHost({ paragraphs: ['', '后文'], cursor: 0, inTable: true, noStyles: true });
   assert.deepEqual(insertSnippet(snippet, { includeTitle: true }), { paragraphs: 3, headings: 0, inTable: true });
   assert.deepEqual(texts(state), ['混凝土浇筑', '施工准备', '检查模板。', '后文']);
   assert.ok(state.paragraphs.every(paragraph => paragraph.style === '标书正文' && paragraph.reset === 0));
+  assert.deepEqual(state.log, []);
+});
+
+test('resets inherited formatting before applying styles by local name', () => {
+  const styleNames = new Map([[-1, 'Normal'], [-4, 'Heading 3']]);
+  const state = createHost({ styleNames, outlineOf: name => (name === 'Heading 3' ? 3 : 10) });
+  const result = insertSnippet({ title: '片段', body: '# 施工准备\n检查模板。\n清理杂物。' }, { baseLevel: 3 });
+  assert.deepEqual(result, { paragraphs: 3, headings: 1, inTable: false });
+  assert.deepEqual(styles(state), ['Heading 3', 'Normal', 'Normal'], '使用文档返回的本地名称');
+  assert.deepEqual(state.lookups, [-4, -1], '每种样式只查一次');
+  const steps = text => state.log.filter(entry => entry.startsWith(`${text}|`)).map(entry => entry.slice(text.length + 1));
+  assert.deepEqual(steps('施工准备'), ['reset', 'fontReset', 'style:Heading 3'], '标题先重置再设样式，不去编号');
+  assert.deepEqual(steps('检查模板。'), ['reset', 'fontReset', 'style:Normal', 'removeNumbers', 'indent:2']);
+  assert.deepEqual(steps('清理杂物。'), ['reset', 'fontReset', 'style:Normal', 'removeNumbers', 'indent:2']);
+});
+
+test('maps levels beyond heading 9 onto heading 9 and verifies it', () => {
+  const state = createHost();
+  assert.deepEqual(insertSnippet({ title: '深层', body: '# 五\n###### 深' }, { baseLevel: 6 }), { paragraphs: 2, headings: 2, inTable: false });
+  assert.deepEqual(styles(state), ['标题 6', '标题 9']);
+  assert.deepEqual(state.paragraphs.map(paragraph => paragraph.outline), [6, 9]);
+  assert.deepEqual(state.lookups, [-7, -10]);
+});
+
+test('reports a style that does not read back after writing', () => {
+  const undoOnce = /^片段已写入，但样式设置或核对未完成.*撤销一次恢复$/;
+  let state = createHost({ ignoreStyle: true });
+  assert.throws(() => insertSnippet(snippet), error => undoOnce.test(error.message) && error.message.includes('第 1 段未能应用「标题 3」样式')
+    && error.inserted === true && error.cause instanceof Error);
+  assert.deepEqual(texts(state), ['施工准备', '检查模板。']);
+  assert.equal(state.ended, 1, '撤销记录仍然关闭');
+
+  // 样式名相符但大纲级别不符：标题与正文分别核对。
+  state = createHost({ outlineOf: name => (name === '标题 3' ? 10 : outlineOfStyle(name)) });
+  assert.throws(() => insertSnippet(snippet), error => undoOnce.test(error.message) && error.message.includes('第 1 段未能应用「标题 3」样式') && error.inserted === true);
+  state = createHost({ outlineOf: name => (name === '正文' ? 1 : outlineOfStyle(name)) });
+  assert.throws(() => insertSnippet(snippet), error => undoOnce.test(error.message) && error.message.includes('第 2 段未能应用「正文」样式') && error.inserted === true);
+  assert.equal(state.ended, 1);
+});
+
+test('aborts before writing when a built-in style cannot be read', () => {
+  const cases = [
+    [new Map([[-1, '正文']]), '插入已中止（无法读取文档的标题 3样式）'],
+    [new Map([[-1, ''], [-4, '标题 3']]), '插入已中止（无法读取文档的正文样式）'],
+  ];
+  for (const [styleNames, message] of cases) {
+    const state = createHost({ paragraphs: ['前文'], cursor: 2, styleNames });
+    assert.throws(() => insertSnippet(snippet), error => error.message === message && error.inserted === false);
+    assert.deepEqual(texts(state), ['前文']);
+    assert.deepEqual(state.undo, []);
+  }
 });
 
 test('rejects selections and unwritable documents before writing', () => {

@@ -11,10 +11,15 @@ function installHost({ paragraphs, outline = [], cursor, end = cursor, readOnly 
   const within = (start, stop) => (start === stop ? [containing(start)]
     : state.paragraphs.filter(paragraph => startOf(paragraph) < stop && startOf(paragraph) + paragraph.text.length + 1 > start));
   const collection = items => ({ Count: items.length, Item: index => items[index - 1] });
+  // 内置样式编号 -1 为正文，-2—-10 为标题 1—9；按名称设置样式后，标题 N 的大纲级别为 N。
+  const styleName = id => (id === -1 ? '正文' : id <= -2 && id >= -10 ? `标题 ${-id - 1}` : undefined);
   const paragraphObject = paragraph => ({
-    get Style() { return paragraph.style; },
-    set Style(value) { paragraph.style = value; },
-    OutlineLevel: paragraph.outline,
+    get Style() { return { NameLocal: paragraph.style }; },
+    set Style(value) {
+      paragraph.style = value;
+      paragraph.outline = Number(/^标题 ([1-9])$/.exec(value)?.[1] ?? 10);
+    },
+    get OutlineLevel() { return paragraph.outline; },
     Range: {
       get Start() { return startOf(paragraph); },
       get Text() { return `${paragraph.text}\r`; },
@@ -25,6 +30,7 @@ function installHost({ paragraphs, outline = [], cursor, end = cursor, readOnly 
   });
   const doc = {
     Name: '投标文件.docx', ReadOnly: readOnly, ProtectionType: -1,
+    Styles: { Item: id => (styleName(id) ? { NameLocal: styleName(id) } : undefined) },
     Range: (start, stop) => ({ get Paragraphs() { return collection(within(start, stop).map(paragraphObject)); }, Select() { state.cursor = start; state.end = stop; } }),
   };
   window.Application = {
@@ -119,7 +125,7 @@ export async function verifyKnowledge({ page, base }) {
   await visibleText('#actionStatus', '已插入「混凝土浇筑」：5 段，其中小标题 3 段');
   let state = await page.evaluate(() => window.knowledgeState);
   assert.deepEqual(state.paragraphs.map(item => item.text), ['前文', '混凝土浇筑', '施工准备', '检查模板。', '浇筑', '分层浇筑。', '后文']);
-  assert.deepEqual(state.paragraphs.map(item => item.style), ['标书正文', -3, -4, -1, -4, -1, '标书正文']);
+  assert.deepEqual(state.paragraphs.map(item => item.style), ['标书正文', '标题 2', '标题 3', '正文', '标题 3', '正文', '标书正文']);
   assert.deepEqual(state.paragraphs.map(item => item.indent), [0, 0, 0, 2, 0, 2, 0]);
   assert.deepEqual(state.undo, ['iPeiTu 插入知识库片段']);
   assert.deepEqual(await page.evaluate(() => JSON.parse(localStorage.getItem('ipeitu.knowledge.v1'))), { baseLevel: 2, includeTitle: true });
