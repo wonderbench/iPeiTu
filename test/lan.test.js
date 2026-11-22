@@ -383,6 +383,22 @@ test('the LAN server rate-limits warnings for repeated wrong keys', { skip }, as
   await assert.rejects(startServer({ port: 0, dataDirectory: directory, authLog: { record() {} } }), /AuthFailureLog/);
 });
 
+test('a client refuses a server whose API version differs and asks both sides to update', { skip }, async t => {
+  const relay = await serve(t, { dataDirectory: path.join(await temporary(t), 'client') });
+  for (const api of [1, 3]) {
+    const fake = http.createServer((request, response) => {
+      response.writeHead(200, { 'content-type': 'application/json' });
+      response.end(JSON.stringify({ service: 'iPeiTu', version: '0.0.1', api, lan: true, total: 0 }));
+    });
+    await new Promise(resolve => fake.listen(0, '0.0.0.0', resolve));
+    t.after(() => { fake.closeAllConnections(); fake.close(); });
+    const response = await call(relay.base, '/api/connection', jsonRequest('PUT', { url: `http://${lanIp}:${fake.address().port}`, key: KEY }));
+    assert.equal(response.status, 400, `api ${api}`);
+    assert.match(response.json.error, /版本（0\.0\.1）与本机不兼容，请两边更新到同一版本/);
+    assert.deepEqual((await call(relay.base, '/api/connection')).json, { mode: 'local', url: null, lanServer: false }, '版本不符不保存连接');
+  }
+});
+
 test('a client relays the library, caches insertion files and uploads folder imports to the LAN server', { skip }, async t => {
   const upstreamDirectory = await temporary(t);
   const upstream = await serve(t, { host: '0.0.0.0', accessKey: KEY, dataDirectory: upstreamDirectory });

@@ -100,7 +100,7 @@
 ## 步骤 6：一键安装与启动
 
 - 项目根目录的“安装.cmd”“启动.cmd”“停止.cmd”“卸载.cmd”分别调用 `scripts/setup.ps1`、`scripts/service.ps1 -Action start|stop`、`scripts/remove.ps1`；脚本为带 BOM 的 UTF-8，输出中文。
-- 安装先在状态目录的 `runtime` 和系统 PATH 中查找可用的 Node.js 24+ 和 npm，缺少时才从 `https://nodejs.org/dist/` 下载固定版本的 Windows 便携包（x64、ARM64），校验固定的 SHA-256 后才解压，通过后一次移入状态目录下的 `runtime`。首次安装需要联网。卸载不删除 `runtime`，不再需要时可手动删除状态目录中的该文件夹。运行依赖缺失或无法加载时运行 `npm ci --omit=dev`。登录后自动启动写入当前用户注册表的 Run 项 `iPeiTu`，可用 `-NoAutoStart` 跳过。
+- 安装先在状态目录的 `runtime` 和系统 PATH 中查找可用的 Node.js 24+ 和 npm，缺少时才从 `https://nodejs.org/dist/` 下载固定版本的 Windows 便携包（x64、ARM64），校验固定的 SHA-256 后才解压，通过后一次移入状态目录下的 `runtime`。首次安装需要联网。卸载不删除 `runtime`，不再需要时可手动删除状态目录中的该文件夹。升级脚本中固定的 Node 版本后，旧版本的 `runtime\node-v…` 目录不会自动清理，可手动删除。运行依赖缺失或无法加载时运行 `npm ci --omit=dev`。登录后自动启动写入当前用户注册表的 Run 项 `iPeiTu`，可用 `-NoAutoStart` 跳过。
 - 服务新增 `/api/health`（服务名、版本、进程号、程序目录）。`server/index.js` 遇到端口占用时：已是 iPeiTu 则提示已在运行并以 0 退出，否则说明被其他程序占用并以 2 退出。
 - 停止和卸载只结束命令行包含本目录 `server\index.js` 的进程，只删除命令指向本目录脚本的自动启动项。
 - Windows 自动化测试使用临时目录、临时端口和临时注册表键，覆盖安装、启动、占用检测和卸载。便携版 Node 的测试不访问网络：状态目录里有完整的便携版时直接采用，缺少 `node.exe` 或 npm 的目录不被采用，过期的下载残留被清理，并检查下载地址固定为 `https://nodejs.org/dist/`、SHA-256 校验在解压之前。真实的下载与校验失败路径需要联网，没有自动化测试。
@@ -259,6 +259,8 @@
 | [#36](https://github.com/wonderbench/iPeiTu/pull/36) | 插图与占位框的可用宽度识别分栏和不确定的单元格尺寸 | 已合并，实机待验 |
 | [#37](https://github.com/wonderbench/iPeiTu/pull/37) | 缓存清理与日志轮转；写入失败不遗留临时文件；重复图片不重写 | 已合并，实机待验 |
 | [#39](https://github.com/wonderbench/iPeiTu/pull/39) | 清除空格保留英文、数字与汉字之间的半角空格 | 已合并，实机待验 |
+
+**局域网接口版本与版本号（合并 PR #40 的审查）：** 合入步骤 15 后，窗格在编辑素材信息前申请编辑锁（`POST /api/assets/<id>/edit-lock`），并使用批量移入回收站。只升级客户端、服务器仍是旧版本时，这些请求会被旧服务器以 403 拒绝，而连接检查只比较 `api` 版本，连接时不会提示不兼容。因此 `server/lan-client.js` 的 `API_VERSION` 由 1 改为 2，连接时得到“请两边更新到同一版本”的提示；`test/lan.test.js` 新增用例，服务器 `api` 为 1 或 3 时拒绝连接且不保存。版本号因合入步骤 15 等功能由 0.3.0（#32 所设）改为 0.4.0。
 
 `#31`、`#33`（表格宽度与空行判断）、`#35` 和 `#32`（换密钥）移植自 `origin/Jzc` 分支的对应改动，该分支记录了这些问题在 WPS `12.1.0.29690` 上的读数。`Jzc` 随后在同一天整体合入，见步骤 15。
 

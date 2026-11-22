@@ -8,7 +8,7 @@ import { touchCache } from './cache-prune.js';
 
 // 客户端连接局域网图库：本机服务保存服务器地址与密钥，把图库与知识库请求转发过去；
 // 插图文件下载到本机缓存后再交给 WPS，目录导入在本机读取后逐张上传。
-export const API_VERSION = 1;
+export const API_VERSION = 2;
 export const DEFAULT_PORT = 39831;
 export const accessKeyPattern = /^[A-Za-z0-9_-]{43}$/;
 const MAX_RESPONSE_BYTES = 64 * 1024 * 1024;
