@@ -68,28 +68,42 @@ test('a log under the limit is appended to at startup', async t => {
   assert.equal(await readFile(filename, 'utf8'), '已有内容\n新的一行\n');
 });
 
-test('a failed rotation keeps writing to the current file, reports once and retries on the next write', async t => {
+test('a failed rotation keeps writing to the current file, reports once and retries only after the interval', async t => {
   const { directory, filename } = await setup(t);
   const errors = [];
   let blocked = true;
   let attempts = 0;
+  let time = 1_000_000;
   const rename = (from, to) => {
     attempts++;
     if (blocked) throw Object.assign(new Error('文件被占用'), { code: 'EBUSY' });
     renameSync(from, to);
   };
-  const log = new RotatingLog(filename, { maxBytes: 50, rename, onError: message => errors.push(message) });
+  const log = new RotatingLog(filename, { maxBytes: 50, rename, retryMs: 60_000, now: () => time, onError: message => errors.push(message) });
   for (let index = 0; index < 5; index++) assert.doesNotThrow(() => log.write(line(index)));
-  assert.ok(attempts >= 3, '每次超限写入都重试轮转');
-  assert.equal(errors.length, 1, '连续失败只报告一次');
+  assert.equal(attempts, 1, '间隔内不重复关闭、改名、重开');
+  assert.equal(errors.length, 1);
   assert.match(errors[0], /轮转失败/);
-  assert.equal(await readFile(filename, 'utf8'), [0, 1, 2, 3, 4].map(line).join(''), '失败期间内容不丢失');
+  time += 59_999;
+  log.write(line(5));
+  assert.equal(attempts, 1, '间隔未到不重试');
+  time += 1;
+  log.write(line(6));
+  assert.equal(attempts, 2, '间隔到后再试');
+  assert.equal(errors.length, 1, '连续失败只报告一次');
+  const all = [0, 1, 2, 3, 4, 5, 6].map(line).join('');
+  assert.equal(await readFile(filename, 'utf8'), all, '失败期间内容不丢失');
   assert.deepEqual(await readdir(directory), ['service-39831.log']);
   blocked = false;
-  log.write(line(5));
+  log.write(line(7));
+  assert.equal(attempts, 2, '刚失败过，仍在间隔内');
+  time += 60_000;
+  log.write(line(8));
   log.end();
-  assert.equal(await readFile(`${filename}.1`, 'utf8'), [0, 1, 2, 3, 4].map(line).join(''));
-  assert.equal(await readFile(filename, 'utf8'), line(5));
+  assert.equal(attempts, 3);
+  assert.equal(await readFile(`${filename}.1`, 'utf8'), all + line(7));
+  assert.equal(await readFile(filename, 'utf8'), line(8));
+  assert.throws(() => new RotatingLog(filename, { retryMs: -1 }), /重试间隔/);
 });
 
 test('a write failure is reported instead of thrown and end() closes the file before its callback', async t => {

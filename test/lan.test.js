@@ -2,13 +2,14 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
-import { access, mkdir, mkdtemp, readFile, rm, stat, unlink, utimes, writeFile } from 'node:fs/promises';
+import { access, mkdir, mkdtemp, readdir, readFile, rm, stat, unlink, utimes, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import sharp from 'sharp';
 import { AuthFailureLog, remoteRoutes, startServer } from '../server/http.js';
 import { Library } from '../server/library.js';
 import { normalizeServerUrl } from '../server/lan-client.js';
+import { CACHE_DIRECTORIES } from '../server/cache-prune.js';
 
 // 局域网测试经本机的局域网地址访问服务，使连接来源不是回环地址，与另一台电脑访问的检查路径相同。
 function lanAddress() {
@@ -356,6 +357,8 @@ test('a client relays the library, caches insertion files and uploads folder imp
   assert.deepEqual(await readFile(response.json.path), await readFile(upstreamInsertion.path));
   assert.equal(response.json.name, '基坑.png');
   const cachedPath = response.json.path;
+  assert.ok(CACHE_DIRECTORIES['lan-cache'].pattern.test(path.basename(cachedPath)), '真实下载的缓存文件名符合清理规则');
+  assert.deepEqual((await readdir(cache)).filter(name => name.endsWith('.tmp')), [], '下载后没有遗留临时文件');
   const cachedBytes = await readFile(cachedPath);
   await utimes(cachedPath, PAST, PAST);
   const beforeHit = await stat(cachedPath);

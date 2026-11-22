@@ -18,8 +18,14 @@ for (let index = 0; index < argv.length; index += 2) {
 // 日志超过 5 MB 时轮转为 <名称>.1，只保留一份旧日志。
 let logFile = null;
 if (options.log) {
-  await mkdir(path.dirname(options.log), { recursive: true });
-  logFile = new RotatingLog(options.log);
+  try {
+    await mkdir(path.dirname(options.log), { recursive: true });
+    logFile = new RotatingLog(options.log);
+  } catch (error) {
+    // 日志不可用（路径是目录、没有权限等）：原因只能写到标准错误，以非零码退出。
+    process.stderr.write(`iPeiTu 无法打开日志文件 ${options.log}：${error.stack ?? error}\n`);
+    process.exit(1);
+  }
   const write = (level, values) => logFile.write(formatLine(level, values));
   console.log = (...values) => write('INFO', values);
   console.warn = (...values) => write('WARN', values);
