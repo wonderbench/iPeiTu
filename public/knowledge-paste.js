@@ -1,4 +1,5 @@
 import { isSnippetFormat } from './knowledge-format.js';
+import { MAX_RELATIVE_LEVEL } from './knowledge-bridge.js';
 
 const blocks = 'p,h1,h2,h3,h4,h5,h6,div';
 const ignored = 'style,script,link,meta,title,xml,[hidden]';
@@ -19,17 +20,20 @@ function makeStyleReader(fragment) {
     for (const match of css.matchAll(/(?:^|[{}])\s*([^{}]+)\{([^{}]*)/g)) {
       for (const raw of match[1].split(',')) {
         const selector = raw.trim();
-        if (/^(?:[a-z][\w-]*)?(?:\.[\w-]+)?$/i.test(selector) && selector) {
-          rules.push({ selector, css: match[2] });
+        const parts = /^(?:([a-z][\w-]*))?(?:\.([\w-]+))?$/i.exec(selector);
+        if (parts && selector) {
+          // WPS 导出的类名可以是数字，例如 p.15，不能直接交给 matches()。
+          rules.push({ tag: parts[1]?.toLowerCase(), className: parts[2], css: match[2] });
           if (rules.length > 256) return null;
         }
       }
     }
   }
-  rules.sort((a, b) => Number(a.selector.includes('.')) - Number(b.selector.includes('.')));
+  rules.sort((a, b) => Number(Boolean(a.className)) - Number(Boolean(b.className)));
   const scratch = document.createElement('span').style;
   return element => {
-    const matching = rules.filter(rule => element.matches(rule.selector)).map(rule => rule.css);
+    const matching = rules.filter(({ tag, className }) => (!tag || element.localName === tag)
+      && (!className || element.classList.contains(className))).map(rule => rule.css);
     matching.push(element.getAttribute('style') ?? '');
     const css = matching.join(';');
     scratch.cssText = css;
@@ -94,16 +98,22 @@ function readParagraph(element, { style, office }) {
   return result;
 }
 
-function readLine(element, styleFor) {
+function readLine(element, styleFor, children = element.childNodes) {
   const parents = [];
   for (let parent = element.parentElement; parent; parent = parent.parentElement) parents.unshift(parent);
   const inherited = parents.reduce((font, parent) => readFont(parent, styleFor(parent), font), {});
-  const paragraph = readParagraph(element, styleFor(element));
+  const formatting = styleFor(element);
+  const paragraph = readParagraph(element, formatting);
+  const level = Number(/^h([1-6])$/.exec(element.localName)?.[1]
+    ?? /^[1-9]$/.exec(formatting.office('mso-outline-level'))?.[0] ?? 0);
+  const font = readFont(element, formatting, inherited);
   let text = '';
+  let hasBreak = false;
   const runs = [];
-  function visit(node, font) {
+  function visit(node, parentFont) {
     if (node.nodeType === Node.ELEMENT_NODE && !node.matches(ignored)) {
-      const current = readFont(node, styleFor(node), font);
+      if (node.localName === 'br') hasBreak = true;
+      const current = readFont(node, styleFor(node), parentFont);
       for (const child of node.childNodes) visit(child, current);
     } else if (node.nodeType === Node.TEXT_NODE) {
       let value = node.data.replace(/[\t\r\n\f ]+/g, ' ').replace(/\u00a0/g, ' ');
@@ -111,19 +121,50 @@ function readLine(element, styleFor) {
       if (!value) return;
       const start = text.length;
       text += value;
-      if (!Object.keys(font).length) return;
+      if (!Object.keys(parentFont).length) return;
       const last = runs.at(-1);
-      if (last?.end === start && JSON.stringify(last.font) === JSON.stringify(font)) last.end = text.length;
-      else runs.push({ start, end: text.length, font });
+      if (last?.end === start && JSON.stringify(last.font) === JSON.stringify(parentFont)) last.end = text.length;
+      else runs.push({ start, end: text.length, font: parentFont });
     }
   }
-  visit(element, inherited);
+  for (const child of children) visit(child, font);
   text = text.trimEnd();
-  return { text, paragraph, runs: runs.filter(run => run.start < text.length).map(run => ({ ...run, end: Math.min(run.end, text.length) })) };
+  return { text, paragraph, level, hasBreak,
+    runs: runs.filter(run => run.start < text.length).map(run => ({ ...run, end: Math.min(run.end, text.length) })) };
+}
+
+function readLines(root, styleFor) {
+  const lines = [];
+  function collect(element) {
+    if (!element.querySelector(blocks)) {
+      lines.push(readLine(element, styleFor));
+      return;
+    }
+    let inline = [];
+    function flush() {
+      if (!inline.length) return;
+      const line = readLine(element, styleFor, inline);
+      if (line.text) lines.push(line);
+      inline = [];
+    }
+    // WPS 的选区终止于段落标记之前时，末段可能只剩一组行内节点。
+    for (const child of element.childNodes) {
+      if (child.nodeType === Node.ELEMENT_NODE && !child.matches(ignored)
+        && (child.matches(blocks) || child.querySelector(blocks))) {
+        flush();
+        collect(child);
+      } else inline.push(child);
+    }
+    flush();
+  }
+  collect(root);
+  return lines;
 }
 
 export function readFormattedPaste(html, plain, limit) {
   if (!html || html.length > 512_000) return null;
+  const documentStart = /^Version:/i.test(html) ? html.search(/<html[\s>]/i) : -1;
+  if (documentStart > 0) html = html.slice(documentStart);
   // 模板内容保持惰性，剪贴板节点不进入页面，也不保存原始 HTML。
   const template = document.createElement('template');
   template.innerHTML = html;
@@ -136,15 +177,27 @@ export function readFormattedPaste(html, plain, limit) {
   root.append(fragment);
   const styleFor = makeStyleReader(root);
   if (!styleFor) return null;
-  const elements = [...root.querySelectorAll(blocks)].filter(element => !element.querySelector(blocks));
-  const lines = (elements.length ? elements : [root]).map(element => readLine(element, styleFor));
+  const lines = readLines(root, styleFor);
   while (lines.length && !lines[0].text) lines.shift();
   while (lines.length && !lines.at(-1).text) lines.pop();
-  const body = lines.map(line => line.text).join('\n');
-  if (!body || body.length > limit || comparable(body) !== comparable(plain)
-    || /[\x00-\x09\x0b-\x1f\x7f\u2028\u2029]/.test(body)) return null;
+  const text = lines.map(line => line.text).join('\n');
+  if (!text || text.length > limit || comparable(text) !== comparable(plain)
+    || /[\x00-\x09\x0b-\x1f\x7f\u2028\u2029]/.test(text)) return null;
   // 连在同一段内的显式换行保留原生纯文字粘贴。
-  if (root.querySelector('br') && elements.some(element => element.querySelector('br') && comparable(element.textContent))) return null;
-  const format = lines.map(({ paragraph, runs }) => ({ paragraph, runs }));
+  if (lines.some(line => line.text && line.hasBreak)) return null;
+  const levels = lines.filter(line => line.text && line.level).map(line => line.level);
+  const top = levels.length ? Math.min(...levels) : 0;
+  const prefixes = lines.map(line => line.text && line.level
+    ? `${'#'.repeat(Math.min(MAX_RELATIVE_LEVEL, line.level - top + 1))} ` : '');
+  const body = lines.map((line, index) => prefixes[index] + line.text).join('\n');
+  if (body.length > limit) return null;
+  const format = lines.map(({ paragraph, runs }, index) => {
+    const offset = prefixes[index].length;
+    if (!offset) return { paragraph, runs };
+    return {
+      paragraph, heading: true,
+      runs: runs.map(run => ({ ...run, start: run.start + offset, end: run.end + offset })),
+    };
+  });
   return isSnippetFormat(format, body) ? { body, format } : null;
 }

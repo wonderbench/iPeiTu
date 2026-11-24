@@ -33,8 +33,9 @@
 .snippet-preview { display: grid; gap: 8px; min-width: 0; padding: 4px 0; }
 .preview-heading { display: grid; gap: 2px; min-width: 0; }
 .preview-heading h2 { overflow-wrap: anywhere; }
-.snippet-body { display: grid; gap: 4px; max-height: clamp(68px, 18vh, 148px); overflow: auto; color: var(--text-secondary); font-size: 13px; line-height: 20px; }
+.snippet-body { max-height: clamp(68px, 18vh, 148px); overflow: auto; color: var(--text-secondary); font-size: 13px; line-height: 20px; }
 .snippet-body p { overflow-wrap: anywhere; text-indent: 2em; }
+.snippet-body > p + p { margin-top: 4px; }
 .snippet-body p:empty { min-height: 20px; }
 .snippet-body .snippet-formatted-paragraph {
   min-height: 20px; color: var(--text); line-height: 1.5; text-indent: 0; white-space: pre-wrap;
